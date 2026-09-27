@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
+  workspaceEditorialCheckerFindingStates,
   workspaceEditorialCheckerFindings,
   workspaceEditorialCheckerRuns,
   workspaceEditorialDraftEditEvents,
@@ -20,10 +21,18 @@ import {
   type EditorialDraftDocument,
 } from "./editorialDraft.domain";
 import {
+  applyEditorialBulkCleanupToDocument,
+  findingMatchesEditorialBulkCleanupAction,
+  type EditorialBulkCleanupAction,
+  type EditorialBulkCleanupFinding,
+} from "./editorialBulkFindingCleanup.domain";
+import { EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION } from "./editorialForeignChecker.domain";
+import {
   applyEditorialDraftEdit,
   editorialEditIdempotencyPayloadSha256,
   EditorialEditorDomainError,
   type EditorialDraftEditCommand,
+  type EditorialParagraphEditCommand,
 } from "./editorialEditor.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 
@@ -195,7 +204,12 @@ async function persistManualDraft(
     parentDraftId: number;
     version: number;
     actorUserId: number;
-    transformCode: "manual_edit" | "manual_undo" | "manual_tab_exclude" | "manual_tab_restore";
+    transformCode:
+      | "manual_edit"
+      | "manual_undo"
+      | "manual_tab_exclude"
+      | "manual_tab_restore"
+      | "bulk_finding_cleanup";
     beforeSha256: string;
     document: EditorialDraftDocument;
     presentationJson: string;
@@ -269,7 +283,7 @@ async function validateFinding(
     workItemId: number;
     currentDraftId: number;
     findingId: number;
-    command: EditorialDraftEditCommand;
+    command: EditorialParagraphEditCommand;
   }
 ) {
   const [row] = await tx
@@ -334,6 +348,9 @@ function mapDomainError(error: unknown): never {
       "PARAGRAPH_NOT_FOUND",
       "PARAGRAPH_AMBIGUOUS",
       "PARAGRAPH_CONFLICT",
+      "TAB_NOT_FOUND",
+      "TAB_AMBIGUOUS",
+      "TAB_CONFLICT",
       "RANGE_CONFLICT",
     ].includes(error.code);
     throw new WorkspaceEditorialEditorError(
@@ -490,6 +507,12 @@ export async function applyEditorialEditorEdit(input: {
       "Finding id and finding key must be supplied together."
     );
   }
+  if (input.command.kind === "replace_tab" && input.findingId) {
+    throw new WorkspaceEditorialEditorError(
+      "FINDING_CONFLICT",
+      "Whole-tab edits cannot be bound to one finding."
+    );
+  }
   const payloadSha256 = editorialEditIdempotencyPayloadSha256({
     expectedDraftId: input.expectedDraftId,
     expectedDraftVersion: input.expectedDraftVersion,
@@ -568,7 +591,7 @@ export async function applyEditorialEditorEdit(input: {
     }
 
     let findingKey = input.findingKey ?? null;
-    if (input.findingId) {
+    if (input.findingId && input.command.kind !== "replace_tab") {
       const finding = await validateFinding(tx, {
         workItemId: input.workItemId,
         currentDraftId: current.id,
@@ -615,16 +638,19 @@ export async function applyEditorialEditorEdit(input: {
         fromDraftId: current.id,
         toDraftId: persisted.draftId,
         editKind: input.command.kind,
-        paragraphKey: input.command.paragraphKey,
+        paragraphKey:
+          input.command.kind === "replace_tab" ? null : input.command.paragraphKey,
         findingKey,
         startOffset:
-          input.command.kind === "replace_paragraph"
-            ? null
-            : (input.command.startOffset ?? null),
+          input.command.kind === "replace_sentence" ||
+          input.command.kind === "replace_range"
+            ? (input.command.startOffset ?? null)
+            : null,
         endOffset:
-          input.command.kind === "replace_paragraph"
-            ? null
-            : (input.command.endOffset ?? null),
+          input.command.kind === "replace_sentence" ||
+          input.command.kind === "replace_range"
+            ? (input.command.endOffset ?? null)
+            : null,
         expectedTextSha256: sha256(input.command.expectedText),
         replacementTextSha256: sha256(input.command.replacementText),
         payloadSha256,
@@ -649,6 +675,258 @@ export async function applyEditorialEditorEdit(input: {
       .where(eq(workspaceEditorialDraftEditEvents.id, eventId))
       .limit(1);
     return { draft, editEvent, replayed: false, isCurrent: true };
+  });
+}
+
+export async function applyEditorialBulkFindingCleanupRevision(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+  expectedDraftId: number;
+  expectedDraftVersion: number;
+  expectedDraftSha256: string;
+  expectedRunId: number;
+  expectedFindingKeys: string[];
+  action: EditorialBulkCleanupAction;
+  idempotencyKey: string;
+}) {
+  const db = await database();
+  await requireWorkItem(
+    db,
+    input.actorUserId,
+    input.workspaceId,
+    input.workItemId
+  );
+
+  const expectedFindingKeys = Array.from(new Set(input.expectedFindingKeys)).sort();
+  if (!expectedFindingKeys.length) {
+    throw new WorkspaceEditorialEditorError(
+      "EDIT_INVALID",
+      "Bulk cleanup requires at least one open finding."
+    );
+  }
+  const payloadSha256 = sha256(
+    JSON.stringify({
+      version: "workspace-editorial-bulk-cleanup-v1",
+      expectedDraftId: input.expectedDraftId,
+      expectedDraftVersion: input.expectedDraftVersion,
+      expectedDraftSha256: input.expectedDraftSha256,
+      expectedRunId: input.expectedRunId,
+      expectedFindingKeys,
+      action: input.action,
+    })
+  );
+
+  return db.transaction(async (tx: any) => {
+    const [locked] = await tx
+      .select({ id: workspaceEditorialWorkItems.id })
+      .from(workspaceEditorialWorkItems)
+      .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
+      .for("update")
+      .limit(1);
+    if (!locked) {
+      throw new WorkspaceEditorialEditorError(
+        "WORK_ITEM_NOT_FOUND",
+        "Work item was removed before bulk cleanup started."
+      );
+    }
+
+    const [replay] = await tx
+      .select()
+      .from(workspaceEditorialDraftEditEvents)
+      .where(
+        and(
+          eq(workspaceEditorialDraftEditEvents.workItemId, input.workItemId),
+          eq(
+            workspaceEditorialDraftEditEvents.idempotencyKey,
+            input.idempotencyKey
+          )
+        )
+      )
+      .limit(1);
+    if (replay) {
+      if (
+        replay.payloadSha256 !== payloadSha256 ||
+        replay.actorUserId !== input.actorUserId ||
+        replay.editKind !== "bulk_cleanup"
+      ) {
+        throw new WorkspaceEditorialEditorError(
+          "EDIT_CONFLICT",
+          "Bulk cleanup idempotency key was reused with another payload."
+        );
+      }
+      const currentDraft = await latestDraft(tx, input.workItemId);
+      return {
+        draft: await draftById(tx, input.workItemId, replay.toDraftId),
+        editEvent: replay,
+        replayed: true,
+        isCurrent: currentDraft?.id === replay.toDraftId,
+        removedFindingCount: 0,
+        removedParagraphCount: 0,
+        changedParagraphCount: 0,
+      };
+    }
+
+    const current = await latestDraft(tx, input.workItemId);
+    if (
+      !current ||
+      current.id !== input.expectedDraftId ||
+      current.version !== input.expectedDraftVersion ||
+      current.draftSha256 !== input.expectedDraftSha256
+    ) {
+      throw new WorkspaceEditorialEditorError(
+        "DRAFT_CONFLICT",
+        "Draft changed before bulk cleanup could be applied."
+      );
+    }
+
+    const [run] = await tx
+      .select()
+      .from(workspaceEditorialCheckerRuns)
+      .where(
+        and(
+          eq(workspaceEditorialCheckerRuns.id, input.expectedRunId),
+          eq(workspaceEditorialCheckerRuns.workItemId, input.workItemId),
+          eq(workspaceEditorialCheckerRuns.draftId, current.id)
+        )
+      )
+      .limit(1);
+    if (
+      !run ||
+      run.engineVersion !== EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+    ) {
+      throw new WorkspaceEditorialEditorError(
+        "FINDING_CONFLICT",
+        "Checker run is stale. Run the current checker before bulk cleanup."
+      );
+    }
+
+    const findings = await tx
+      .select()
+      .from(workspaceEditorialCheckerFindings)
+      .where(eq(workspaceEditorialCheckerFindings.runId, run.id));
+    const states = await tx
+      .select()
+      .from(workspaceEditorialCheckerFindingStates)
+      .where(
+        eq(workspaceEditorialCheckerFindingStates.workItemId, input.workItemId)
+      );
+    const stateByKey = new Map<string, any>(
+      states.map((state: any) => [String(state.findingKey), state])
+    );
+
+    const matched: EditorialBulkCleanupFinding[] = findings
+      .map((finding: any): EditorialBulkCleanupFinding => ({
+        findingKey: finding.findingKey,
+        ruleKey: finding.ruleKey,
+        token: finding.token,
+        normalizedToken: finding.normalizedToken,
+        sourceTabId: finding.sourceTabId,
+        paragraphKey: finding.paragraphKey,
+        paragraphOrder: finding.paragraphOrder,
+        paragraphFingerprint: finding.paragraphFingerprint,
+        startOffset: finding.startOffset,
+        endOffset: finding.endOffset,
+        disposition: stateByKey.get(finding.findingKey)?.disposition ?? "open",
+        resolutionVersion: stateByKey.get(finding.findingKey)?.version ?? 0,
+      }))
+      .filter((finding: EditorialBulkCleanupFinding) =>
+        findingMatchesEditorialBulkCleanupAction(finding, input.action)
+      );
+
+    const actualFindingKeys: string[] = matched
+      .map((finding: EditorialBulkCleanupFinding) => finding.findingKey)
+      .sort();
+    if (
+      actualFindingKeys.length !== expectedFindingKeys.length ||
+      actualFindingKeys.some(
+        (findingKey: string, index: number) => findingKey !== expectedFindingKeys[index]
+      )
+    ) {
+      throw new WorkspaceEditorialEditorError(
+        "FINDING_CONFLICT",
+        "Open findings changed after cleanup preview. Preview again."
+      );
+    }
+
+    const document = await loadDraftDocument(tx, current.id);
+    let cleaned;
+    try {
+      cleaned = applyEditorialBulkCleanupToDocument({
+        document,
+        findings: matched,
+      });
+    } catch (error) {
+      throw new WorkspaceEditorialEditorError(
+        "EDIT_CONFLICT",
+        error instanceof Error ? error.message : "Bulk cleanup could not be applied."
+      );
+    }
+
+    const persisted = await persistManualDraft(tx, {
+      workItemId: input.workItemId,
+      sourceSnapshotId: current.sourceSnapshotId,
+      parentDraftId: current.id,
+      version: current.version + 1,
+      actorUserId: input.actorUserId,
+      transformCode: "bulk_finding_cleanup",
+      beforeSha256: current.draftSha256,
+      document: cleaned.document,
+      presentationJson: current.presentationJson,
+      details: {
+        version: "workspace-editorial-bulk-cleanup-v1",
+        action: input.action,
+        checkerRunId: run.id,
+        findingCount: cleaned.removedFindingCount,
+        changedParagraphCount: cleaned.changedParagraphCount,
+        removedParagraphCount: cleaned.removedParagraphCount,
+        findingKeysSha256: sha256(expectedFindingKeys.join("\n")),
+        idempotencyKey: input.idempotencyKey,
+      },
+    });
+
+    const eventId = insertId(
+      await tx.insert(workspaceEditorialDraftEditEvents).values({
+        workItemId: input.workItemId,
+        fromDraftId: current.id,
+        toDraftId: persisted.draftId,
+        editKind: "bulk_cleanup",
+        paragraphKey: null,
+        findingKey: null,
+        startOffset: null,
+        endOffset: null,
+        expectedTextSha256: current.draftSha256,
+        replacementTextSha256: persisted.afterSha256,
+        payloadSha256,
+        idempotencyKey: input.idempotencyKey,
+        actorUserId: input.actorUserId,
+      })
+    );
+
+    await projectEditorialQcColumn(tx, {
+      workItemId: input.workItemId,
+      expectedDraftId: persisted.draftId,
+      targetColumnKey: "editing",
+      actorUserId: input.actorUserId,
+      reason: "workspace_editor_bulk_finding_cleanup",
+      idempotencyKey: `editor-bulk-cleanup-${eventId}`,
+    });
+
+    return {
+      draft: await draftById(tx, input.workItemId, persisted.draftId),
+      editEvent: (
+        await tx
+          .select()
+          .from(workspaceEditorialDraftEditEvents)
+          .where(eq(workspaceEditorialDraftEditEvents.id, eventId))
+          .limit(1)
+      )[0],
+      replayed: false,
+      isCurrent: true,
+      removedFindingCount: cleaned.removedFindingCount,
+      removedParagraphCount: cleaned.removedParagraphCount,
+      changedParagraphCount: cleaned.changedParagraphCount,
+    };
   });
 }
 

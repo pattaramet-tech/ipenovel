@@ -8,6 +8,15 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
 import {
+  chapterEditorFindingRanges,
+  chapterEditorIssues,
+  chapterEditorMatchesFilter,
+  chapterEditorStructuralRepairGuidance,
+  chapterEditorTabStatus,
+  parseChapterEditorPasteText,
+  serializeChapterEditorParagraphs,
+} from "./workspaceChapterEditor";
+import {
   Activity,
   BookOpen,
   Bot,
@@ -83,9 +92,159 @@ function StatusPill({ value }: { value: unknown }) {
   );
 }
 
+function formatCompactNumberRanges(values: number[]) {
+  const numbers = Array.from(
+    new Set(values.filter(value => Number.isInteger(value)))
+  ).sort((a, b) => a - b);
+  if (!numbers.length) return "";
+  const ranges: string[] = [];
+  let start = numbers[0]!;
+  let previous = start;
+  for (const value of numbers.slice(1)) {
+    if (value === previous + 1) {
+      previous = value;
+      continue;
+    }
+    ranges.push(start === previous ? String(start) : `${start}-${previous}`);
+    start = value;
+    previous = value;
+  }
+  ranges.push(start === previous ? String(start) : `${start}-${previous}`);
+  return ranges.join(", ");
+}
+
 function EmptyState({ children }: { children: React.ReactNode }) {
   return <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{children}</p>;
 }
+
+function editorialTabText(tab: any) {
+  return (tab?.paragraphs ?? []).map((paragraph: any) => String(paragraph.text ?? "")).join("\n\n");
+}
+
+type ChapterEditorParagraphState = {
+  id: string;
+  paragraphKey?: string;
+  text: string;
+};
+
+function chapterEditorClipboardParagraphs(data: DataTransfer) {
+  const html = data.getData("text/html");
+  if (html && typeof DOMParser !== "undefined") {
+    const document = new DOMParser().parseFromString(html, "text/html");
+    const selector = "p,li,h1,h2,h3,h4,h5,h6,blockquote,div";
+    const blocks = Array.from(document.body.querySelectorAll(selector)).filter(
+      element => !Array.from(element.children).some(child => child.matches(selector))
+    );
+    const texts = blocks
+      .flatMap(element => parseChapterEditorPasteText(element.textContent ?? ""))
+      .filter(Boolean);
+    if (texts.length) return texts;
+  }
+  return parseChapterEditorPasteText(data.getData("text/plain"));
+}
+
+function ChapterEditorParagraphBlock({
+  paragraphId,
+  value,
+  findings,
+  highlight,
+  disabled,
+  placeholder,
+  onChange,
+  onSplit,
+  onMergePrevious,
+  onPasteParagraphs,
+}: {
+  paragraphId: string;
+  value: string;
+  findings: any[];
+  highlight: boolean;
+  disabled: boolean;
+  placeholder?: string;
+  onChange: (value: string) => void;
+  onSplit: (start: number, end: number) => void;
+  onMergePrevious: () => void;
+  onPasteParagraphs: (paragraphs: string[], start: number, end: number) => void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const ranges = useMemo(
+    () => (highlight ? chapterEditorFindingRanges(value, findings) : []),
+    [highlight, value, findings]
+  );
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach((range, index) => {
+    if (range.start > cursor) {
+      parts.push(value.slice(cursor, range.start));
+    }
+    parts.push(
+      <mark
+        key={`${range.start}:${range.end}:${index}`}
+        className="rounded-sm bg-yellow-300/70 text-transparent"
+      >
+        {value.slice(range.start, range.end)}
+      </mark>
+    );
+    cursor = range.end;
+  });
+  parts.push(value.slice(cursor));
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${Math.max(40, textarea.scrollHeight)}px`;
+  }, [value]);
+
+  return (
+    <div className="relative">
+      <pre
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-1 py-1 font-sans text-base leading-8 text-transparent"
+      >
+        {parts}
+        {"\n"}
+      </pre>
+      <textarea
+        ref={textareaRef}
+        id={`chapter-editor-paragraph-${paragraphId}`}
+        aria-label="Chapter editor paragraph"
+        rows={1}
+        spellCheck={false}
+        className="relative z-10 block w-full resize-none overflow-hidden bg-transparent px-1 py-1 font-sans text-base leading-8 outline-none focus:bg-muted/20"
+        value={value}
+        disabled={disabled}
+        placeholder={placeholder}
+        onChange={event => onChange(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            onSplit(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+            return;
+          }
+          if (
+            event.key === "Backspace" &&
+            event.currentTarget.selectionStart === 0 &&
+            event.currentTarget.selectionEnd === 0
+          ) {
+            onMergePrevious();
+          }
+        }}
+        onPaste={event => {
+          const paragraphs = chapterEditorClipboardParagraphs(event.clipboardData);
+          if (!paragraphs.length) return;
+          event.preventDefault();
+          onPasteParagraphs(
+            paragraphs,
+            event.currentTarget.selectionStart,
+            event.currentTarget.selectionEnd
+          );
+        }}
+      />
+    </div>
+  );
+}
+
 
 export default function WorkspacePage() {
   const [name, setName] = useState("");
@@ -109,6 +268,7 @@ export default function WorkspacePage() {
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [selectedEditorialWorkItemIds, setSelectedEditorialWorkItemIds] = useState<number[]>([]);
   const [bulkCheckerSummary, setBulkCheckerSummary] = useState<Array<any>>([]);
+  const [bulkCleanupPreviewResult, setBulkCleanupPreviewResult] = useState<any>();
   const [bulkEditorTarget, setBulkEditorTarget] = useState<{
     workItemId: number;
     paragraphKey: string;
@@ -122,6 +282,9 @@ export default function WorkspacePage() {
   }>();
   const [bulkEditorText, setBulkEditorText] = useState("");
   const [googleConnectionId, setGoogleConnectionId] = useState("");
+  const [masterIntakeStartRow, setMasterIntakeStartRow] = useState("");
+  const [masterIntakeEndRow, setMasterIntakeEndRow] = useState("");
+  const [masterIntakePreviewResult, setMasterIntakePreviewResult] = useState<any>();
   const [googleDocUrl, setGoogleDocUrl] = useState("");
   const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
   const [episodeIntakeMode, setEpisodeIntakeMode] = useState<"single" | "bulk_docs" | "bulk_files">("bulk_docs");
@@ -160,6 +323,31 @@ export default function WorkspacePage() {
     findingKey?: string;
   }>();
   const [editorText, setEditorText] = useState("");
+  const [chapterEditorTarget, setChapterEditorTarget] = useState<{
+    sourceTabId: string;
+    title: string;
+    expectedTabStructuralSha256: string;
+    expectedText: string;
+    draftId: number;
+    draftVersion: number;
+    draftSha256: string;
+  }>();
+  const [chapterEditorParagraphs, setChapterEditorParagraphs] = useState<ChapterEditorParagraphState[]>([]);
+  const chapterEditorParagraphSequence = useRef(0);
+  const chapterEditorScrollRef = useRef<HTMLDivElement>(null);
+  const [chapterEditorIssueIndex, setChapterEditorIssueIndex] = useState(0);
+  const [chapterEditorTabFilter, setChapterEditorTabFilter] = useState<
+    "all" | "issue" | "unedited" | "edited"
+  >("all");
+  const chapterEditorScrollByTab = useRef(new Map<string, number>());
+  const chapterEditorText = useMemo(
+    () => serializeChapterEditorParagraphs(chapterEditorParagraphs.map(paragraph => paragraph.text)),
+    [chapterEditorParagraphs]
+  );
+  const chapterEditorDirty = Boolean(
+    chapterEditorTarget && chapterEditorText !== chapterEditorTarget.expectedText
+  );
+  const [chapterEditorHighlight, setChapterEditorHighlight] = useState(true);
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
   const [selectedAiJobId, setSelectedAiJobId] = useState<number>();
   const [selectedPublishRunId, setSelectedPublishRunId] = useState<number>();
@@ -168,6 +356,10 @@ export default function WorkspacePage() {
   const [aiSnapshotId, setAiSnapshotId] = useState("");
   const ensuredEditorialWorkspaces = useRef(new Set<number>());
   const { isAdmin, loading: adminLoading } = useAdminGuard();
+
+  useEffect(() => {
+    setBulkCleanupPreviewResult(undefined);
+  }, [selectedWorkspaceId, selectedEditorialWorkItemIds.join(",")]);
 
   const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
   const detail = trpc.workspace.detail.useQuery(
@@ -194,9 +386,29 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0, workItemIds: editorialEvidenceWorkItemIds },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) && editorialEvidenceWorkItemIds.length > 0, retry: false }
   );
+  const bulkCleanupPreviewQuery = trpc.workspace.editorial.bulkFindingCleanupPreview.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemIds: selectedEditorialWorkItemIds,
+    },
+    { enabled: false, retry: false }
+  );
   const editorialGoogleConnections = trpc.workspace.editorial.googleConnections.useQuery(
     undefined,
     { enabled: isAdmin }
+  );
+  const masterIntakeHistory = trpc.workspace.editorial.masterIntakeHistory.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, limit: 10 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId), retry: false }
+  );
+  const masterIntakePreviewQuery = trpc.workspace.editorial.masterIntakePreview.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      googleConnectionId: Number(googleConnectionId) || 0,
+      startRow: Number(masterIntakeStartRow) || 0,
+      endRow: Number(masterIntakeEndRow || masterIntakeStartRow) || 0,
+    },
+    { enabled: false, retry: false }
   );
   const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
     {
@@ -344,10 +556,15 @@ export default function WorkspacePage() {
     setSelectedSourceWorkItemId(undefined);
     setBulkCheckerSummary([]);
     setGoogleConnectionId("");
+    setMasterIntakeStartRow("");
+    setMasterIntakeEndRow("");
+    setMasterIntakePreviewResult(undefined);
     setGoogleDocUrl("");
     setUploadedSource(undefined);
     setEditorTarget(undefined);
     setEditorText("");
+    setChapterEditorTarget(undefined);
+    setChapterEditorParagraphs([]);
     setSelectedCheckerRunId(undefined);
     setSelectedAiJobId(undefined);
     setSelectedPublishRunId(undefined);
@@ -433,6 +650,34 @@ export default function WorkspacePage() {
       setBulkCheckerSummary([]);
       toast.error(error.message);
     },
+  });
+  const refreshBulkAfterCleanup = trpc.workspace.editorial.bulkRunChecker.useMutation({
+    onSuccess: async (results) => {
+      setBulkCheckerSummary(results as any[]);
+      await refreshBulkEditorial();
+    },
+  });
+  const bulkCleanupApply = trpc.workspace.editorial.bulkFindingCleanupApply.useMutation({
+    onSuccess: async (result, variables) => {
+      setBulkCleanupPreviewResult(undefined);
+      const failed = result.results.filter((row: any) => !row.ok);
+      toast[failed.length ? "error" : "success"](
+        `ลบพร้อมกันแล้ว ${result.summary.removedFindings} จุด · ${result.summary.changed} Episode Pack${failed.length ? ` · ผิดพลาด ${failed.length}` : ""}`
+      );
+      try {
+        const refreshed = await refreshBulkAfterCleanup.mutateAsync({
+          workspaceId: variables.workspaceId,
+          workItemIds: variables.workItemIds,
+        });
+        setBulkCheckerSummary(refreshed as any[]);
+      } catch (error) {
+        await refreshBulkEditorial();
+        toast.error(
+          `ลบสำเร็จ แต่โหลดผลตรวจล่าสุดไม่สำเร็จ: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    },
+    onError: (error) => toast.error(error.message),
   });
   const rerunBulkEditedChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation();
   const rerunBulkAfterAllow = trpc.workspace.editorial.bulkRunChecker.useMutation();
@@ -582,6 +827,25 @@ export default function WorkspacePage() {
       setSelectedSourceWorkItemId(undefined);
       await workspaces.refetch();
       toast.success("ลบ Workspace แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const masterIntakeSync = trpc.workspace.editorial.masterIntakeSync.useMutation({
+    onSuccess: async (result) => {
+      setMasterIntakePreviewResult(undefined);
+      const firstSuccess = result.results.find((row: any) => row.ok && row.workItemId);
+      if (firstSuccess?.workItemId) setSelectedSourceWorkItemId(firstSuccess.workItemId);
+      await Promise.all([
+        detail.refetch(),
+        bindings.refetch(),
+        ownership.refetch(),
+        availableNovels.refetch(),
+        editorialBoard.refetch(),
+        masterIntakeHistory.refetch(),
+      ]);
+      toast[result.summary.failed ? "error" : "success"](
+        `Sync สำเร็จ ${result.summary.succeeded}/${result.summary.attempted} แถว${result.summary.failed ? ` · มีปัญหา ${result.summary.failed} แถว` : ""}`
+      );
     },
     onError: (error) => toast.error(error.message),
   });
@@ -788,10 +1052,16 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      const savedChapterTarget =
+        variables.command.kind === "replace_tab" ? chapterEditorTarget : undefined;
       setEditorTarget(undefined);
       setEditorText("");
-      await Promise.all([
+      if (!savedChapterTarget) {
+        setChapterEditorTarget(undefined);
+        setChapterEditorParagraphs([]);
+      }
+      const [sourceDraftResult] = await Promise.all([
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
         editorialForeignChecker.refetch(),
@@ -809,6 +1079,44 @@ export default function WorkspacePage() {
           workItemId: selectedSourceWorkItemId,
           expectedDraftId: result.draft.id,
         });
+      }
+      if (savedChapterTarget) {
+        const freshDraftData = sourceDraftResult.data as any;
+        const freshDraft = freshDraftData?.latestDraft;
+        const freshTab = (freshDraftData?.tabs ?? []).find(
+          (tab: any) => tab.sourceTabId === savedChapterTarget.sourceTabId
+        );
+        if (freshDraft && freshTab) {
+          const freshParagraphs: ChapterEditorParagraphState[] = (
+            freshTab.paragraphs ?? []
+          ).map((paragraph: any, index: number) => ({
+            id: String(
+              paragraph.paragraphKey ??
+                `source-${freshTab.sourceTabId}-${index}`
+            ),
+            paragraphKey: paragraph.paragraphKey
+              ? String(paragraph.paragraphKey)
+              : undefined,
+            text: String(paragraph.text ?? ""),
+          }));
+          setChapterEditorTarget({
+            sourceTabId: freshTab.sourceTabId,
+            title: freshTab.title,
+            expectedTabStructuralSha256: freshTab.structuralSha256,
+            expectedText: editorialTabText(freshTab),
+            draftId: freshDraft.id,
+            draftVersion: freshDraft.version,
+            draftSha256: freshDraft.draftSha256,
+          });
+          setChapterEditorParagraphs(
+            freshParagraphs.length
+              ? freshParagraphs
+              : [{ id: `source-${freshTab.sourceTabId}-0`, text: "" }]
+          );
+        } else {
+          setChapterEditorTarget(undefined);
+          setChapterEditorParagraphs([]);
+        }
       }
       toast.success(
         result.replayed
@@ -836,6 +1144,8 @@ export default function WorkspacePage() {
     onSuccess: async (result) => {
       setEditorTarget(undefined);
       setEditorText("");
+      setChapterEditorTarget(undefined);
+      setChapterEditorParagraphs([]);
       await Promise.all([
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
@@ -932,6 +1242,17 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const setStructuralConfirmation = trpc.workspace.editorial.structuralConfirmation.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      toast.success("อัปเดตการยืนยัน structural issue แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation({
     onSuccess: async () => {
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
@@ -987,6 +1308,101 @@ export default function WorkspacePage() {
       idempotencyKey: `editor-${source}:${editorTarget.draftId}:${editorTarget.paragraphKey}:${Date.now()}`,
     });
   };
+
+  const submitChapterEditorEdit = () => {
+    if (
+      !selectedWorkspaceId ||
+      !selectedSourceWorkItemId ||
+      !chapterEditorTarget ||
+      editEditorialDraft.isPending ||
+      chapterEditorText === chapterEditorTarget.expectedText
+    ) {
+      return;
+    }
+    editEditorialDraft.mutate({
+      workspaceId: selectedWorkspaceId,
+      workItemId: selectedSourceWorkItemId,
+      expectedDraftId: chapterEditorTarget.draftId,
+      expectedDraftVersion: chapterEditorTarget.draftVersion,
+      expectedDraftSha256: chapterEditorTarget.draftSha256,
+      command: {
+        kind: "replace_tab",
+        sourceTabId: chapterEditorTarget.sourceTabId,
+        expectedTabStructuralSha256:
+          chapterEditorTarget.expectedTabStructuralSha256,
+        expectedText: chapterEditorTarget.expectedText,
+        replacementText: chapterEditorText,
+      },
+      idempotencyKey: `editor-tab:${chapterEditorTarget.draftId}:${chapterEditorTarget.sourceTabId}:${Date.now()}`,
+    });
+  };
+
+  useEffect(() => {
+    if (!chapterEditorDirty) return;
+    const warning = "มีการแก้ไข Chapter Editor ที่ยังไม่ได้บันทึก ต้องการออกจากหน้านี้หรือไม่?";
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const clickGuard = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      const element = event.target instanceof Element ? event.target : null;
+      const anchor = element?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      const destination = new URL(anchor.href, window.location.href);
+      if (
+        destination.href === window.location.href ||
+        (destination.pathname === window.location.pathname &&
+          destination.search === window.location.search &&
+          destination.hash !== window.location.hash)
+      ) {
+        return;
+      }
+      if (!window.confirm(warning)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", clickGuard, true);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      document.removeEventListener("click", clickGuard, true);
+    };
+  }, [chapterEditorDirty]);
+
+  useEffect(() => {
+    if (!chapterEditorTarget) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "s"
+      ) {
+        event.preventDefault();
+        if (chapterEditorDirty && !editEditorialDraft.isPending) {
+          submitChapterEditorEdit();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    chapterEditorTarget,
+    chapterEditorDirty,
+    chapterEditorText,
+    editEditorialDraft.isPending,
+    selectedWorkspaceId,
+    selectedSourceWorkItemId,
+  ]);
 
   useEffect(() => {
     if (
@@ -1053,9 +1469,405 @@ export default function WorkspacePage() {
   const editorialCheckerData = editorialForeignChecker.data as any;
   const editorialCheckerRunStale = Boolean(
     editorialCheckerData?.run &&
-      editorialCheckerData?.latestDraft &&
-      editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id
+      (
+        editorialCheckerData?.isCurrent === false ||
+        !editorialCheckerData?.latestDraft ||
+        editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id ||
+        editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion
+      )
   );
+  const chapterEditorTabs = (editorialDraftData?.tabs ?? []) as any[];
+  const editorialCheckerCurrent = Boolean(
+    editorialCheckerData?.run &&
+      !editorialCheckerRunStale &&
+      editorialCheckerData?.isCurrent !== false
+  );
+  const currentCheckerFindings = editorialCheckerCurrent
+    ? ((editorialCheckerData?.findings ?? []) as any[])
+    : [];
+  const currentCheckerAnomalies = editorialCheckerCurrent
+    ? ((editorialCheckerData?.anomalies ?? []) as any[])
+    : [];
+  const chapterEditorStatusByTab = new Map(
+    chapterEditorTabs.map((tab: any) => [
+      tab.sourceTabId,
+      chapterEditorTabStatus({
+        sourceTabId: tab.sourceTabId,
+        paragraphs: tab.paragraphs ?? [],
+        checkerCurrent: editorialCheckerCurrent,
+        findings: currentCheckerFindings,
+        anomalies: currentCheckerAnomalies,
+      }),
+    ])
+  );
+  const chapterEditorProgress = chapterEditorTabs.reduce(
+    (summary, tab: any) => {
+      const state = chapterEditorStatusByTab.get(tab.sourceTabId)?.progressState;
+      if (state === "passed") summary.passed += 1;
+      else if (state === "pending") summary.pending += 1;
+      else if (state === "confirmed") summary.confirmed += 1;
+      else summary.unchecked += 1;
+      return summary;
+    },
+    { passed: 0, pending: 0, confirmed: 0, unchecked: 0 }
+  );
+  const filteredChapterEditorTabs = chapterEditorTabs.filter((tab: any) => {
+    const status = chapterEditorStatusByTab.get(tab.sourceTabId);
+    return status
+      ? chapterEditorMatchesFilter(chapterEditorTabFilter, status)
+      : chapterEditorTabFilter === "all";
+  });
+  const chapterEditorCurrentIndex = chapterEditorTarget
+    ? chapterEditorTabs.findIndex(
+        (tab: any) => tab.sourceTabId === chapterEditorTarget.sourceTabId
+      )
+    : -1;
+  const previousChapterTab =
+    chapterEditorCurrentIndex > 0
+      ? chapterEditorTabs[chapterEditorCurrentIndex - 1]
+      : undefined;
+  const nextChapterTab =
+    chapterEditorCurrentIndex >= 0 &&
+    chapterEditorCurrentIndex < chapterEditorTabs.length - 1
+      ? chapterEditorTabs[chapterEditorCurrentIndex + 1]
+      : undefined;
+  const nextIssueChapterTab = (() => {
+    if (!chapterEditorTabs.length) return undefined;
+    const startIndex = chapterEditorCurrentIndex >= 0 ? chapterEditorCurrentIndex : -1;
+    for (let offset = 1; offset <= chapterEditorTabs.length; offset += 1) {
+      const index = (startIndex + offset) % chapterEditorTabs.length;
+      const tab = chapterEditorTabs[index];
+      if (
+        tab &&
+        tab.sourceTabId !== chapterEditorTarget?.sourceTabId &&
+        (chapterEditorStatusByTab.get(tab.sourceTabId)?.issueCount ?? 0) > 0
+      ) {
+        return tab;
+      }
+    }
+    return undefined;
+  })();
+  const currentChapterStatus = chapterEditorTarget
+    ? chapterEditorStatusByTab.get(chapterEditorTarget.sourceTabId)
+    : undefined;
+  const chapterEditorScrollStorageKey = (sourceTabId: string) =>
+    `workspace:chapter-editor-scroll:${selectedWorkspaceId ?? "none"}:${selectedSourceWorkItemId ?? "none"}:${sourceTabId}`;
+  const rememberChapterEditorScroll = () => {
+    if (!chapterEditorTarget || !chapterEditorScrollRef.current) return;
+    const scrollTop = chapterEditorScrollRef.current.scrollTop;
+    chapterEditorScrollByTab.current.set(chapterEditorTarget.sourceTabId, scrollTop);
+    window.sessionStorage.setItem(
+      chapterEditorScrollStorageKey(chapterEditorTarget.sourceTabId),
+      String(scrollTop)
+    );
+  };
+  const restoreChapterEditorScroll = (sourceTabId: string) => {
+    const memory = chapterEditorScrollByTab.current.get(sourceTabId);
+    const stored = Number(
+      window.sessionStorage.getItem(chapterEditorScrollStorageKey(sourceTabId)) ?? "0"
+    );
+    const scrollTop =
+      typeof memory === "number" && Number.isFinite(memory)
+        ? memory
+        : Number.isFinite(stored)
+          ? stored
+          : 0;
+    window.requestAnimationFrame(() => {
+      if (chapterEditorScrollRef.current) {
+        chapterEditorScrollRef.current.scrollTop = scrollTop;
+      }
+    });
+  };
+  const nextChapterEditorParagraphId = () => {
+    chapterEditorParagraphSequence.current += 1;
+    return `manual-${chapterEditorParagraphSequence.current}`;
+  };
+  const focusChapterEditorParagraph = (paragraphId: string, offset: number) => {
+    window.requestAnimationFrame(() => {
+      const textarea = document.getElementById(
+        `chapter-editor-paragraph-${paragraphId}`
+      ) as HTMLTextAreaElement | null;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset);
+    });
+  };
+  const openChapterEditor = (tab: any) => {
+    if (!latestEditorialDraft) return;
+    if (
+      chapterEditorTarget &&
+      chapterEditorText !== chapterEditorTarget.expectedText &&
+      !window.confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วเปิดแท็บอื่นหรือไม่?")
+    ) {
+      return;
+    }
+    rememberChapterEditorScroll();
+    const text = editorialTabText(tab);
+    const paragraphs: ChapterEditorParagraphState[] = (tab.paragraphs ?? []).map(
+      (paragraph: any, index: number) => ({
+        id: String(paragraph.paragraphKey ?? `source-${tab.sourceTabId}-${index}`),
+        paragraphKey: paragraph.paragraphKey ? String(paragraph.paragraphKey) : undefined,
+        text: String(paragraph.text ?? ""),
+      })
+    );
+    if (!paragraphs.length) {
+      paragraphs.push({ id: nextChapterEditorParagraphId(), text: "" });
+    }
+    setEditorTarget(undefined);
+    setEditorText("");
+    setChapterEditorIssueIndex(0);
+    setChapterEditorTarget({
+      sourceTabId: tab.sourceTabId,
+      title: tab.title,
+      expectedTabStructuralSha256: tab.structuralSha256,
+      expectedText: text,
+      draftId: latestEditorialDraft.id,
+      draftVersion: latestEditorialDraft.version,
+      draftSha256: latestEditorialDraft.draftSha256,
+    });
+    setChapterEditorParagraphs(paragraphs);
+    window.requestAnimationFrame(() => {
+      document.getElementById("workspace-chapter-editor")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      restoreChapterEditorScroll(tab.sourceTabId);
+    });
+  };
+  const closeChapterEditor = () => {
+    if (
+      chapterEditorTarget &&
+      chapterEditorText !== chapterEditorTarget.expectedText &&
+      !window.confirm("ทิ้งการแก้ไขที่ยังไม่ได้บันทึกหรือไม่?")
+    ) {
+      return;
+    }
+    rememberChapterEditorScroll();
+    setChapterEditorIssueIndex(0);
+    setChapterEditorTarget(undefined);
+    setChapterEditorParagraphs([]);
+  };
+  const updateChapterEditorParagraph = (index: number, text: string) => {
+    setChapterEditorParagraphs(current =>
+      current.map((paragraph, paragraphIndex) =>
+        paragraphIndex === index ? { ...paragraph, text } : paragraph
+      )
+    );
+  };
+  const splitChapterEditorParagraph = (index: number, start: number, end: number) => {
+    const paragraph = chapterEditorParagraphs[index];
+    if (!paragraph) return;
+    const nextId = nextChapterEditorParagraphId();
+    setChapterEditorParagraphs([
+      ...chapterEditorParagraphs.slice(0, index),
+      { ...paragraph, text: paragraph.text.slice(0, start) },
+      { id: nextId, text: paragraph.text.slice(end) },
+      ...chapterEditorParagraphs.slice(index + 1),
+    ]);
+    focusChapterEditorParagraph(nextId, 0);
+  };
+  const mergeChapterEditorParagraphWithPrevious = (index: number) => {
+    if (index <= 0) return;
+    const previous = chapterEditorParagraphs[index - 1];
+    const paragraph = chapterEditorParagraphs[index];
+    if (!previous || !paragraph) return;
+    const previousLength = previous.text.length;
+    setChapterEditorParagraphs([
+      ...chapterEditorParagraphs.slice(0, index - 1),
+      { ...previous, text: `${previous.text}${paragraph.text}` },
+      ...chapterEditorParagraphs.slice(index + 1),
+    ]);
+    focusChapterEditorParagraph(previous.id, previousLength);
+  };
+  const pasteChapterEditorParagraphs = (
+    index: number,
+    paragraphs: string[],
+    start: number,
+    end: number
+  ) => {
+    const target = chapterEditorParagraphs[index];
+    if (!target || !paragraphs.length) return;
+    const before = target.text.slice(0, start);
+    const after = target.text.slice(end);
+    if (paragraphs.length === 1) {
+      setChapterEditorParagraphs(
+        chapterEditorParagraphs.map((paragraph, paragraphIndex) =>
+          paragraphIndex === index
+            ? { ...paragraph, text: `${before}${paragraphs[0]}${after}` }
+            : paragraph
+        )
+      );
+      focusChapterEditorParagraph(target.id, before.length + paragraphs[0]!.length);
+      return;
+    }
+    const inserted: ChapterEditorParagraphState[] = [
+      { ...target, text: `${before}${paragraphs[0]}` },
+      ...paragraphs.slice(1).map((text, paragraphIndex) => ({
+        id: nextChapterEditorParagraphId(),
+        text:
+          paragraphIndex === paragraphs.length - 2
+            ? `${text}${after}`
+            : text,
+      })),
+    ];
+    setChapterEditorParagraphs([
+      ...chapterEditorParagraphs.slice(0, index),
+      ...inserted,
+      ...chapterEditorParagraphs.slice(index + 1),
+    ]);
+    const lastInserted = inserted[inserted.length - 1]!;
+    focusChapterEditorParagraph(
+      lastInserted.id,
+      paragraphs[paragraphs.length - 1]!.length
+    );
+  };
+  const chapterEditorIssueItems = chapterEditorTarget
+    ? chapterEditorIssues({
+        sourceTabId: chapterEditorTarget.sourceTabId,
+        findings: currentCheckerFindings,
+        anomalies: currentCheckerAnomalies,
+      })
+    : [];
+  const chapterEditorIssueSignature = chapterEditorIssueItems
+    .map(issue => issue.key)
+    .join("|");
+  const selectedChapterEditorIssue =
+    chapterEditorIssueItems[chapterEditorIssueIndex];
+  const chapterEditorIssueCounts = chapterEditorIssueItems.reduce(
+    (counts, issue) => {
+      if (issue.kind === "finding") counts.findings += 1;
+      else counts.structural += 1;
+      return counts;
+    },
+    { findings: 0, structural: 0 }
+  );
+  const chapterEditorFindings = chapterEditorTarget
+    ? currentCheckerFindings.filter(
+        (finding: any) =>
+          finding.sourceTabId === chapterEditorTarget.sourceTabId &&
+          finding.disposition === "open"
+      )
+    : [];
+  const chapterEditorFindingsByParagraphKey = new Map<string, any[]>();
+  for (const finding of chapterEditorFindings) {
+    const paragraphKey = String(finding.paragraphKey ?? "");
+    if (!paragraphKey) continue;
+    const bucket = chapterEditorFindingsByParagraphKey.get(paragraphKey) ?? [];
+    bucket.push(finding);
+    chapterEditorFindingsByParagraphKey.set(paragraphKey, bucket);
+  }
+  useEffect(() => {
+    setChapterEditorIssueIndex(current =>
+      chapterEditorIssueItems.length
+        ? Math.min(current, chapterEditorIssueItems.length - 1)
+        : 0
+    );
+  }, [chapterEditorTarget?.sourceTabId, chapterEditorIssueSignature]);
+
+  const structuralNavigationTabs = (anomaly: any) => {
+    const ids = Array.from(
+      new Set(
+        [
+          anomaly.sourceTabId,
+          ...(anomaly.relatedSourceTabIds ?? []),
+        ].filter(Boolean)
+      )
+    ) as string[];
+    const direct = ids
+      .map(id => chapterEditorTabs.find((tab: any) => tab.sourceTabId === id))
+      .filter(Boolean);
+    if (direct.length || anomaly.anomalyType !== "missing_expected_chapter") {
+      return direct;
+    }
+    const missing = Number(anomaly.chapterNumber);
+    if (!Number.isFinite(missing)) return [];
+    return chapterEditorTabs
+      .filter((tab: any) => Number.isFinite(Number(tab.chapterNumber)))
+      .slice()
+      .sort(
+        (left: any, right: any) =>
+          Math.abs(Number(left.chapterNumber) - missing) -
+            Math.abs(Number(right.chapterNumber) - missing) ||
+          Number(left.chapterNumber) - Number(right.chapterNumber)
+      )
+      .slice(0, 2);
+  };
+
+  const navigateChapterEditorIssue = (issue: any, index: number) => {
+    if (!chapterEditorTarget) return;
+    setChapterEditorIssueIndex(index);
+    if (issue.kind === "finding") {
+      const finding = issue.finding;
+      const paragraph = chapterEditorParagraphs.find(
+        candidate => candidate.paragraphKey === finding.paragraphKey
+      );
+      if (!paragraph) {
+        toast.error("หา paragraph ของ finding นี้ใน Draft ปัจจุบันไม่พบ");
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        const textarea = document.getElementById(
+          `chapter-editor-paragraph-${paragraph.id}`
+        ) as HTMLTextAreaElement | null;
+        if (!textarea) return;
+        textarea.scrollIntoView({ behavior: "smooth", block: "center" });
+        textarea.focus();
+        const start = Math.max(0, Math.min(Number(finding.startOffset ?? 0), textarea.value.length));
+        const end = Math.max(
+          start,
+          Math.min(Number(finding.endOffset ?? start), textarea.value.length)
+        );
+        textarea.setSelectionRange(start, end);
+      });
+      return;
+    }
+    const anomaly = issue.anomaly;
+    const targetTabs = structuralNavigationTabs(anomaly);
+    const primaryTab =
+      targetTabs.find(
+        (tab: any) => tab.sourceTabId === String(anomaly.sourceTabId ?? "")
+      ) ?? targetTabs[0];
+    if (
+      primaryTab &&
+      primaryTab.sourceTabId !== chapterEditorTarget.sourceTabId
+    ) {
+      openChapterEditor(primaryTab);
+      return;
+    }
+    if (
+      anomaly.anomalyType === "empty_tab" ||
+      anomaly.anomalyType === "heading_only_tab" ||
+      anomaly.anomalyType === "end_only_tab" ||
+      anomaly.anomalyType === "source_note_only"
+    ) {
+      const paragraph =
+        anomaly.anomalyType === "end_only_tab"
+          ? chapterEditorParagraphs[chapterEditorParagraphs.length - 1]
+          : chapterEditorParagraphs[0];
+      if (paragraph) {
+        focusChapterEditorParagraph(
+          paragraph.id,
+          anomaly.anomalyType === "end_only_tab" ? paragraph.text.length : 0
+        );
+        return;
+      }
+    }
+    chapterEditorScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const navigateRelativeChapterEditorIssue = (delta: number) => {
+    if (!chapterEditorIssueItems.length) return;
+    const nextIndex = Math.max(
+      0,
+      Math.min(
+        chapterEditorIssueItems.length - 1,
+        chapterEditorIssueIndex + delta
+      )
+    );
+    const issue = chapterEditorIssueItems[nextIndex];
+    if (issue) navigateChapterEditorIssue(issue, nextIndex);
+  };
+
   const googleConnections = (
     (editorialGoogleConnections.data as any[] | undefined) ?? []
   ).filter((connection: any) => connection.status === "active" && connection.scopeReady);
@@ -1120,7 +1932,7 @@ export default function WorkspacePage() {
   const visibleEditorialWorkItemIds = visibleEditorialCards.map((card: any) => card.workItemId).filter((id: any): id is number => Number.isInteger(id));
   const uncheckedEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => !card.evidence?.checker).map((card: any) => card.workItemId);
   const readyEditorialWorkItemIds = visibleEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).map((card: any) => card.workItemId);
-  const bulkBusy = Boolean(bulkEditorTarget) || bulkRunEditorialChecker.isPending || bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkAllowEditorialFinding.isPending || rerunBulkAfterAllow.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending;
+  const bulkBusy = Boolean(bulkEditorTarget) || bulkRunEditorialChecker.isPending || bulkEditEditorialFinding.isPending || rerunBulkEditedChecker.isPending || bulkAllowEditorialFinding.isPending || rerunBulkAfterAllow.isPending || bulkApproveEditorialDrafts.isPending || bulkStageEditorialDrafts.isPending || bulkRequestEditorialPublish.isPending || bulkCleanupPreviewQuery.isFetching || bulkCleanupApply.isPending || refreshBulkAfterCleanup.isPending;
   const selectedEditorialCards = editorialCards.filter((card: any) => selectedEditorialSet.has(card.workItemId));
   const bulkSelectionLabel = selectedEditorialCards.map((card: any) => `${card.novel?.title ?? "ไม่ทราบเรื่อง"} ${card.episodeNumber ? `ตอน ${card.episodeNumber}` : ""}`.trim()).join("\n");
   const normalizedEpisodeNovelSearch = episodeNovelSearch.trim().toLocaleLowerCase("th");
@@ -1270,6 +2082,158 @@ export default function WorkspacePage() {
                 )}
                 {googleDocsConnectStatus === "error" && (
                   <span className="text-xs text-destructive">เชื่อม Google Docs ไม่สำเร็จ กรุณาลองใหม่</span>
+                )}
+              </div>
+
+              <div className="space-y-3 rounded-md border bg-muted/10 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 font-semibold">
+                      <Database className="h-4 w-4" />
+                      Google Sheets Master Intake
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      รวมนิยาย / นิยายยังไม่จบ/ยังไม่ยื่น · อ่าน B/C/E/K (K ไม่บังคับ) · สูงสุด 100 แถวต่อครั้ง
+                    </p>
+                  </div>
+                  <span className="rounded-full border bg-background px-2 py-1 text-xs">
+                    Preview ก่อน Sync · ไม่ Publish · ไม่เขียน L/M
+                  </span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]">
+                  <Input
+                    inputMode="numeric"
+                    value={masterIntakeStartRow}
+                    onChange={(event) => {
+                      setMasterIntakeStartRow(event.target.value);
+                      setMasterIntakePreviewResult(undefined);
+                    }}
+                    placeholder="Start row เช่น 1584"
+                  />
+                  <Input
+                    inputMode="numeric"
+                    value={masterIntakeEndRow}
+                    onChange={(event) => {
+                      setMasterIntakeEndRow(event.target.value);
+                      setMasterIntakePreviewResult(undefined);
+                    }}
+                    placeholder="End row เช่น 1600"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={masterIntakePreviewQuery.isFetching}
+                    onClick={async () => {
+                      const startRow = Number(masterIntakeStartRow);
+                      const endRow = Number(masterIntakeEndRow || masterIntakeStartRow);
+                      const connectionId = Number(googleConnectionId);
+                      if (!Number.isInteger(connectionId) || connectionId <= 0) {
+                        toast.error("เลือก Google connection ก่อน");
+                        return;
+                      }
+                      if (
+                        !Number.isInteger(startRow) ||
+                        !Number.isInteger(endRow) ||
+                        startRow < 2 ||
+                        endRow < startRow ||
+                        endRow - startRow + 1 > 100
+                      ) {
+                        toast.error("ช่วง Sync ต้องเป็น 1-100 แถว และเริ่มตั้งแต่แถว 2");
+                        return;
+                      }
+                      try {
+                        const response = await masterIntakePreviewQuery.refetch();
+                        if (response.data) setMasterIntakePreviewResult(response.data);
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : "Preview Sync ไม่สำเร็จ");
+                      }
+                    }}
+                  >
+                    {masterIntakePreviewQuery.isFetching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Preview Sync
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={
+                      !masterIntakePreviewResult ||
+                      masterIntakeSync.isPending ||
+                      masterIntakePreviewResult.rows.every((row: any) =>
+                        row.status === "CONFLICT" || row.status === "UNCHANGED"
+                      )
+                    }
+                    onClick={() => {
+                      if (!masterIntakePreviewResult || !selectedWorkspaceId) return;
+                      masterIntakeSync.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        googleConnectionId: Number(googleConnectionId),
+                        startRow: masterIntakePreviewResult.startRow,
+                        endRow: masterIntakePreviewResult.endRow,
+                        expectedPreviewFingerprint: masterIntakePreviewResult.previewFingerprint,
+                      });
+                    }}
+                  >
+                    {masterIntakeSync.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Sync
+                  </Button>
+                </div>
+
+                {masterIntakePreviewResult && (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      {(["NEW", "MATCH", "UNCHANGED", "UPDATED", "CONFLICT"] as const).map((status) => (
+                        <span key={status} className="rounded border bg-background px-2 py-1">
+                          {status}: {masterIntakePreviewResult.summary?.[status] ?? 0}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="overflow-x-auto rounded border bg-background">
+                      <table className="w-full text-left text-xs">
+                        <thead className="border-b bg-muted/30">
+                          <tr>
+                            <th className="px-2 py-2">Row</th>
+                            <th className="px-2 py-2">เรื่อง</th>
+                            <th className="px-2 py-2">ตอน</th>
+                            <th className="px-2 py-2">สถานะ</th>
+                            <th className="px-2 py-2">Links</th>
+                            <th className="px-2 py-2">หมายเหตุ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {masterIntakePreviewResult.rows.map((row: any) => (
+                            <tr key={row.rowNumber} className="border-b last:border-0">
+                              <td className="px-2 py-2">{row.rowNumber}</td>
+                              <td className="max-w-72 px-2 py-2">{row.novelTitle ?? row.rawTitle}</td>
+                              <td className="whitespace-nowrap px-2 py-2">{row.episodeNumber ?? "—"}</td>
+                              <td className="px-2 py-2"><StatusPill value={row.status} /></td>
+                              <td className="whitespace-nowrap px-2 py-2">
+                                {row.translationDocUrl && <a className="mr-2 text-primary underline" href={row.translationDocUrl} target="_blank" rel="noreferrer">C</a>}
+                                {row.webSourceUrl && <a className="mr-2 text-primary underline" href={row.webSourceUrl} target="_blank" rel="noreferrer">E</a>}
+                                {row.preparedSourceDocUrl && <a className="text-primary underline" href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">K</a>}
+                              </td>
+                              <td className="px-2 py-2 text-muted-foreground">
+                                {row.blockers?.length ? row.blockers.join(", ") : row.existingNovelId ? `Novel #${row.existingNovelId}` : "พร้อมสร้างฉบับซ่อน"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {((masterIntakeHistory.data as any[]) ?? []).length > 0 && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer font-medium">Sync History</summary>
+                    <div className="mt-2 space-y-1">
+                      {((masterIntakeHistory.data as any[]) ?? []).slice(0, 10).map((entry: any) => (
+                        <div key={entry.id} className="rounded border bg-background px-2 py-1">
+                          {formatDate(entry.createdAt)} · rows {entry.metadata?.startRow ?? "?"}-{entry.metadata?.endRow ?? "?"}
+                          {" · "}{entry.metadata?.summary?.succeeded ?? 0}/{entry.metadata?.summary?.attempted ?? 0} สำเร็จ
+                          {" · "}{shortHash(entry.correlationId)}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 )}
               </div>
 
@@ -1661,40 +2625,222 @@ export default function WorkspacePage() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkRunEditorialChecker.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkRunEditorialChecker.isPending ? "กำลังตรวจ…" : "3. ตรวจ / ตรวจซ้ำ"}</Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!selectedEditorialWorkItemIds.length || bulkBusy}
+                    onClick={async () => {
+                      try {
+                        const response = await bulkCleanupPreviewQuery.refetch();
+                        if (response.error) {
+                          toast.error(response.error.message);
+                          return;
+                        }
+                        if (response.data) {
+                          setBulkCleanupPreviewResult(response.data);
+                          const duplicateGroups = response.data.groups.filter((group: any) => group.occurrenceCount > 1).length;
+                          toast.success(`จัดกลุ่มแล้ว · คำ/ข้อความซ้ำ ${duplicateGroups} กลุ่ม · ค้าง ${response.data.summary.openFindingCount} จุด`);
+                        }
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : "จัดกลุ่ม finding ไม่สำเร็จ");
+                      }
+                    }}
+                  >
+                    {bulkCleanupPreviewQuery.isFetching ? "กำลังจัดกลุ่ม…" : "3.1 จัดกลุ่ม / ลบซ้ำ"}
+                  </Button>
                   <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkApproveEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkApproveEditorialDrafts.isPending ? "กำลังยืนยัน…" : "4. ยืนยัน Draft ปัจจุบัน"}</Button>
                   <Button type="button" size="sm" variant="outline" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => bulkStageEditorialDrafts.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds })}>{bulkStageEditorialDrafts.isPending ? "กำลัง Stage…" : "5. Stage"}</Button>
                   <Button type="button" size="sm" disabled={!selectedEditorialWorkItemIds.length || bulkBusy} onClick={() => { const readyCount = selectedEditorialCards.filter((card: any) => card.evidence?.readyToPublish && !card.evidence?.published).length; const blockedCount = selectedEditorialCards.length - readyCount; if (window.confirm(`Controlled Publish\n\nพร้อมลง ${readyCount} ตอน · ยังไม่พร้อม ${blockedCount} ตอน\n\n${bulkSelectionLabel}\n\nรายการที่ไม่ผ่าน readiness / ownership / evidence จะไม่ถูกเผยแพร่`)) bulkRequestEditorialPublish.mutate({ workspaceId: selectedWorkspaceId!, workItemIds: selectedEditorialWorkItemIds }); }}>{bulkRequestEditorialPublish.isPending ? "กำลังเผยแพร่…" : "6. Publish"}</Button>
                 </div>
+                {bulkCleanupPreviewResult && (
+                  <div className="space-y-2 rounded-md border bg-background p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold">Bulk Finding Cleanup</div>
+                        <div className="text-xs text-muted-foreground">
+                          Preview เท่านั้น · ลบใน Workspace Draft · สร้าง Draft ใหม่ 1 version ต่อ Episode Pack · ตรวจซ้ำอัตโนมัติ
+                        </div>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        พร้อม {bulkCleanupPreviewResult.summary.readyWorkItems}/{bulkCleanupPreviewResult.summary.selectedWorkItems} Pack · ค้าง {bulkCleanupPreviewResult.summary.openFindingCount} จุด
+                      </span>
+                    </div>
+                    {bulkCleanupPreviewResult.sourceJunk?.occurrenceCount > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50/60 px-3 py-2">
+                        <div className="text-sm">
+                          <span className="font-semibold">SOURCE JUNK ทั้งชุด</span>
+                          {" · "}{bulkCleanupPreviewResult.sourceJunk.occurrenceCount} จุด
+                          {" · "}{bulkCleanupPreviewResult.sourceJunk.paragraphCount} ย่อหน้า
+                          {" · "}{bulkCleanupPreviewResult.sourceJunk.workItemCount} Pack
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          disabled={bulkBusy}
+                          onClick={() => {
+                            if (!window.confirm(
+                              `ลบ Source Junk ทั้งชุด ${bulkCleanupPreviewResult.sourceJunk.occurrenceCount} จุด จาก ${bulkCleanupPreviewResult.sourceJunk.workItemCount} Episode Pack?\n\nระบบจะสร้าง Draft ใหม่ 1 version ต่อ Pack และตรวจซ้ำอัตโนมัติ`
+                            )) return;
+                            bulkCleanupApply.mutate({
+                              workspaceId: selectedWorkspaceId!,
+                              workItemIds: bulkCleanupPreviewResult.workItemIds,
+                              expectedPreviewFingerprint: bulkCleanupPreviewResult.previewFingerprint,
+                              action: { kind: "source_junk" },
+                            });
+                          }}
+                        >
+                          ลบ Source Junk ทั้งหมด
+                        </Button>
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      {bulkCleanupPreviewResult.groups
+                        .filter((group: any) => group.occurrenceCount > 1)
+                        .slice(0, 60)
+                        .map((group: any) => (
+                          <div key={group.groupKey} className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2 text-sm">
+                            <div className="min-w-0">
+                              <span className="font-medium break-all">{group.displayToken}</span>
+                              <span className="ml-2 text-xs text-muted-foreground">
+                                {group.ruleKey} · {group.occurrenceCount} จุด · {group.paragraphCount} ย่อหน้า · {group.workItemCount} Pack
+                              </span>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={bulkBusy}
+                              onClick={() => {
+                                if (!window.confirm(
+                                  `ลบ “${group.displayToken}” ทั้งหมด ${group.occurrenceCount} จุด?\n\nลบเฉพาะ exact finding ที่อยู่ใน Preview นี้ และตรวจซ้ำอัตโนมัติ`
+                                )) return;
+                                bulkCleanupApply.mutate({
+                                  workspaceId: selectedWorkspaceId!,
+                                  workItemIds: bulkCleanupPreviewResult.workItemIds,
+                                  expectedPreviewFingerprint: bulkCleanupPreviewResult.previewFingerprint,
+                                  action: { kind: "group", groupKey: group.groupKey },
+                                });
+                              }}
+                            >
+                              ลบทั้งหมด {group.occurrenceCount} จุด
+                            </Button>
+                          </div>
+                        ))}
+                      {bulkCleanupPreviewResult.groups.filter((group: any) => group.occurrenceCount > 1).length === 0 && (
+                        <div className="text-xs text-muted-foreground">ไม่พบ exact finding ที่ซ้ำมากกว่า 1 จุด</div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {bulkCheckerSummary.length > 0 && (() => {
                   const passed = bulkCheckerSummary.filter((result: any) => result.ok && result.effectiveStatus === "passed").length;
                   const needsFix = bulkCheckerSummary.filter((result: any) => result.ok && result.effectiveStatus === "failed").length;
                   const technicalFailed = bulkCheckerSummary.filter((result: any) => !result.ok).length;
                   const openFindings = bulkCheckerSummary.reduce((sum: number, result: any) => sum + (result.ok ? Number(result.unresolvedCount ?? 0) : 0), 0);
+                  const structuralAnomalies = bulkCheckerSummary.reduce((sum: number, result: any) => sum + (result.ok ? Number(result.structuralSummary?.anomalyCount ?? 0) : 0), 0);
+                  const totalTabs = bulkCheckerSummary.reduce((sum: number, result: any) => sum + (result.ok ? Number(result.structuralSummary?.tabCount ?? 0) : 0), 0);
                   return <div className="space-y-2 rounded-md border bg-background p-3">
                     <div className="flex flex-wrap items-center gap-3 text-sm font-medium">
-                      <span>สรุปผลตรวจ {bulkCheckerSummary.length} ตอน</span>
+                      <span>สรุปผลตรวจ {bulkCheckerSummary.length} ไฟล์</span>
+                      <span>รวม {totalTabs} แท็บ</span>
                       <span className="text-emerald-700">ผ่าน {passed}</span>
                       <span className="text-amber-700">ต้องแก้ {needsFix}</span>
+                      <span className="text-orange-700">ผิดปกติ {structuralAnomalies}</span>
                       <span className="text-red-700">ผิดพลาด {technicalFailed}</span>
-                      <span>ค้างตรวจ {openFindings}</span>
+                      <span>ค้างแก้คำ {openFindings}</span>
                     </div>
                     <div className="space-y-1">
                       {bulkCheckerSummary.map((result: any) => {
                         const card = editorialCards.find((candidate: any) => candidate.workItemId === result.workItemId);
                         const label = `${card?.novel?.title ?? "ไม่ทราบเรื่อง"} · ${card?.episodeNumber ?? `Work item #${result.workItemId}`}`;
                         const paragraphs = result.ok ? groupBulkCheckerParagraphs(result.openFindings ?? []) : [];
+                        const anomalies = result.ok ? (result.anomalies ?? []) : [];
+                        const missingChapters = anomalies
+                          .filter((anomaly: any) => anomaly.anomalyType === "missing_expected_chapter")
+                          .map((anomaly: any) => Number(anomaly.chapterNumber))
+                          .filter((value: number) => Number.isInteger(value));
+                        const endOnlyCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "end_only_tab").length;
+                        const emptyCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "empty_tab").length;
+                        const headingOnlyCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "heading_only_tab").length;
+                        const sourceNoteCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "source_note_only").length;
+                        const duplicateAnomalies = anomalies.filter((anomaly: any) =>
+                          anomaly.anomalyType === "duplicate_content_exact" ||
+                          anomaly.anomalyType === "duplicate_content_near"
+                        );
+                        const duplicatePairs = duplicateAnomalies.map((anomaly: any) => {
+                          const left = anomaly.details?.leftChapterNumber ?? anomaly.chapterNumber ?? anomaly.tabTitle ?? "?";
+                          const right = anomaly.details?.rightChapterNumber ?? "?";
+                          const score = anomaly.anomalyType === "duplicate_content_near"
+                            ? ` · similarity ${Math.round(Math.max(Number(anomaly.details?.dice ?? 0), Number(anomaly.details?.containment ?? 0)) * 100)}%`
+                            : "";
+                          return `${left} ↔ ${right}${score}`;
+                        });
+                        const structuralSummary = result.structuralSummary;
                         return <div key={result.workItemId} className="rounded border px-3 py-2 text-xs">
                           <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_auto]">
                             <div>
                               <div className="font-medium">{label}</div>
-                              {result.ok && result.effectiveStatus === "failed" && <div className="text-amber-700">พบ {result.findingCount ?? result.unresolvedCount ?? 0} · ค้าง {result.unresolvedCount ?? 0} · {paragraphs.length} ย่อหน้าที่ต้องแก้</div>}
-                              {result.ok && result.effectiveStatus === "passed" && <div className="text-emerald-700">ผ่าน · ไม่พบคำต่างประเทศที่ต้องแก้</div>}
+                              {result.ok && (
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                  <span>
+                                    แท็บ {structuralSummary?.tabCount ?? 0}
+                                    {structuralSummary?.expectedTabCount ? `/${structuralSummary.expectedTabCount}` : ""}
+                                  </span>
+                                  <span>คำ/อักษรค้าง {result.unresolvedCount ?? 0}</span>
+                                  <span className={Number(structuralSummary?.anomalyCount ?? 0) ? "text-orange-700" : "text-emerald-700"}>
+                                    ผิดปกติ {structuralSummary?.anomalyCount ?? 0}
+                                  </span>
+                                  {Number(structuralSummary?.blockingAnomalyCount ?? 0) > 0 && (
+                                    <span className="text-red-700">บล็อก {structuralSummary.blockingAnomalyCount}</span>
+                                  )}
+                                </div>
+                              )}
+                              {result.ok && result.effectiveStatus === "failed" && <div className="text-amber-700">ต้องแก้ก่อนยืนยัน Draft · {paragraphs.length} ย่อหน้าที่มี finding</div>}
+                              {result.ok && result.effectiveStatus === "passed" && Number(structuralSummary?.anomalyCount ?? 0) === 0 && <div className="text-emerald-700">ผ่าน · ไม่พบคำต่างประเทศหรือโครงสร้างผิดปกติ</div>}
+                              {result.ok && result.effectiveStatus === "passed" && Number(structuralSummary?.anomalyCount ?? 0) > 0 && <div className="text-orange-700">ผ่านด้าน blocking QC แต่มี anomaly ที่ควรตรวจทาน</div>}
                               {!result.ok && <div className="text-red-700">ตรวจไม่สำเร็จ: {result.error}</div>}
                             </div>
                             <div className={result.ok ? (result.effectiveStatus === "passed" ? "text-emerald-700" : "text-amber-700") : "text-red-700"}>
                               {result.ok ? (result.effectiveStatus === "passed" ? "ผ่าน" : "ต้องแก้") : "ผิดพลาด"}
                             </div>
                           </div>
+                          {result.ok && anomalies.length > 0 && (
+                            <div className="mt-2 space-y-1 rounded-md border border-orange-200 bg-orange-50/40 p-3 text-xs">
+                              <div className="font-semibold text-orange-800">ค่าผิดปกติของไฟล์</div>
+                              {missingChapters.length > 0 && (
+                                <div>บทที่หาย: <span className="font-medium">{formatCompactNumberRanges(missingChapters)}</span></div>
+                              )}
+                              {endOnlyCount > 0 && <div>แท็บมีเฉพาะ “จบตอน”: <span className="font-medium">{endOnlyCount} แท็บ</span></div>}
+                              {emptyCount > 0 && <div>แท็บไม่มีเนื้อหา: <span className="font-medium">{emptyCount} แท็บ</span></div>}
+                              {headingOnlyCount > 0 && <div>แท็บมีเฉพาะชื่อบท: <span className="font-medium">{headingOnlyCount} แท็บ</span></div>}
+                              {sourceNoteCount > 0 && <div>หมายเหตุจากต้นฉบับ: <span className="font-medium">{sourceNoteCount} แท็บ</span></div>}
+                              {duplicatePairs.length > 0 && (
+                                <div className="space-y-1">
+                                  <div>เนื้อหาซ้ำ/คล้ายซ้ำ: <span className="font-medium">{duplicatePairs.length} คู่</span></div>
+                                  {duplicatePairs.slice(0, 12).map((pair: string, index: number) => (
+                                    <div key={`${result.workItemId}:duplicate:${index}`} className="pl-3">• {pair}</div>
+                                  ))}
+                                  {duplicatePairs.length > 12 && <div className="pl-3 text-muted-foreground">…และอีก {duplicatePairs.length - 12} คู่</div>}
+                                </div>
+                              )}
+                              {anomalies
+                                .filter((anomaly: any) => ![
+                                  "missing_expected_chapter",
+                                  "end_only_tab",
+                                  "empty_tab",
+                                  "heading_only_tab",
+                                  "source_note_only",
+                                  "duplicate_content_exact",
+                                  "duplicate_content_near",
+                                ].includes(anomaly.anomalyType))
+                                .slice(0, 10)
+                                .map((anomaly: any) => (
+                                  <div key={anomaly.anomalyKey}>• {anomaly.message}</div>
+                                ))}
+                            </div>
+                          )}
                           {result.ok && result.effectiveStatus === "failed" && paragraphs.length > 0 && (
                             <div className="mt-2 space-y-2">
                               {paragraphs.map((paragraph: any) => {
@@ -1735,7 +2881,7 @@ export default function WorkspacePage() {
                                           type="button"
                                           size="sm"
                                           variant="outline"
-                                          disabled={finding.ruleKey === "long_english" || bulkBusy}
+                                          disabled={(finding.ruleKey === "long_english" || finding.ruleKey === "source_junk") || bulkBusy}
                                           onClick={() => {
                                             if (!window.confirm(`ยกเว้นคำ “${finding.token}” สำหรับ Checker ทั้ง Workspace?`)) return;
                                             bulkAllowEditorialFinding.mutate({
@@ -2079,7 +3225,7 @@ export default function WorkspacePage() {
 
                     {editorialCheckerRunStale && (
                       <div className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
-                        ผลตรวจนี้เป็นของ Draft เก่า — Draft เปลี่ยนแล้ว ให้กด “ตรวจ / ตรวจซ้ำ” ก่อนแก้สถานะ finding
+                        ผลตรวจนี้เก่าแล้ว — Draft หรือ Checker engine เปลี่ยน ให้กด “ตรวจ / ตรวจซ้ำ” ก่อนแก้สถานะ finding
                       </div>
                     )}
 
@@ -2224,7 +3370,7 @@ export default function WorkspacePage() {
                               variant="outline"
                               disabled={
                                 editorialCheckerRunStale ||
-                                finding.ruleKey === "long_english" ||
+                                (finding.ruleKey === "long_english" || finding.ruleKey === "source_junk") ||
                                 allowEditorialFinding.isPending
                               }
                               onClick={() =>
@@ -2288,42 +3434,58 @@ export default function WorkspacePage() {
                   </div>
 
 
-                  {!!(editorialSourceDraft.data as any)?.tabs?.length && (
-                    <details className="rounded-md border bg-muted/10">
-                      <summary className="cursor-pointer list-none p-3">
+                  <details
+                    id="workspace-chapter-editor"
+                    className="rounded-md border bg-muted/10"
+                    open={chapterEditorTarget ? true : undefined}
+                  >
+                    <summary className="cursor-pointer list-none p-3">
+                      <div className="space-y-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="font-medium">
-                            Draft structure · {draftStructureSummary.totalTabs} แท็บ
+                            Workspace Editor · {draftStructureSummary.totalTabs} แท็บ
                           </div>
-                          <div className="flex flex-wrap gap-2 text-xs">
-                            {draftStructureSummary.sequenceIssues.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                เลขแท็บไม่เรียง {draftStructureSummary.sequenceIssues.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.emptyTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                แท็บว่าง {draftStructureSummary.emptyTabs.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.unnumberedTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                ไม่มีเลขแท็บ {draftStructureSummary.unnumberedTabs.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.shortTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                เนื้อหาสั้นผิดปกติ {draftStructureSummary.shortTabs.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.warningTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                warning {draftStructureSummary.warningTabs.length}
-                              </span>
-                            )}
+                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            <span>Draft v{latestEditorialDraft?.version ?? "—"}</span>
+                            <span>SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
+                            <span>แก้ไข {editorialEditorData?.history?.length ?? 0}</span>
                           </div>
                         </div>
-                        <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          {draftStructureSummary.sequenceIssues.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              เลขแท็บไม่เรียง {draftStructureSummary.sequenceIssues.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.emptyTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              แท็บว่าง {draftStructureSummary.emptyTabs.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.unnumberedTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              ไม่มีเลขแท็บ {draftStructureSummary.unnumberedTabs.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.shortTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              เนื้อหาสั้นผิดปกติ {draftStructureSummary.shortTabs.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.warningTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              warning {draftStructureSummary.warningTabs.length}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </summary>
+                    <div className="space-y-3 border-t p-3">
+                      {(draftStructureSummary.sequenceIssues.length > 0 ||
+                        draftStructureSummary.emptyTabs.length > 0 ||
+                        draftStructureSummary.unnumberedTabs.length > 0 ||
+                        draftStructureSummary.shortTabs.length > 0) && (
+                        <div className="space-y-1 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
                           {draftStructureSummary.sequenceIssues.length > 0 && (
                             <div>ลำดับ: {draftStructureSummary.sequenceIssues.join(", ")}</div>
                           )}
@@ -2349,75 +3511,727 @@ export default function WorkspacePage() {
                             </div>
                           )}
                         </div>
-                      </summary>
-                      <div className="space-y-2 border-t p-3">
-                        {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
-                          <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span>{tab.title}</span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-muted-foreground">
-                                  {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
-                                </span>
-                                {editorialEditorData?.latestDraft && (() => {
-                                  const draftTab = (editorialEditorData.tabs ?? []).find((candidate: any) => candidate.sourceTabId === tab.sourceTabId);
-                                  if (!draftTab) return null;
-                                  return <Button type="button" size="sm" variant="outline" disabled={excludeEditorialTab.isPending || editorialEditorData.tabs.length <= 1} onClick={(event) => { event.preventDefault(); event.stopPropagation(); if(window.confirm(`นำแท็บ ${tab.title} ออกจาก Draft นี้หรือไม่? ระบบจะสร้าง Draft revision ใหม่ และต้องตรวจ QC/ยืนยันใหม่`)) excludeEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:draftTab.sourceTabId}); }}>นำออก</Button>;
-                                })()}
+                      )}
+
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-2">
+                          <div className="font-medium">
+                            แท็บใน Draft · {filteredChapterEditorTabs.length}/{chapterEditorTabs.length}
+                          </div>
+                          <div className="flex flex-wrap gap-1 text-xs">
+                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-800">
+                              ผ่าน {chapterEditorProgress.passed}
+                            </span>
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-900">
+                              ค้าง {chapterEditorProgress.pending}
+                            </span>
+                            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-800">
+                              ยืนยันแล้ว {chapterEditorProgress.confirmed}
+                            </span>
+                            {chapterEditorProgress.unchecked > 0 && (
+                              <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                                ยังไม่ตรวจ {chapterEditorProgress.unchecked}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {([
+                            ["all", "ทั้งหมด"],
+                            ["issue", "มีปัญหา"],
+                            ["unedited", "ยังไม่แก้"],
+                            ["edited", "แก้แล้ว"],
+                          ] as const).map(([value, label]) => (
+                            <Button
+                              key={value}
+                              type="button"
+                              size="sm"
+                              variant={chapterEditorTabFilter === value ? "secondary" : "outline"}
+                              onClick={() => setChapterEditorTabFilter(value)}
+                            >
+                              {label}
+                            </Button>
+                          ))}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={!nextIssueChapterTab || editEditorialDraft.isPending}
+                            onClick={() =>
+                              nextIssueChapterTab && openChapterEditor(nextIssueChapterTab)
+                            }
+                          >
+                            บทมีปัญหาถัดไป
+                            <ChevronRight className="ml-1 h-4 w-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                              !editorialEditorData?.canUndo ||
+                              !latestEditorialDraft ||
+                              undoEditorialEdit.isPending
+                            }
+                            onClick={() => {
+                              if (!latestEditorialDraft) return;
+                              undoEditorialEdit.mutate({
+                                workspaceId: selectedWorkspaceId,
+                                workItemId: selectedSourceWorkItemId,
+                                expectedDraftId: latestEditorialDraft.id,
+                                expectedDraftVersion: latestEditorialDraft.version,
+                                expectedDraftSha256: latestEditorialDraft.draftSha256,
+                                idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
+                              });
+                            }}
+                          >
+                            {undoEditorialEdit.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            Undo
+                          </Button>
+                        </div>
+                      </div>
+
+                      {!!chapterEditorTabs.length ? (
+                        filteredChapterEditorTabs.length ? (
+                        <div className="space-y-2">
+                          {filteredChapterEditorTabs.map((tab: any) => (
+                            <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <div>{tab.title}</div>
+                                  {(() => {
+                                    const status = chapterEditorStatusByTab.get(tab.sourceTabId);
+                                    return (
+                                      <div className="mt-1 flex flex-wrap gap-1 text-xs">
+                                        <span
+                                          className={
+                                            status?.edited
+                                              ? "rounded-full bg-blue-100 px-2 py-0.5 text-blue-800"
+                                              : "rounded-full bg-muted px-2 py-0.5 text-muted-foreground"
+                                          }
+                                        >
+                                          {status?.edited ? "แก้แล้ว" : "ยังไม่แก้"}
+                                        </span>
+                                        {(status?.foreignFindingCount ?? 0) > 0 && (
+                                          <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-900">
+                                            คำต่างประเทศ {status?.foreignFindingCount}
+                                          </span>
+                                        )}
+                                        {(status?.structuralIssueCount ?? 0) > 0 && (
+                                          <span className="rounded-full bg-orange-100 px-2 py-0.5 text-orange-900">
+                                            structural issue {status?.structuralIssueCount}
+                                          </span>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
+                                    {tab.chapterNumber
+                                      ? ` · บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}`
+                                      : ""}
+                                    {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant={tab.paragraphs.length ? "outline" : "default"}
+                                    disabled={!latestEditorialDraft || editEditorialDraft.isPending}
+                                    onClick={() => openChapterEditor(tab)}
+                                  >
+                                    {tab.paragraphs.length ? "เปิด Editor" : "เติมเนื้อหา"}
+                                  </Button>
+                                  {editorialEditorData?.latestDraft && (() => {
+                                    const draftTab = (editorialEditorData.tabs ?? []).find(
+                                      (candidate: any) => candidate.sourceTabId === tab.sourceTabId
+                                    );
+                                    if (!draftTab) return null;
+                                    return (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={
+                                          excludeEditorialTab.isPending ||
+                                          editorialEditorData.tabs.length <= 1
+                                        }
+                                        onClick={() => {
+                                          if (
+                                            window.confirm(
+                                              `นำแท็บ ${tab.title} ออกจาก Draft นี้หรือไม่? ระบบจะสร้าง Draft revision ใหม่ และต้องตรวจ QC/ยืนยันใหม่`
+                                            )
+                                          ) {
+                                            excludeEditorialTab.mutate({
+                                              workspaceId: selectedWorkspaceId!,
+                                              workItemId: selectedSourceWorkItemId!,
+                                              expectedDraftId: editorialEditorData.latestDraft.id,
+                                              expectedDraftSha256:
+                                                editorialEditorData.latestDraft.draftSha256,
+                                              sourceTabId: draftTab.sourceTabId,
+                                            });
+                                          }
+                                        }}
+                                      >
+                                        นำออก
+                                      </Button>
+                                    );
+                                  })()}
+                                </div>
                               </div>
                             </div>
-                            {(tab.chapterNumber || tab.warnings?.length) && (
-                              <div className="mt-1 text-xs text-muted-foreground">
-                                {tab.chapterNumber ? `บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}` : ""}
-                                {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
+                          ))}
+                        </div>
+                        ) : (
+                          <EmptyState>ไม่พบแท็บตามตัวกรอง</EmptyState>
+                        )
+                      ) : (
+                        <EmptyState>ยังไม่มีแท็บใน Draft</EmptyState>
+                      )}
+
+                      {(editorialEditorData?.excludedTabs ?? []).length > 0 && (
+                        <details className="rounded-md border bg-background">
+                          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                            แท็บที่นำออก {editorialEditorData.excludedTabs.length}
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            {editorialEditorData.excludedTabs.map((tab: any) => (
+                              <div
+                                key={tab.sourceTabId}
+                                className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-sm"
+                              >
+                                <span>{tab.title}</span>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={restoreEditorialTab.isPending}
+                                  onClick={() =>
+                                    restoreEditorialTab.mutate({
+                                      workspaceId: selectedWorkspaceId!,
+                                      workItemId: selectedSourceWorkItemId!,
+                                      expectedDraftId: editorialEditorData.latestDraft.id,
+                                      expectedDraftSha256:
+                                        editorialEditorData.latestDraft.draftSha256,
+                                      sourceTabId: tab.sourceTabId,
+                                    })
+                                  }
+                                >
+                                  คืนแท็บ
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+
+                    {chapterEditorTarget && (
+                      <div className="space-y-3 rounded-xl border bg-muted/10 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="text-lg font-semibold">Chapter Editor</div>
+                            <div className="text-sm text-muted-foreground">
+                              {chapterEditorTarget.title} · Draft v{chapterEditorTarget.draftVersion}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-1 text-xs">
+                              <span
+                                className={
+                                  currentChapterStatus?.edited
+                                    ? "rounded-full bg-blue-100 px-2 py-0.5 text-blue-800"
+                                    : "rounded-full bg-muted px-2 py-0.5 text-muted-foreground"
+                                }
+                              >
+                                {currentChapterStatus?.edited ? "แก้แล้ว" : "ยังไม่แก้"}
+                              </span>
+                              {(currentChapterStatus?.foreignFindingCount ?? 0) > 0 && (
+                                <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-900">
+                                  มีคำต่างประเทศ {currentChapterStatus?.foreignFindingCount}
+                                </span>
+                              )}
+                              {(currentChapterStatus?.structuralIssueCount ?? 0) > 0 && (
+                                <span className="rounded-full bg-orange-100 px-2 py-0.5 text-orange-900">
+                                  มี structural issue {currentChapterStatus?.structuralIssueCount}
+                                </span>
+                              )}
+                              {chapterEditorDirty && (
+                                <span className="rounded-full bg-red-100 px-2 py-0.5 text-red-800">
+                                  ยังไม่บันทึก
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={!previousChapterTab || editEditorialDraft.isPending}
+                              onClick={() => previousChapterTab && openChapterEditor(previousChapterTab)}
+                            >
+                              <ChevronLeft className="mr-1 h-4 w-4" />
+                              ก่อนหน้า
+                            </Button>
+                            <span className="text-xs text-muted-foreground">
+                              {chapterEditorCurrentIndex >= 0
+                                ? `${chapterEditorCurrentIndex + 1}/${chapterEditorTabs.length}`
+                                : "—"}
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={!nextChapterTab || editEditorialDraft.isPending}
+                              onClick={() => nextChapterTab && openChapterEditor(nextChapterTab)}
+                            >
+                              ถัดไป
+                              <ChevronRight className="ml-1 h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={editEditorialDraft.isPending}
+                              onClick={closeChapterEditor}
+                            >
+                              ปิด Editor
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2 text-sm">
+                          <span className="rounded-md border px-2 py-1 font-medium">ข้อความบท</span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={chapterEditorHighlight ? "secondary" : "outline"}
+                            onClick={() => setChapterEditorHighlight(value => !value)}
+                          >
+                            ไฮไลต์คำต่างประเทศ {chapterEditorHighlight ? "เปิด" : "ปิด"}
+                          </Button>
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            {chapterEditorText.length.toLocaleString()} ตัวอักษร
+                          </span>
+                        </div>
+
+                        <details open className="rounded-lg border bg-background">
+                          <summary className="cursor-pointer list-none px-3 py-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <div className="font-medium">
+                                  Issue Queue · {chapterEditorIssueItems.length}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  คำต่างประเทศ {chapterEditorIssueCounts.findings} · structural {chapterEditorIssueCounts.structural}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                {chapterEditorIssueItems.length > 0
+                                  ? `${Math.min(
+                                      chapterEditorIssueIndex + 1,
+                                      chapterEditorIssueItems.length
+                                    )}/${chapterEditorIssueItems.length}`
+                                  : "ไม่มี issue"}
+                              </div>
+                            </div>
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-xs text-muted-foreground">
+                                ใช้ Previous/Next หรือปุ่ม action เพื่อไปยังจุดตรวจ · foreign finding และ structural issue อยู่ในคิวเดียวกัน
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    !chapterEditorIssueItems.length ||
+                                    chapterEditorIssueIndex <= 0
+                                  }
+                                  onClick={() => navigateRelativeChapterEditorIssue(-1)}
+                                >
+                                  <ChevronLeft className="mr-1 h-4 w-4" />
+                                  Previous finding
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    !chapterEditorIssueItems.length ||
+                                    chapterEditorIssueIndex >=
+                                      chapterEditorIssueItems.length - 1
+                                  }
+                                  onClick={() => navigateRelativeChapterEditorIssue(1)}
+                                >
+                                  Next finding
+                                  <ChevronRight className="ml-1 h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+
+                            {chapterEditorIssueItems.length ? (
+                              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                                {chapterEditorIssueItems.map((issue, issueIndex) => {
+                                  const selected =
+                                    selectedChapterEditorIssue?.key === issue.key;
+                                  if (issue.kind === "finding") {
+                                    const finding = issue.finding as any;
+                                    const canAccept =
+                                      finding.disposition !== "accepted" &&
+                                      finding.ruleKey !== "long_english" &&
+                                      finding.ruleKey !== "source_junk";
+                                    return (
+                                      <div
+                                        key={issue.key}
+                                        className={
+                                          selected
+                                            ? "rounded-md border border-primary bg-primary/5 p-2 text-sm"
+                                            : "rounded-md border p-2 text-sm"
+                                        }
+                                      >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                          <div className="min-w-0 flex-1">
+                                            <div className="font-medium">
+                                              {finding.token}
+                                            </div>
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                              {finding.ruleKey} · paragraph{" "}
+                                              {finding.paragraphOrder} ·{" "}
+                                              {finding.startOffset}-
+                                              {finding.endOffset}
+                                            </div>
+                                          </div>
+                                          <StatusPill
+                                            value={finding.disposition ?? "open"}
+                                          />
+                                        </div>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                              navigateChapterEditorIssue(
+                                                issue,
+                                                issueIndex
+                                              )
+                                            }
+                                          >
+                                            ไปยังจุด
+                                          </Button>
+                                          {finding.disposition === "open" && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                resolveEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                resolveEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  disposition: "fixed",
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-fixed:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              Mark fixed
+                                            </Button>
+                                          )}
+                                          {(finding.disposition === "fixed" ||
+                                            finding.disposition === "ignored") && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                resolveEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                resolveEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  disposition: "open",
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-reopen:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              Reopen
+                                            </Button>
+                                          )}
+                                          {canAccept && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                allowEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                allowEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-allow:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              ยอมรับคำนี้
+                                            </Button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+                                  const anomaly = issue.anomaly as any;
+                                  const relatedTabs =
+                                    structuralNavigationTabs(anomaly);
+                                  const confirmedSourceNote =
+                                    anomaly.disposition ===
+                                    "confirmed_source_note";
+                                  const repairLabel =
+                                    anomaly.anomalyType === "empty_tab"
+                                      ? "เติมเนื้อหา"
+                                      : anomaly.anomalyType ===
+                                            "heading_only_tab" ||
+                                          anomaly.anomalyType === "end_only_tab"
+                                        ? "เปิดจุดซ่อม"
+                                        : "ไปยัง structural issue";
+                                  return (
+                                    <div
+                                      key={issue.key}
+                                      className={
+                                        selected
+                                          ? "rounded-md border border-orange-500 bg-orange-50 p-2 text-sm"
+                                          : "rounded-md border p-2 text-sm"
+                                      }
+                                    >
+                                      <div className="flex flex-wrap items-start justify-between gap-2">
+                                        <div className="min-w-0 flex-1">
+                                          <div className="font-medium">
+                                            Structural · {anomaly.anomalyType}
+                                          </div>
+                                          <div className="mt-1 text-xs text-muted-foreground">
+                                            {anomaly.message}
+                                          </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-1">
+                                          {confirmedSourceNote && (
+                                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">
+                                              confirmed source note
+                                            </span>
+                                          )}
+                                          <span
+                                            className={
+                                              anomaly.severity === "error"
+                                                ? "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
+                                                : "rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-900"
+                                            }
+                                          >
+                                            {anomaly.severity}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="mt-2 rounded-md bg-muted/40 p-2 text-xs text-muted-foreground">
+                                        {chapterEditorStructuralRepairGuidance(
+                                          anomaly.anomalyType
+                                        )}
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-2">
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() =>
+                                            navigateChapterEditorIssue(
+                                              issue,
+                                              issueIndex
+                                            )
+                                          }
+                                        >
+                                          {repairLabel}
+                                        </Button>
+                                        {relatedTabs.map((tab: any) => (
+                                          <Button
+                                            key={tab.sourceTabId}
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={
+                                              editEditorialDraft.isPending
+                                            }
+                                            onClick={() =>
+                                              openChapterEditor(tab)
+                                            }
+                                          >
+                                            {anomaly.anomalyType ===
+                                            "missing_expected_chapter"
+                                              ? "เปิดแท็บใกล้เคียง"
+                                              : "เปิดแท็บ"}{" "}
+                                            {tab.title}
+                                          </Button>
+                                        ))}
+                                        {anomaly.anomalyType ===
+                                          "source_note_only" && (
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant={
+                                              confirmedSourceNote
+                                                ? "outline"
+                                                : "default"
+                                            }
+                                            disabled={
+                                              editorialCheckerRunStale ||
+                                              setStructuralConfirmation.isPending
+                                            }
+                                            onClick={() =>
+                                              setStructuralConfirmation.mutate({
+                                                workspaceId:
+                                                  selectedWorkspaceId!,
+                                                workItemId:
+                                                  selectedSourceWorkItemId!,
+                                                anomalyId: anomaly.id,
+                                                confirmed:
+                                                  !confirmedSourceNote,
+                                                expectedVersion:
+                                                  anomaly.confirmationVersion ??
+                                                  0,
+                                              })
+                                            }
+                                          >
+                                            {confirmedSourceNote
+                                              ? "ยกเลิกยืนยันหมายเหตุต้นฉบับ"
+                                              : "ยืนยันว่าเป็นหมายเหตุต้นฉบับ"}
+                                          </Button>
+                                        )}
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="ghost"
+                                          disabled={
+                                            !latestEditorialDraft ||
+                                            runEditorialForeignChecker.isPending
+                                          }
+                                          onClick={() => {
+                                            if (!latestEditorialDraft) return;
+                                            runEditorialForeignChecker.mutate({
+                                              workspaceId:
+                                                selectedWorkspaceId!,
+                                              workItemId:
+                                                selectedSourceWorkItemId!,
+                                              expectedDraftId:
+                                                latestEditorialDraft.id,
+                                            });
+                                          }}
+                                        >
+                                          ตรวจ structural ซ้ำ
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                                ไม่พบ foreign finding หรือ structural issue ในบทนี้
                               </div>
                             )}
                           </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
+                        </details>
 
-                  <details className="rounded-md border">
-                    <summary className="cursor-pointer list-none p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="font-medium">Workspace Editor</div>
-                        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                          <span>Draft v{latestEditorialDraft?.version ?? "—"}</span>
-                          <span>SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
-                          <span>แก้ไข {editorialEditorData?.history?.length ?? 0}</span>
-                        </div>
-                      </div>
-                    </summary>
-                    <div className="space-y-3 border-t p-3">
-                      {editorialEditorData?.latestDraft && <div className="rounded-lg border p-3"><div className="font-medium">Draft tabs</div><div className="mt-2 space-y-2">{(editorialEditorData.tabs ?? []).map((tab:any)=><div key={tab.sourceTabId} className="flex items-center justify-between rounded border p-2"><span>{tab.title}</span><Button type="button" size="sm" variant="outline" disabled={excludeEditorialTab.isPending || editorialEditorData.tabs.length<=1} onClick={()=>{if(window.confirm(`Remove tab ${tab.title} from this Draft? A new Draft revision will be created and current QC/approval becomes stale.`))excludeEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:tab.sourceTabId});}}>นำออก</Button></div>)}</div>{(editorialEditorData.excludedTabs ?? []).length>0&&<div className="mt-4"><div className="text-sm font-medium">แท็บที่นำออก</div>{editorialEditorData.excludedTabs.map((tab:any)=><div key={tab.sourceTabId} className="mt-2 flex items-center justify-between rounded border p-2"><span>{tab.title}</span><Button type="button" size="sm" variant="outline" onClick={()=>restoreEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:tab.sourceTabId})}>คืนแท็บ</Button></div>)}</div>}</div>}
-                      <div className="flex justify-end">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={
-                            !editorialEditorData?.canUndo ||
-                            !latestEditorialDraft ||
-                            undoEditorialEdit.isPending
-                          }
-                          onClick={() => {
-                            if (!latestEditorialDraft) return;
-                            undoEditorialEdit.mutate({
-                              workspaceId: selectedWorkspaceId,
-                              workItemId: selectedSourceWorkItemId,
-                              expectedDraftId: latestEditorialDraft.id,
-                              expectedDraftVersion: latestEditorialDraft.version,
-                              expectedDraftSha256: latestEditorialDraft.draftSha256,
-                              idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
-                            });
+                        <div
+                          ref={chapterEditorScrollRef}
+                          className="min-h-[30rem] max-h-[48rem] overflow-y-auto rounded-lg border bg-background p-5 shadow-inner"
+                          onScroll={event => {
+                            const sourceTabId = chapterEditorTarget?.sourceTabId;
+                            if (!sourceTabId) return;
+                            const scrollTop = event.currentTarget.scrollTop;
+                            chapterEditorScrollByTab.current.set(sourceTabId, scrollTop);
+                            window.sessionStorage.setItem(
+                              chapterEditorScrollStorageKey(sourceTabId),
+                              String(scrollTop)
+                            );
                           }}
                         >
-                          {undoEditorialEdit.isPending && (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          )}
-                          Undo
-                        </Button>
+                          <div className="space-y-1">
+                            {chapterEditorParagraphs.map((paragraph, index) => (
+                              <ChapterEditorParagraphBlock
+                                key={paragraph.id}
+                                paragraphId={paragraph.id}
+                                value={paragraph.text}
+                                findings={
+                                  paragraph.paragraphKey
+                                    ? (chapterEditorFindingsByParagraphKey.get(paragraph.paragraphKey) ?? [])
+                                    : []
+                                }
+                                highlight={chapterEditorHighlight}
+                                disabled={editEditorialDraft.isPending}
+                                placeholder={
+                                  chapterEditorParagraphs.length === 1 && !paragraph.text
+                                    ? "เริ่มเขียนหรือวางเนื้อหาของบทนี้..."
+                                    : undefined
+                                }
+                                onChange={value => updateChapterEditorParagraph(index, value)}
+                                onSplit={(start, end) =>
+                                  splitChapterEditorParagraph(index, start, end)
+                                }
+                                onMergePrevious={() =>
+                                  mergeChapterEditorParagraphWithPrevious(index)
+                                }
+                                onPasteParagraphs={(paragraphs, start, end) =>
+                                  pasteChapterEditorParagraphs(index, paragraphs, start, end)
+                                }
+                              />
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-xs text-muted-foreground">
+                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
+                          </div>
+                          <Button
+                            type="button"
+                            disabled={
+                              editEditorialDraft.isPending ||
+                              chapterEditorText === chapterEditorTarget.expectedText
+                            }
+                            onClick={submitChapterEditorEdit}
+                          >
+                            {editEditorialDraft.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            บันทึก Draft + ตรวจซ้ำ
+                          </Button>
+                        </div>
+                        <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                          การบันทึกสร้าง Draft revision ใหม่เท่านั้น ไม่ Publish อัตโนมัติ และต้องผ่าน QC/Confirm เดิมก่อน Stage/Publish
+                        </div>
                       </div>
+                    )}
 
                     {editorTarget && !editorTarget.findingId && (
                       <div className="space-y-2 rounded-md border bg-muted/20 p-3">
@@ -2470,7 +4284,11 @@ export default function WorkspacePage() {
                       </div>
                     )}
 
-                    <div className="space-y-2">
+                    <details className="rounded-md border bg-background">
+                      <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                        เครื่องมือแก้ไขรายย่อหน้า
+                      </summary>
+                      <div className="space-y-2 border-t p-3">
                       {(editorialDraftData?.tabs ?? []).map((tab: any) => (
                         <details key={tab.id} className="rounded-md border">
                           <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
@@ -2516,7 +4334,8 @@ export default function WorkspacePage() {
                           </div>
                         </details>
                       ))}
-                    </div>
+                      </div>
+                    </details>
                   </div>
                   </details>
 

@@ -558,6 +558,8 @@ export async function createEditorialEpisodeWorkItem(input: {
   price?: string;
   isFree?: boolean;
   assigneeUserId?: number | null;
+  /** Internal-only M29 intake mode. Public/manual routes never set this. */
+  allowPendingSaleMetadata?: boolean;
 }) {
   await ensureEditorialBoard({
     actorUserId: input.actorUserId,
@@ -573,7 +575,17 @@ export async function createEditorialEpisodeWorkItem(input: {
       "Workspace Episode Pack intake supports package commerce only."
     );
   }
-  const sale = normalizeEditorialSaleMetadata({ saleMode: "package", price: input.price, isFree: input.isFree });
+  const pendingSaleMetadata =
+    input.allowPendingSaleMetadata === true &&
+    input.price === undefined &&
+    input.isFree === undefined;
+  const sale = pendingSaleMetadata
+    ? null
+    : normalizeEditorialSaleMetadata({
+        saleMode: "package",
+        price: input.price,
+        isFree: input.isFree,
+      });
   if (!itemKey || itemKey.length > 100) {
     throw new WorkspaceEditorialBoardError(
       "EDITORIAL_WORK_ITEM_CONFLICT",
@@ -660,9 +672,9 @@ export async function createEditorialEpisodeWorkItem(input: {
     if (existingWorkItem) {
       if (
         (existingWorkItem.episodeTitle ?? null) !== episodeTitle ||
-        existingWorkItem.saleMode !== sale.saleMode ||
-        existingWorkItem.price !== sale.price ||
-        existingWorkItem.isFree !== sale.isFree ||
+        (existingWorkItem.saleMode ?? null) !== (sale?.saleMode ?? null) ||
+        (existingWorkItem.price ?? null) !== (sale?.price ?? null) ||
+        (existingWorkItem.isFree ?? null) !== (sale?.isFree ?? null) ||
         (existingWorkItem.assigneeUserId ?? null) !==
           (input.assigneeUserId ?? null)
       ) {
@@ -722,9 +734,9 @@ export async function createEditorialEpisodeWorkItem(input: {
         itemKey,
         episodeNumber: input.episodeNumber.trim(),
         episodeTitle,
-        saleMode: sale.saleMode,
-        price: sale.price,
-        isFree: sale.isFree,
+        saleMode: sale?.saleMode ?? null,
+        price: sale?.price ?? null,
+        isFree: sale?.isFree ?? null,
         assigneeUserId: input.assigneeUserId ?? null,
         createdByUserId: input.actorUserId,
       })
@@ -742,9 +754,9 @@ export async function createEditorialEpisodeWorkItem(input: {
       workItem.workItemType !== "new_episode" ||
       workItem.itemKey !== itemKey ||
       (workItem.episodeTitle ?? null) !== episodeTitle ||
-      workItem.saleMode !== sale.saleMode ||
-      workItem.price !== sale.price ||
-      workItem.isFree !== sale.isFree ||
+      (workItem.saleMode ?? null) !== (sale?.saleMode ?? null) ||
+      (workItem.price ?? null) !== (sale?.price ?? null) ||
+      (workItem.isFree ?? null) !== (sale?.isFree ?? null) ||
       (workItem.assigneeUserId ?? null) !== (input.assigneeUserId ?? null)
     ) {
       throw new WorkspaceEditorialBoardError(

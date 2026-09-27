@@ -14,6 +14,13 @@ describe("Workspace Editorial editor static boundaries", () => {
     );
   });
 
+  it("keeps migration 0059 additive while extending the editor audit enum", () => {
+    const migration = source("drizzle/0059_workspace_editorial_tab_editor.sql");
+    expect(migration).toContain("'replace_tab'");
+    expect(migration).toContain("workspaceEditorialDraftEditEvents");
+    expect(migration).not.toMatch(/DROP TABLE|DROP COLUMN|DROP FOREIGN KEY/i);
+  });
+
   it("binds every edit to exact Draft id/version/hash and paragraph/range expectations", () => {
     const service = source("server/workspace/editorialEditor.service.ts");
     const domain = source("server/workspace/editorialEditor.domain.ts");
@@ -57,7 +64,7 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(editor).toContain('targetColumnKey: "editing"');
     expect(editor).toContain("expectedDraftId: persisted.draftId");
     expect(checker).toContain(
-      'readModel.unresolvedCount > 0 ? "needs_fix" : "pending_confirm"'
+      'readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm"'
     );
     expect(checker).toContain("expectedDraftId: result.draftId");
     expect(projection).toContain("latestDraft.id !== input.expectedDraftId");
@@ -90,7 +97,42 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain('submitEditorEdit("autosave")');
     expect(page).toContain("บันทึกทันที + ตรวจซ้ำ");
     expect(page).toContain("Workspace Editor");
-    expect(page).toContain('<details className="rounded-md border">');
+    expect(page).toContain('id="workspace-chapter-editor"');
+    expect(page).toContain("Workspace Editor ·");
+    expect(page).toContain("แท็บใน Draft");
+    expect(page).toContain("แท็บที่นำออก");
+    expect(page).toContain("เครื่องมือแก้ไขรายย่อหน้า");
+    expect(page).not.toContain("Draft structure ·");
+    expect(page).not.toContain("Draft tabs");
     expect(page).toContain("Undo");
+    expect(page).toContain("Chapter Editor");
+    expect(page).toContain("เติมเนื้อหา");
+    expect(page).toContain('kind: "replace_tab"');
+    expect(page).toContain("ChapterEditorParagraphBlock");
+    expect(page).toContain("pasteChapterEditorParagraphs");
+    expect(page).toContain("วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ");
+    expect(page).toContain("ไฮไลต์คำต่างประเทศ");
+    expect(page).toContain("chapterEditorTabStatus");
+    expect(page).toContain("ก่อนหน้า");
+    expect(page).toContain("ถัดไป");
+    expect(page).toContain("Ctrl/Cmd+S = บันทึก");
+    expect(page).toContain("beforeunload");
+    expect(page).toContain("sessionStorage");
+    expect(page).toContain("ยังไม่บันทึก");
+    expect(page).toContain("savedChapterTarget");
+    expect(page).toContain("Issue Queue");
+    expect(page).toContain("Previous finding");
+    expect(page).toContain("Next finding");
+    expect(page).toContain("บทมีปัญหาถัดไป");
+    expect(page).toContain('["issue", "มีปัญหา"]');
+    expect(page).toContain('["unedited", "ยังไม่แก้"]');
+    expect(page).toContain('["edited", "แก้แล้ว"]');
+    expect(page).toContain("ผ่าน {chapterEditorProgress.passed}");
+    expect(page).toContain("ค้าง {chapterEditorProgress.pending}");
+    expect(page).toContain("ยืนยันแล้ว {chapterEditorProgress.confirmed}");
+    expect(page).toContain("navigateChapterEditorIssue");
+    expect(page).toContain("ไปยัง structural issue");
+    expect(page).toContain("StatusPill");
+    expect(page).toContain("ไม่ Publish อัตโนมัติ");
   });
 });

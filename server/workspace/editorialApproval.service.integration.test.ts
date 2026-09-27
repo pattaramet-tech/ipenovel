@@ -198,7 +198,7 @@ describe.sequential(
         expect(staged.episode.isPublished).toBe(false);
         expect(staged.episode.publishedAt).toBeNull();
         expect(staged.episode.title).toBe("ชื่อจาก Intake");
-        expect(staged.episode.content).toBe("เนื้อหาฉบับแรก\n\nจบตอน");
+        expect(staged.episode.content).toBe("บทที่ 12 ชื่อบท\n\nเนื้อหาฉบับแรก\n\nจบตอน");
         stagedEpisodeId = staged.episode.id;
         expect(staged.readModel.readyToPublish).toBe(true);
 
@@ -298,7 +298,7 @@ describe.sequential(
           idempotencyKey: "approval-stage-fixture-stage-v2",
         });
         expect(staged2.episode.id).toBe(stagedEpisodeId);
-        expect(staged2.episode.content).toBe("เนื้อหาฉบับแก้ไข\n\nจบตอน");
+        expect(staged2.episode.content).toBe("บทที่ 12 ชื่อบท\n\nเนื้อหาฉบับแก้ไข\n\nจบตอน");
         expect(staged2.episode.isPublished).toBe(false);
         expect(staged2.readModel.readyToPublish).toBe(true);
 
@@ -331,7 +331,7 @@ describe.sequential(
       }
     });
 
-    it("stages 036-085 as 50 unpublished Episodes atomically, replays idempotently, and safely restages the same Episode identities", async () => {
+    it("stages 036-085 as one unpublished commercial Episode Pack, replays idempotently, and safely restages the same package identity", async () => {
       if (!process.env.TEST_DATABASE_URL) return;
       assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
@@ -421,12 +421,15 @@ describe.sequential(
           expectedDraftSha256: ready.latestDraft!.draftSha256,
           idempotencyKey: "approval-range-stage-v1",
         });
-        expect(staged.batchCount).toBe(50);
-        expect(staged.stages).toHaveLength(50);
-        expect(staged.episodes).toHaveLength(50);
+        expect(staged.batchCount).toBe(1);
+        expect(staged.stages).toHaveLength(1);
+        expect(staged.episodes).toHaveLength(1);
+        expect(staged.episode.episodeNumber).toBe("036 - 085");
+        expect(staged.episode.content).toContain("บทที่ 36");
+        expect(staged.episode.content).toContain("บทที่ 85");
         expect(staged.episodes.every((episode: any) => !episode.isPublished)).toBe(true);
         expect(staged.readModel.readyToPublish).toBe(true);
-        expect(staged.readModel.stages).toHaveLength(50);
+        expect(staged.readModel.stages).toHaveLength(1);
 
         const originalEpisodeIds = staged.episodes.map((episode: any) => episode.id);
         const replay = await stageEditorialEpisodeDraft({
@@ -507,18 +510,17 @@ describe.sequential(
         expect(restaged.episodes.map((episode: any) => episode.id)).toEqual(
           originalEpisodeIds
         );
-        const episode60 = restaged.episodes.find(
-          (episode: any) => episode.episodeNumber === "060"
-        );
-        expect(episode60?.content).toContain(replacement);
+        expect(restaged.episode.episodeNumber).toBe("036 - 085");
+        expect(restaged.episode.content).toContain(replacement);
+        expect(restaged.episode.content).toContain("บทที่ 60");
         expect(restaged.readModel.readyToPublish).toBe(true);
 
         const stored = await db
           .select()
           .from(episodes)
           .where(eq(episodes.novelId, novel.id));
-        expect(stored).toHaveLength(50);
-        expect(new Set(stored.map(row => row.episodeNumber)).size).toBe(50);
+        expect(stored).toHaveLength(1);
+        expect(stored[0]?.episodeNumber).toBe("036 - 085");
       } finally {
         if (boardId) {
           await db

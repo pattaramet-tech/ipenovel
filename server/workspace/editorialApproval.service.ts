@@ -3,9 +3,11 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import {
   episodes,
   workspaceEditorialCheckerAllowWords,
+  workspaceEditorialCheckerAnomalies,
   workspaceEditorialCheckerFindings,
   workspaceEditorialCheckerFindingStates,
   workspaceEditorialCheckerRuns,
+  workspaceEditorialStructuralConfirmations,
   workspaceEditorialDraftApprovals,
   workspaceEditorialDraftParagraphs,
   workspaceEditorialDraftTabs,
@@ -35,7 +37,10 @@ import {
   type EditorialEpisodeDraftPlan,
 } from "./editorialApproval.domain";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
-import { editorialAllowListSha256 } from "./editorialForeignChecker.domain";
+import {
+  EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
+  editorialAllowListSha256,
+} from "./editorialForeignChecker.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 
 export class WorkspaceEditorialApprovalError extends Error {
@@ -217,7 +222,10 @@ async function currentQcEvidence(
       findings: [],
     };
   }
-  if (run.draftId !== draftId) {
+  if (
+    run.draftId !== draftId ||
+    run.engineVersion !== EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+  ) {
     return {
       ready: false as const,
       reason: "CHECKER_STALE" as const,
@@ -228,7 +236,7 @@ async function currentQcEvidence(
     };
   }
 
-  const [allowRows, findings, states] = await Promise.all([
+  const [allowRows, findings, states, anomalies, confirmations] = await Promise.all([
     db
       .select()
       .from(workspaceEditorialCheckerAllowWords)
@@ -253,6 +261,24 @@ async function currentQcEvidence(
       .select()
       .from(workspaceEditorialCheckerFindingStates)
       .where(eq(workspaceEditorialCheckerFindingStates.workItemId, workItemId)),
+    db
+      .select()
+      .from(workspaceEditorialCheckerAnomalies)
+      .where(eq(workspaceEditorialCheckerAnomalies.runId, run.id))
+      .orderBy(
+        asc(workspaceEditorialCheckerAnomalies.severity),
+        asc(workspaceEditorialCheckerAnomalies.anomalyType),
+        asc(workspaceEditorialCheckerAnomalies.id)
+      ),
+    db
+      .select()
+      .from(workspaceEditorialStructuralConfirmations)
+      .where(
+        and(
+          eq(workspaceEditorialStructuralConfirmations.workItemId, workItemId),
+          eq(workspaceEditorialStructuralConfirmations.draftId, draftId)
+        )
+      ),
   ]);
   const activeAllow = new Set(allowRows.map((row: any) => row.normalizedWord));
   const currentAllowListSha256 = editorialAllowListSha256(
@@ -288,19 +314,49 @@ async function currentQcEvidence(
   const unresolvedCount = projected.filter(
     (finding: any) => finding.disposition === "open"
   ).length;
+  const confirmationByKey = new Map(
+    confirmations.map((confirmation: any) => [
+      confirmation.anomalyKey,
+      confirmation,
+    ])
+  );
+  const projectedAnomalies = anomalies.map((anomaly: any) => {
+    const confirmation: any = confirmationByKey.get(anomaly.anomalyKey);
+    const disposition =
+      anomaly.anomalyType === "source_note_only" &&
+      confirmation?.status === "confirmed"
+        ? "confirmed_source_note"
+        : "open";
+    return {
+      anomalyKey: anomaly.anomalyKey,
+      anomalyType: anomaly.anomalyType,
+      severity: anomaly.severity,
+      disposition,
+      resolutionVersion: Number(confirmation?.version ?? 0),
+    };
+  });
+  const blockingAnomalyCount = projectedAnomalies.filter(
+    (anomaly: any) =>
+      anomaly.severity === "error" &&
+      anomaly.disposition !== "confirmed_source_note"
+  ).length;
   const qcEvidenceSha256 = editorialQcEvidenceSha256({
     runId: run.id,
     draftId,
     engineVersion: run.engineVersion,
     allowListSha256: currentAllowListSha256,
     findings: projected,
+    anomalies: projectedAnomalies,
   });
+  const ready = unresolvedCount === 0 && blockingAnomalyCount === 0;
   return {
-    ready: unresolvedCount === 0,
-    reason: unresolvedCount === 0 ? null : ("QC_UNRESOLVED" as const),
+    ready,
+    reason: ready ? null : ("QC_UNRESOLVED" as const),
     run,
     qcEvidenceSha256,
     unresolvedCount,
+    blockingAnomalyCount,
+    anomalies: projectedAnomalies,
     findings: projected,
   };
 }
@@ -598,6 +654,13 @@ export async function getEditorialApprovalReadModel(input: {
       checkerRunId: qc.run?.id ?? null,
       qcEvidenceSha256: qc.qcEvidenceSha256,
       unresolvedCount: qc.unresolvedCount,
+      blockingAnomalyCount: qc.blockingAnomalyCount ?? 0,
+      anomalyCount: Number(qc.run?.anomalyCount ?? 0),
+      tabCount: Number(qc.run?.tabCount ?? 0),
+      expectedTabCount:
+        qc.run?.expectedTabCount === null || qc.run?.expectedTabCount === undefined
+          ? null
+          : Number(qc.run.expectedTabCount),
     },
     approval,
     approvalStatus,
@@ -689,10 +752,15 @@ export async function approveEditorialDraft(input: {
         "Checker/QC evidence changed before approval. Recheck the current Draft."
       );
     }
-    if (!qc.ready || qc.unresolvedCount !== 0 || !qc.qcEvidenceSha256) {
+    if (
+      !qc.ready ||
+      qc.unresolvedCount !== 0 ||
+      Number(qc.blockingAnomalyCount ?? 0) !== 0 ||
+      !qc.qcEvidenceSha256
+    ) {
       throw new WorkspaceEditorialApprovalError(
         "QC_UNRESOLVED",
-        "All deterministic checker findings must be resolved before approval."
+        "All deterministic checker findings and blocking structural anomalies must be resolved before approval."
       );
     }
 

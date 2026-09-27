@@ -666,6 +666,13 @@ export function editorialQcEvidenceSha256(input: {
     disposition: string;
     resolutionVersion: number;
   }>;
+  anomalies?: Array<{
+    anomalyKey: string;
+    anomalyType: string;
+    severity: string;
+    disposition?: string;
+    resolutionVersion?: number;
+  }>;
 }) {
   const findings = input.findings
     .map(finding => ({
@@ -674,6 +681,20 @@ export function editorialQcEvidenceSha256(input: {
       resolutionVersion: finding.resolutionVersion,
     }))
     .sort((a, b) => a.findingKey.localeCompare(b.findingKey));
+  const anomalies = (input.anomalies ?? [])
+    .map(anomaly => {
+      const base = {
+        anomalyKey: anomaly.anomalyKey,
+        anomalyType: anomaly.anomalyType,
+        severity: anomaly.severity,
+      };
+      const disposition = anomaly.disposition ?? "open";
+      const resolutionVersion = anomaly.resolutionVersion ?? 0;
+      return disposition === "open" && resolutionVersion === 0
+        ? base
+        : { ...base, disposition, resolutionVersion };
+    })
+    .sort((a, b) => a.anomalyKey.localeCompare(b.anomalyKey));
   return sha256(
     JSON.stringify({
       contract: EDITORIAL_APPROVAL_CONTRACT,
@@ -682,6 +703,7 @@ export function editorialQcEvidenceSha256(input: {
       engineVersion: input.engineVersion,
       allowListSha256: input.allowListSha256.toLowerCase(),
       findings,
+      anomalies,
     })
   );
 }

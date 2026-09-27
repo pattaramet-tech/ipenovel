@@ -386,6 +386,48 @@
       "when": 1789932500000,
       "tag": "0054_workspace_editorial_sale_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "5",
+      "when": 1790450000000,
+      "tag": "0055_workspace_master_intake_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "5",
+      "when": 1790452800000,
+      "tag": "0056_workspace_master_intake_optional_prepared_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "5",
+      "when": 1790456400000,
+      "tag": "0057_workspace_editorial_bulk_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "5",
+      "when": 1790458200000,
+      "tag": "0058_workspace_editorial_structural_anomalies",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "5",
+      "when": 1790460000000,
+      "tag": "0059_workspace_editorial_tab_editor",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "5",
+      "when": 1790461800000,
+      "tag": "0060_workspace_editorial_structural_confirmations",
+      "breakpoints": true
     }
   ]
 }

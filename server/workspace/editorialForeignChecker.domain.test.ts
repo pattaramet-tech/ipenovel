@@ -42,6 +42,68 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(finding.findingKey).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("detects Devanagari U+0900-U+097F inside Thai narrative", () => {
+    const text = "มันคือโปเกมอนโอมา\u093E\u0907\u091Fกับคาบูโตะ";
+    const findings = evaluateEditorialForeignParagraph(
+      paragraph(text),
+      new Set()
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      ruleKey: EDITORIAL_FOREIGN_CHECKER_RULES.foreignScript,
+      token: "\u093E\u0907\u091F",
+    });
+    expect(
+      Array.from(findings[0].token).map(char =>
+        "U+" + char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")
+      )
+    ).toEqual(["U+093E", "U+0907", "U+091F"]);
+  });
+
+  it("flags a source-junk tail block from the first strong marker through chapter end", () => {
+    const rows = [
+      paragraph("เนื้อเรื่องปกติ", { paragraphKey: "p1", paragraphOrder: 1 }),
+      paragraph("ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด", { paragraphKey: "p2", paragraphOrder: 2 }),
+      paragraph("โดยเฉพาะสิบอันดับแรกของพาวเวอร์สโตน", { paragraphKey: "p3", paragraphOrder: 3 }),
+      paragraph("1.Unown", { paragraphKey: "p4", paragraphOrder: 4 }),
+      paragraph("2. Oboro21", { paragraphKey: "p5", paragraphOrder: 5 }),
+      paragraph("--------------------------------", { paragraphKey: "p6", paragraphOrder: 6 }),
+      paragraph("หากคุณอยากอ่านตอนถัดไปก่อนใคร หรือเพียงอยากสนับสนุนผม", { paragraphKey: "p7", paragraphOrder: 7 }),
+      paragraph("ความคิดของผู้สร้าง", { paragraphKey: "p8", paragraphOrder: 8 }),
+      paragraph("alex02373 alex02373", { paragraphKey: "p9", paragraphOrder: 9 }),
+      paragraph("จบตอน", { paragraphKey: "p10", paragraphOrder: 10 }),
+    ];
+    const result = evaluateEditorialForeignDraft({ paragraphs: rows });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([
+      2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
+    expect(junk[0].message).toContain("ข้อความขยะ/ข้อความท้ายต้นฉบับ");
+    expect(result.status).toBe("failed");
+  });
+
+  it("does not classify ordinary narrative support wording as source junk", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เพื่อนของเขายังคงสนับสนุนแผนการต่อสู้ครั้งนี้", {
+          paragraphKey: "narrative-1",
+          paragraphOrder: 1,
+        }),
+        paragraph("จบตอน", {
+          paragraphKey: "narrative-2",
+          paragraphOrder: 2,
+        }),
+      ],
+    });
+    expect(
+      result.findings.filter(
+        finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+      )
+    ).toEqual([]);
+  });
+
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
     const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
     expect(

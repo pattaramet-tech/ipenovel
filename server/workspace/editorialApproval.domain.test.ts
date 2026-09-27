@@ -489,6 +489,51 @@ describe("Editorial approval/staging domain", () => {
     );
   });
 
+  it("binds structural confirmation state into QC evidence", () => {
+    const base = {
+      runId: 9,
+      draftId: 8,
+      engineVersion: "checker-v1",
+      allowListSha256: "a".repeat(64),
+      findings: [],
+      anomalies: [
+        {
+          anomalyKey: "c".repeat(64),
+          anomalyType: "source_note_only",
+          severity: "error",
+          disposition: "open",
+          resolutionVersion: 0,
+        },
+      ],
+    };
+    const confirmed = {
+      ...base,
+      anomalies: [
+        {
+          ...base.anomalies[0]!,
+          disposition: "confirmed_source_note",
+          resolutionVersion: 1,
+        },
+      ],
+    };
+    const legacyOpen = {
+      ...base,
+      anomalies: [
+        {
+          anomalyKey: "c".repeat(64),
+          anomalyType: "source_note_only",
+          severity: "error",
+        },
+      ],
+    };
+    expect(editorialQcEvidenceSha256(base)).toBe(
+      editorialQcEvidenceSha256(legacyOpen)
+    );
+    expect(editorialQcEvidenceSha256(base)).not.toBe(
+      editorialQcEvidenceSha256(confirmed)
+    );
+  });
+
   it("binds approval and stage payload hashes to the exact draft/QC/episode state", () => {
     const plan = buildEditorialEpisodeDraftPlan(input());
     const approval = editorialApprovalPayloadSha256({

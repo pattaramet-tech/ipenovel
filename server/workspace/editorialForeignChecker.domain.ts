@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v3" as const;
+  "workspace-editorial-foreign-checker-v5" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
   latinWord: "latin_word",
   longEnglish: "long_english",
+  sourceJunk: "source_junk",
 } as const;
 
 export type EditorialForeignRuleKey =
@@ -51,7 +52,20 @@ const EXTRA_ALLOWED_CHARS = new Set(["・"]);
  * so short untranslated words such as "support" can be surfaced with context.
  */
 const FOREIGN_SCRIPT_RE =
-  /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u0400-\u04FF\u1E00-\u1EFF\u0300-\u036F]+/g;
+  /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u0400-\u04FF\u1E00-\u1EFF\u0300-\u036F\u0900-\u097F\uA8E0-\uA8FF\u1CD0-\u1CFF]+/g;
+
+const SOURCE_JUNK_ANCHOR_PATTERNS = [
+  /ความคิดของ(?:ผู้สร้าง|ผู้เขียน)/i,
+  /ความคิดเห็น(?:ของ)?(?:ผู้สร้าง|ผู้เขียน)/i,
+  /หมายเหตุ(?:จาก)?(?:ผู้สร้าง|ผู้เขียน|ผู้แปล)/i,
+  /ขอบคุณ(?:มาก)?สำหรับ[^\n]*(?:พาวเวอร์สโตน|power\s*stones?)/i,
+  /(?:พาวเวอร์สโตน|power\s*stones?)[^\n]*(?:สิบอันดับแรก|top\s*10|อันดับ)/i,
+  /หากคุณอยากอ่านตอนถัดไปก่อนใคร/i,
+  /อ่านตอนถัดไปก่อนใคร[^\n]*(?:สนับสนุน|support|patreon)/i,
+  /(?:สนับสนุนผม|สนับสนุนผู้เขียน|ช่องทางติดตามผู้เขียน)/i,
+  /\b(?:patreon|ko-fi|buymeacoffee)\b/i,
+  /(?:author(?:'s)?\s*(?:thoughts?|notes?)|creator(?:'s)?\s*(?:thoughts?|notes?))/i,
+] as const;
 
 const LATIN_WORD_RE = /[A-Za-z][A-Za-z'’-]*/g;
 const LINK_OR_EMAIL_RE =
@@ -234,11 +248,13 @@ function buildFinding(
   const normalizedToken = normalizeEditorialAllowedWord(token);
   const sentence = sentenceAround(paragraph.text, startOffset, endOffset);
   const ruleLabel =
-    ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish
-      ? "พบประโยคภาษาอังกฤษยาว"
-      : ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.latinWord
-        ? "พบคำภาษาอังกฤษ"
-        : "พบคำ/อักษรต่างประเทศ";
+    ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+      ? "พบข้อความขยะ/ข้อความท้ายต้นฉบับ"
+      : ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish
+        ? "พบประโยคภาษาอังกฤษยาว"
+        : ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.latinWord
+          ? "พบคำภาษาอังกฤษ"
+          : "พบคำ/อักษรต่างประเทศ";
   return {
     findingKey: findingKey({
       paragraphKey: paragraph.paragraphKey,
@@ -280,7 +296,8 @@ export function evaluateEditorialForeignParagraph(
   const kaomojiSkipMap = buildKaomojiSkipMap(text);
   // Product rule: basic A-Z/a-z alphabet is intentionally non-blocking.
   // We keep the historical latin_word/long_english rule keys for old evidence,
-  // but v3 only emits findings for non-ASCII foreign scripts.
+  // but v5 emits blocking findings only for non-ASCII foreign scripts and
+  // deterministic source-junk tail blocks.
   const checkAsciiAlphabet = false;
   if (checkAsciiAlphabet) {
     const longSpans = englishSpans(text).filter(span =>
@@ -362,6 +379,51 @@ export function evaluateEditorialForeignParagraph(
   );
 }
 
+function hasSourceJunkAnchor(text: string) {
+  const value = String(text || "").trim();
+  return Boolean(value) && SOURCE_JUNK_ANCHOR_PATTERNS.some(pattern =>
+    pattern.test(value)
+  );
+}
+
+function evaluateEditorialSourceJunkTail(
+  paragraphs: readonly EditorialCheckerParagraphInput[]
+): EditorialForeignFinding[] {
+  const grouped = new Map<string, EditorialCheckerParagraphInput[]>();
+  for (const paragraph of paragraphs) {
+    const bucket = grouped.get(paragraph.sourceTabId) ?? [];
+    bucket.push(paragraph);
+    grouped.set(paragraph.sourceTabId, bucket);
+  }
+
+  const findings: EditorialForeignFinding[] = [];
+  for (const rows of Array.from(grouped.values())) {
+    const ordered = [...rows].sort(
+      (a, b) => a.paragraphOrder - b.paragraphOrder
+    );
+    const anchorIndex = ordered.findIndex(paragraph =>
+      hasSourceJunkAnchor(paragraph.text)
+    );
+    if (anchorIndex < 0) continue;
+
+    for (const paragraph of ordered.slice(anchorIndex)) {
+      const token = String(paragraph.text || "").trim();
+      if (!token) continue;
+      const startOffset = paragraph.text.indexOf(token);
+      findings.push(
+        buildFinding(
+          paragraph,
+          EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
+          Math.max(0, startOffset),
+          Math.max(0, startOffset) + token.length,
+          token
+        )
+      );
+    }
+  }
+  return findings;
+}
+
 export function evaluateEditorialForeignDraft(input: {
   paragraphs: readonly EditorialCheckerParagraphInput[];
   allowWords?: readonly string[];
@@ -369,17 +431,18 @@ export function evaluateEditorialForeignDraft(input: {
   const allowWords = new Set(
     (input.allowWords ?? []).map(normalizeEditorialAllowedWord).filter(Boolean)
   );
-  const findings = input.paragraphs
-    .flatMap(paragraph =>
+  const findings = [
+    ...input.paragraphs.flatMap(paragraph =>
       evaluateEditorialForeignParagraph(paragraph, allowWords)
-    )
-    .sort(
-      (a, b) =>
-        a.sourceTabId.localeCompare(b.sourceTabId) ||
-        a.paragraphOrder - b.paragraphOrder ||
-        a.startOffset - b.startOffset ||
-        a.findingKey.localeCompare(b.findingKey)
-    );
+    ),
+    ...evaluateEditorialSourceJunkTail(input.paragraphs),
+  ].sort(
+    (a, b) =>
+      a.sourceTabId.localeCompare(b.sourceTabId) ||
+      a.paragraphOrder - b.paragraphOrder ||
+      a.startOffset - b.startOffset ||
+      a.findingKey.localeCompare(b.findingKey)
+  );
   return {
     engineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
     status: findings.length ? ("failed" as const) : ("passed" as const),

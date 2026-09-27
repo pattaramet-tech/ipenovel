@@ -172,15 +172,16 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).not.toContain("การยืนยันผูกกับ Draft SHA256");
   });
 
-  it("puts deterministic checker before the collapsible Draft structure", () => {
+  it("puts deterministic checker before the consolidated Workspace Editor", () => {
     const source = page();
     const checker = source.indexOf("3. ตรวจ / ตรวจซ้ำ");
-    const draft = source.indexOf("Draft structure ·");
+    const editor = source.indexOf("Workspace Editor ·");
     expect(checker).toBeGreaterThan(-1);
-    expect(draft).toBeGreaterThan(checker);
-    expect(source).toContain('<details className="rounded-md border bg-muted/10">');
+    expect(editor).toBeGreaterThan(checker);
+    expect(source).toContain('id="workspace-chapter-editor"');
+    expect(source).toContain('className="rounded-md border bg-muted/10"');
   });
-  it("keeps Draft structure anomaly details visible while collapsed", () => {
+  it("keeps Workspace Editor structure anomaly details visible while collapsed", () => {
     const source = page();
     expect(source).toContain("เลขแท็บไม่เรียง");
     expect(source).toContain("แท็บว่าง");
