@@ -181,6 +181,7 @@ async function loadDraftStructure(
       draftTabId: workspaceEditorialDraftParagraphs.draftTabId,
       paragraphKey: workspaceEditorialDraftParagraphs.paragraphKey,
       paragraphOrder: workspaceEditorialDraftParagraphs.paragraphOrder,
+      sourceParagraphIndex: workspaceEditorialDraftParagraphs.sourceParagraphIndex,
       paragraphFingerprint: workspaceEditorialDraftParagraphs.paragraphFingerprint,
       text: workspaceEditorialDraftParagraphs.text,
     })
@@ -214,6 +215,7 @@ async function loadDraftStructure(
     paragraphs: (paragraphsByTab.get(Number(tab.id)) ?? []).map((row: any) => ({
       paragraphKey: row.paragraphKey,
       paragraphOrder: row.paragraphOrder,
+      sourceParagraphIndex: row.sourceParagraphIndex,
       text: row.text,
     })),
   }));
