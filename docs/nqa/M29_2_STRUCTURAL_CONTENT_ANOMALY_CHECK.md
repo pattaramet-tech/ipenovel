@@ -38,7 +38,11 @@ The Workspace bulk result summary displays the same data per file.
 - `duplicate_content_exact`: canonical chapter bodies are identical.
 
 Blocking anomalies keep QC from approval/staging until the Draft is corrected
-and checker v5 passes again.
+and checker v5 passes again. The M29.3 Structural Repair Assistant adds one
+narrow exception: a `source_note_only` anomaly may be explicitly confirmed by
+an operator when the tab is genuinely a source note. That confirmation is
+Draft-bound, reversible, optimistic-concurrency checked and included in QC
+evidence; it never auto-edits content or bypasses Confirm/Stage/Publish.
 
 ### Review warning
 
@@ -83,7 +87,10 @@ count.
 
 Migration `0058_workspace_editorial_structural_anomalies.sql` adds run-level
 summary fields and `workspaceEditorialCheckerAnomalies`, with durable evidence
-bound to the exact checker run.
+bound to the exact checker run. M29.3 adds
+`0060_workspace_editorial_structural_confirmations.sql` for the explicit,
+Draft-bound `source_note_only` confirmation state.
 
-QC evidence SHA includes structural anomaly identity/type/severity, so
-approval evidence cannot silently outlive a changed checker result.
+QC evidence SHA includes structural anomaly identity/type/severity and any
+non-default confirmation state, so approval evidence cannot silently outlive a
+changed checker result or a changed structural confirmation.

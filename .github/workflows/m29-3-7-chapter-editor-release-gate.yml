@@ -1,0 +1,105 @@
+name: M29.3 Chapter Editor Release Gate
+
+on:
+  push:
+    branches:
+      - feat/nqa-m29-3-chapter-editor
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m29-3-7-chapter-editor-release-gate
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TEST_DATABASE_URL: mysql://root:root@127.0.0.1:3306/ipenovel_test
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/ipenovel_test
+      VITE_PAYMENT_QR_IMAGE_URL: https://pub-example.r2.dev/payment/qr.jpg
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: ipenovel_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare disposable test database and apply migrations
+        run: pnpm test:db:prepare
+
+      - name: Full NQA and Workspace unit regression
+        run: >-
+          pnpm exec vitest run -c vitest.config.ts
+          server/nqa
+          server/workspace
+          client/src/pages/workspaceChapterEditor.test.ts
+          server/migration-deployment-safety.test.ts
+
+      - name: Full Workspace integration regression
+        run: >-
+          pnpm exec vitest run -c vitest.integration.config.ts
+          server/workspace
+
+      - name: Chapter Editor edit to QC to Confirm Stage release gate
+        run: >-
+          pnpm exec vitest run -c vitest.integration.config.ts
+          server/workspace/editorialChapterEditorReleaseGate.service.integration.test.ts
+
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Production build
+        run: pnpm build
+
+      - name: Migration 0060 and diff safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f drizzle/0060_workspace_editorial_structural_confirmations.sql
+          grep -q 'workspaceEditorialStructuralConfirmations' drizzle/0060_workspace_editorial_structural_confirmations.sql
+          if grep -Eiq 'DROP[[:space:]]+(TABLE|COLUMN|FOREIGN KEY)' drizzle/0060_workspace_editorial_structural_confirmations.sql; then
+            echo "Migration 0060 contains a destructive DROP statement"
+            exit 1
+          fi
+          git diff --check c5742e7802bc250cc1e198f0de7774eaa2c2ca0b...HEAD
+          changed="$(git diff --name-only c5742e7802bc250cc1e198f0de7774eaa2c2ca0b...HEAD)"
+          if [ -n "$changed" ] && git grep -n $'\uFFFD' -- $changed; then
+            echo "U+FFFD replacement character found in changed files"
+            exit 1
+          fi
+          if git diff --unified=0 c5742e7802bc250cc1e198f0de7774eaa2c2ca0b...HEAD | grep -E '^\+.*BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; then
+            echo "Private key material detected in diff"
+            exit 1
+          fi
+          if ! git diff --quiet c5742e7802bc250cc1e198f0de7774eaa2c2ca0b...HEAD -- package.json pnpm-lock.yaml; then
+            echo "M29.3 must not add dependencies without separate review."
+            exit 1
+          fi
