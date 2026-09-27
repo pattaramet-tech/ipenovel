@@ -11,6 +11,7 @@ export type ChapterEditorTabStatusInput = {
     sourceParagraphFingerprint: string;
     paragraphFingerprint: string;
   }[];
+  checkerCurrent?: boolean;
   findings?: readonly {
     sourceTabId: string;
     disposition?: string | null;
@@ -21,6 +22,18 @@ export type ChapterEditorTabStatusInput = {
     disposition?: string | null;
   }[];
 };
+
+export type ChapterEditorTabFilter = "all" | "issue" | "unedited" | "edited";
+
+export function chapterEditorMatchesFilter(
+  filter: ChapterEditorTabFilter,
+  status: ReturnType<typeof chapterEditorTabStatus>
+) {
+  if (filter === "issue") return status.issueCount > 0;
+  if (filter === "unedited") return !status.edited;
+  if (filter === "edited") return status.edited;
+  return true;
+}
 
 export type ChapterEditorIssueFindingInput = {
   id: number;
@@ -119,13 +132,34 @@ export function chapterEditorTabStatus(input: ChapterEditorTabStatusInput) {
       finding.sourceTabId === input.sourceTabId &&
       (finding.disposition ?? "open") === "open"
   ).length;
-  const structuralIssueCount = (input.anomalies ?? []).filter(
+  const relatedAnomalies = (input.anomalies ?? []).filter(
     anomaly =>
-      (anomaly.sourceTabId === input.sourceTabId ||
-        (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)) &&
-      anomaly.disposition !== "confirmed_source_note"
+      anomaly.sourceTabId === input.sourceTabId ||
+      (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)
+  );
+  const structuralIssueCount = relatedAnomalies.filter(
+    anomaly => anomaly.disposition !== "confirmed_source_note"
   ).length;
-  return { edited, foreignFindingCount, structuralIssueCount };
+  const confirmedStructuralCount = relatedAnomalies.filter(
+    anomaly => anomaly.disposition === "confirmed_source_note"
+  ).length;
+  const issueCount = foreignFindingCount + structuralIssueCount;
+  const progressState =
+    input.checkerCurrent === false
+      ? "unchecked"
+      : issueCount > 0
+        ? "pending"
+        : confirmedStructuralCount > 0
+          ? "confirmed"
+          : "passed";
+  return {
+    edited,
+    foreignFindingCount,
+    structuralIssueCount,
+    confirmedStructuralCount,
+    issueCount,
+    progressState,
+  };
 }
 
 function normalizeNewlines(value: string) {

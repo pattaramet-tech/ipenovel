@@ -10,6 +10,7 @@ import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
 import {
   chapterEditorFindingRanges,
   chapterEditorIssues,
+  chapterEditorMatchesFilter,
   chapterEditorStructuralRepairGuidance,
   chapterEditorTabStatus,
   parseChapterEditorPasteText,
@@ -335,6 +336,9 @@ export default function WorkspacePage() {
   const chapterEditorParagraphSequence = useRef(0);
   const chapterEditorScrollRef = useRef<HTMLDivElement>(null);
   const [chapterEditorIssueIndex, setChapterEditorIssueIndex] = useState(0);
+  const [chapterEditorTabFilter, setChapterEditorTabFilter] = useState<
+    "all" | "issue" | "unedited" | "edited"
+  >("all");
   const chapterEditorScrollByTab = useRef(new Map<string, number>());
   const chapterEditorText = useMemo(
     () => serializeChapterEditorParagraphs(chapterEditorParagraphs.map(paragraph => paragraph.text)),
@@ -1473,23 +1477,46 @@ export default function WorkspacePage() {
       )
   );
   const chapterEditorTabs = (editorialDraftData?.tabs ?? []) as any[];
-  const currentCheckerFindings = editorialCheckerRunStale
-    ? []
-    : ((editorialCheckerData?.findings ?? []) as any[]);
-  const currentCheckerAnomalies = editorialCheckerRunStale
-    ? []
-    : ((editorialCheckerData?.anomalies ?? []) as any[]);
+  const editorialCheckerCurrent = Boolean(
+    editorialCheckerData?.run &&
+      !editorialCheckerRunStale &&
+      editorialCheckerData?.isCurrent !== false
+  );
+  const currentCheckerFindings = editorialCheckerCurrent
+    ? ((editorialCheckerData?.findings ?? []) as any[])
+    : [];
+  const currentCheckerAnomalies = editorialCheckerCurrent
+    ? ((editorialCheckerData?.anomalies ?? []) as any[])
+    : [];
   const chapterEditorStatusByTab = new Map(
     chapterEditorTabs.map((tab: any) => [
       tab.sourceTabId,
       chapterEditorTabStatus({
         sourceTabId: tab.sourceTabId,
         paragraphs: tab.paragraphs ?? [],
+        checkerCurrent: editorialCheckerCurrent,
         findings: currentCheckerFindings,
         anomalies: currentCheckerAnomalies,
       }),
     ])
   );
+  const chapterEditorProgress = chapterEditorTabs.reduce(
+    (summary, tab: any) => {
+      const state = chapterEditorStatusByTab.get(tab.sourceTabId)?.progressState;
+      if (state === "passed") summary.passed += 1;
+      else if (state === "pending") summary.pending += 1;
+      else if (state === "confirmed") summary.confirmed += 1;
+      else summary.unchecked += 1;
+      return summary;
+    },
+    { passed: 0, pending: 0, confirmed: 0, unchecked: 0 }
+  );
+  const filteredChapterEditorTabs = chapterEditorTabs.filter((tab: any) => {
+    const status = chapterEditorStatusByTab.get(tab.sourceTabId);
+    return status
+      ? chapterEditorMatchesFilter(chapterEditorTabFilter, status)
+      : chapterEditorTabFilter === "all";
+  });
   const chapterEditorCurrentIndex = chapterEditorTarget
     ? chapterEditorTabs.findIndex(
         (tab: any) => tab.sourceTabId === chapterEditorTarget.sourceTabId
@@ -1504,6 +1531,22 @@ export default function WorkspacePage() {
     chapterEditorCurrentIndex < chapterEditorTabs.length - 1
       ? chapterEditorTabs[chapterEditorCurrentIndex + 1]
       : undefined;
+  const nextIssueChapterTab = (() => {
+    if (!chapterEditorTabs.length) return undefined;
+    const startIndex = chapterEditorCurrentIndex >= 0 ? chapterEditorCurrentIndex : -1;
+    for (let offset = 1; offset <= chapterEditorTabs.length; offset += 1) {
+      const index = (startIndex + offset) % chapterEditorTabs.length;
+      const tab = chapterEditorTabs[index];
+      if (
+        tab &&
+        tab.sourceTabId !== chapterEditorTarget?.sourceTabId &&
+        (chapterEditorStatusByTab.get(tab.sourceTabId)?.issueCount ?? 0) > 0
+      ) {
+        return tab;
+      }
+    }
+    return undefined;
+  })();
   const currentChapterStatus = chapterEditorTarget
     ? chapterEditorStatusByTab.get(chapterEditorTarget.sourceTabId)
     : undefined;
@@ -1690,6 +1733,14 @@ export default function WorkspacePage() {
     .join("|");
   const selectedChapterEditorIssue =
     chapterEditorIssueItems[chapterEditorIssueIndex];
+  const chapterEditorIssueCounts = chapterEditorIssueItems.reduce(
+    (counts, issue) => {
+      if (issue.kind === "finding") counts.findings += 1;
+      else counts.structural += 1;
+      return counts;
+    },
+    { findings: 0, structural: 0 }
+  );
   const chapterEditorFindings = chapterEditorTarget
     ? currentCheckerFindings.filter(
         (finding: any) =>
@@ -1705,10 +1756,6 @@ export default function WorkspacePage() {
     bucket.push(finding);
     chapterEditorFindingsByParagraphKey.set(paragraphKey, bucket);
   }
-  const chapterEditorForeignTokens = Array.from(
-    new Set(chapterEditorFindings.map((finding: any) => String(finding.token ?? "")).filter(Boolean))
-  ) as string[];
-
   useEffect(() => {
     setChapterEditorIssueIndex(current =>
       chapterEditorIssueItems.length
@@ -3466,39 +3513,90 @@ export default function WorkspacePage() {
                         </div>
                       )}
 
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="font-medium">แท็บใน Draft</div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={
-                            !editorialEditorData?.canUndo ||
-                            !latestEditorialDraft ||
-                            undoEditorialEdit.isPending
-                          }
-                          onClick={() => {
-                            if (!latestEditorialDraft) return;
-                            undoEditorialEdit.mutate({
-                              workspaceId: selectedWorkspaceId,
-                              workItemId: selectedSourceWorkItemId,
-                              expectedDraftId: latestEditorialDraft.id,
-                              expectedDraftVersion: latestEditorialDraft.version,
-                              expectedDraftSha256: latestEditorialDraft.draftSha256,
-                              idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
-                            });
-                          }}
-                        >
-                          {undoEditorialEdit.isPending && (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          )}
-                          Undo
-                        </Button>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-2">
+                          <div className="font-medium">
+                            แท็บใน Draft · {filteredChapterEditorTabs.length}/{chapterEditorTabs.length}
+                          </div>
+                          <div className="flex flex-wrap gap-1 text-xs">
+                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-800">
+                              ผ่าน {chapterEditorProgress.passed}
+                            </span>
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-900">
+                              ค้าง {chapterEditorProgress.pending}
+                            </span>
+                            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-800">
+                              ยืนยันแล้ว {chapterEditorProgress.confirmed}
+                            </span>
+                            {chapterEditorProgress.unchecked > 0 && (
+                              <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                                ยังไม่ตรวจ {chapterEditorProgress.unchecked}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {([
+                            ["all", "ทั้งหมด"],
+                            ["issue", "มีปัญหา"],
+                            ["unedited", "ยังไม่แก้"],
+                            ["edited", "แก้แล้ว"],
+                          ] as const).map(([value, label]) => (
+                            <Button
+                              key={value}
+                              type="button"
+                              size="sm"
+                              variant={chapterEditorTabFilter === value ? "secondary" : "outline"}
+                              onClick={() => setChapterEditorTabFilter(value)}
+                            >
+                              {label}
+                            </Button>
+                          ))}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={!nextIssueChapterTab || editEditorialDraft.isPending}
+                            onClick={() =>
+                              nextIssueChapterTab && openChapterEditor(nextIssueChapterTab)
+                            }
+                          >
+                            บทมีปัญหาถัดไป
+                            <ChevronRight className="ml-1 h-4 w-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                              !editorialEditorData?.canUndo ||
+                              !latestEditorialDraft ||
+                              undoEditorialEdit.isPending
+                            }
+                            onClick={() => {
+                              if (!latestEditorialDraft) return;
+                              undoEditorialEdit.mutate({
+                                workspaceId: selectedWorkspaceId,
+                                workItemId: selectedSourceWorkItemId,
+                                expectedDraftId: latestEditorialDraft.id,
+                                expectedDraftVersion: latestEditorialDraft.version,
+                                expectedDraftSha256: latestEditorialDraft.draftSha256,
+                                idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
+                              });
+                            }}
+                          >
+                            {undoEditorialEdit.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            Undo
+                          </Button>
+                        </div>
                       </div>
 
-                      {!!(editorialSourceDraft.data as any)?.tabs?.length ? (
+                      {!!chapterEditorTabs.length ? (
+                        filteredChapterEditorTabs.length ? (
                         <div className="space-y-2">
-                          {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
+                          {filteredChapterEditorTabs.map((tab: any) => (
                             <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div>
@@ -3587,6 +3685,9 @@ export default function WorkspacePage() {
                             </div>
                           ))}
                         </div>
+                        ) : (
+                          <EmptyState>ไม่พบแท็บตามตัวกรอง</EmptyState>
+                        )
                       ) : (
                         <EmptyState>ยังไม่มีแท็บใน Draft</EmptyState>
                       )}
@@ -3710,9 +3811,6 @@ export default function WorkspacePage() {
                           >
                             ไฮไลต์คำต่างประเทศ {chapterEditorHighlight ? "เปิด" : "ปิด"}
                           </Button>
-                          <span className="rounded-md bg-yellow-100 px-2 py-1 text-yellow-900">
-                            พบ {chapterEditorFindings.length} จุด · {chapterEditorForeignTokens.length} คำ
-                          </span>
                           <span className="ml-auto text-xs text-muted-foreground">
                             {chapterEditorText.length.toLocaleString()} ตัวอักษร
                           </span>
@@ -3721,8 +3819,13 @@ export default function WorkspacePage() {
                         <details open className="rounded-lg border bg-background">
                           <summary className="cursor-pointer list-none px-3 py-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="font-medium">
-                                Finding / Inline QC · {chapterEditorIssueItems.length}
+                              <div>
+                                <div className="font-medium">
+                                  Issue Queue · {chapterEditorIssueItems.length}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  คำต่างประเทศ {chapterEditorIssueCounts.findings} · structural {chapterEditorIssueCounts.structural}
+                                </div>
                               </div>
                               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                 {chapterEditorIssueItems.length > 0
@@ -3737,7 +3840,7 @@ export default function WorkspacePage() {
                           <div className="space-y-2 border-t p-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="text-xs text-muted-foreground">
-                                กด finding เพื่อกระโดดไปยัง paragraph/range ที่ตรวจพบ · structural issue จะพาไปยังแท็บต้นทางหรือด้านบนของบท
+                                ใช้ Previous/Next หรือปุ่ม action เพื่อไปยังจุดตรวจ · foreign finding และ structural issue อยู่ในคิวเดียวกัน
                               </div>
                               <div className="flex items-center gap-2">
                                 <Button
@@ -3791,16 +3894,7 @@ export default function WorkspacePage() {
                                         }
                                       >
                                         <div className="flex flex-wrap items-start justify-between gap-2">
-                                          <button
-                                            type="button"
-                                            className="min-w-0 flex-1 text-left"
-                                            onClick={() =>
-                                              navigateChapterEditorIssue(
-                                                issue,
-                                                issueIndex
-                                              )
-                                            }
-                                          >
+                                          <div className="min-w-0 flex-1">
                                             <div className="font-medium">
                                               {finding.token}
                                             </div>
@@ -3810,7 +3904,7 @@ export default function WorkspacePage() {
                                               {finding.startOffset}-
                                               {finding.endOffset}
                                             </div>
-                                          </button>
+                                          </div>
                                           <StatusPill
                                             value={finding.disposition ?? "open"}
                                           />
@@ -3935,23 +4029,14 @@ export default function WorkspacePage() {
                                       }
                                     >
                                       <div className="flex flex-wrap items-start justify-between gap-2">
-                                        <button
-                                          type="button"
-                                          className="min-w-0 flex-1 text-left"
-                                          onClick={() =>
-                                            navigateChapterEditorIssue(
-                                              issue,
-                                              issueIndex
-                                            )
-                                          }
-                                        >
+                                        <div className="min-w-0 flex-1">
                                           <div className="font-medium">
                                             Structural · {anomaly.anomalyType}
                                           </div>
                                           <div className="mt-1 text-xs text-muted-foreground">
                                             {anomaly.message}
                                           </div>
-                                        </button>
+                                        </div>
                                         <div className="flex flex-wrap gap-1">
                                           {confirmedSourceNote && (
                                             <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">

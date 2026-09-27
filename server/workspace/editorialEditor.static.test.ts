@@ -120,9 +120,16 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("sessionStorage");
     expect(page).toContain("ยังไม่บันทึก");
     expect(page).toContain("savedChapterTarget");
-    expect(page).toContain("Finding / Inline QC");
+    expect(page).toContain("Issue Queue");
     expect(page).toContain("Previous finding");
     expect(page).toContain("Next finding");
+    expect(page).toContain("บทมีปัญหาถัดไป");
+    expect(page).toContain('["issue", "มีปัญหา"]');
+    expect(page).toContain('["unedited", "ยังไม่แก้"]');
+    expect(page).toContain('["edited", "แก้แล้ว"]');
+    expect(page).toContain("ผ่าน {chapterEditorProgress.passed}");
+    expect(page).toContain("ค้าง {chapterEditorProgress.pending}");
+    expect(page).toContain("ยืนยันแล้ว {chapterEditorProgress.confirmed}");
     expect(page).toContain("navigateChapterEditorIssue");
     expect(page).toContain("ไปยัง structural issue");
     expect(page).toContain("StatusPill");

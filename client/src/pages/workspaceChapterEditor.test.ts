@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chapterEditorFindingRanges,
   chapterEditorIssues,
+  chapterEditorMatchesFilter,
   chapterEditorStructuralRepairGuidance,
   chapterEditorTabStatus,
   parseChapterEditorPasteText,
@@ -185,6 +186,9 @@ describe("workspace Chapter Editor paragraph helpers", () => {
       edited: true,
       foreignFindingCount: 1,
       structuralIssueCount: 1,
+      confirmedStructuralCount: 1,
+      issueCount: 2,
+      progressState: "pending",
     });
 
     expect(
@@ -202,6 +206,47 @@ describe("workspace Chapter Editor paragraph helpers", () => {
       edited: false,
       foreignFindingCount: 0,
       structuralIssueCount: 0,
+      confirmedStructuralCount: 0,
+      issueCount: 0,
+      progressState: "passed",
     });
+  });
+
+  it("filters chapters by issue and edit state without conflating QC progress", () => {
+    const pending = chapterEditorTabStatus({
+      sourceTabId: "tab-1",
+      checkerCurrent: true,
+      paragraphs: [],
+      findings: [{ sourceTabId: "tab-1", disposition: "open" }],
+    });
+    const edited = chapterEditorTabStatus({
+      sourceTabId: "tab-2",
+      checkerCurrent: true,
+      paragraphs: [
+        {
+          sourceParagraphIndex: -1,
+          sourceParagraphFingerprint: "manual",
+          paragraphFingerprint: "manual",
+        },
+      ],
+      anomalies: [
+        {
+          sourceTabId: "tab-2",
+          disposition: "confirmed_source_note",
+        },
+      ],
+    });
+    const unchecked = chapterEditorTabStatus({
+      sourceTabId: "tab-3",
+      checkerCurrent: false,
+      paragraphs: [],
+    });
+
+    expect(chapterEditorMatchesFilter("issue", pending)).toBe(true);
+    expect(chapterEditorMatchesFilter("unedited", pending)).toBe(true);
+    expect(chapterEditorMatchesFilter("edited", pending)).toBe(false);
+    expect(chapterEditorMatchesFilter("edited", edited)).toBe(true);
+    expect(edited.progressState).toBe("confirmed");
+    expect(unchecked.progressState).toBe("unchecked");
   });
 });
