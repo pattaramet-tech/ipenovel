@@ -178,7 +178,7 @@ async function readSheetRows(input: {
     quoteSheetName(NQA_AUTOLINK_LIVE_TARGET.sheetName) +
     "!B" +
     input.startRow +
-    ":K" +
+    ":O" +
     input.endRow;
   let batch;
   try {
@@ -283,7 +283,7 @@ export async function previewWorkspaceMasterIntake(input: {
     const rawTitle = String(cells[0] ?? "").trim();
     const translationDocUrl = String(cells[1] ?? "").trim();
     const webSourceRaw = String(cells[3] ?? "").trim();
-    const preparedSourceDocUrl = String(cells[9] ?? "").trim();
+    const preparedSourceDocUrl = String(cells[13] ?? "").trim();
     const parsed = parseMasterIntakeTitleRange(rawTitle);
     const translationDocumentId = googleDocumentIdFromUrlOrId(translationDocUrl);
     const preparedSourceDocumentId = preparedSourceDocUrl
