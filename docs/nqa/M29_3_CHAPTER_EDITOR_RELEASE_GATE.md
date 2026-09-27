@@ -109,9 +109,12 @@ The authoritative GitHub Actions run for commit
 - production Vite + esbuild build: **PASS**;
 - migration 0060 + diff/encoding/private-key safety gate: **PASS**.
 
-The integration reconciliation also removed clock-bound outbox-availability
-flakiness by making test retry/claim eligibility explicit and run-scoped.
-Production execution semantics were not changed.
+The green run above established the DB-backed baseline. Subsequent repeat runs
+exposed residual clock-bound outbox claim timing in legacy publish integration
+tests, so M29.3.7 additionally makes every affected test claim/retry eligibility
+explicit in the database and scopes claims to the intended publish run. This is
+test hardening only; Production execution semantics are unchanged. The final PR
+head must pass the same authoritative workflow before this gate is closed.
 
 PR #78 remains the release handoff. It is intentionally left open and
 unmerged. No Production deployment is part of M29.3.7.

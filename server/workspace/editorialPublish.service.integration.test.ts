@@ -600,7 +600,9 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         executionEnabled: true,
       });
 
-      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, enqueued.execution.outbox.id));
       const baseProvider = createIpeNovelWorkspacePublishProvider();
       const execute = vi.fn((request: any) => baseProvider.execute(request));
       const published = await runScopedPublishWorkerOnce({

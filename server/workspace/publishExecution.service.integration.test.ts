@@ -133,7 +133,9 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
       expect(enqueued.run.status).toBe("publishing");
       expect(enqueued.outbox.status).toBe("pending");
 
-      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, enqueued.outbox.id));
       const firstClaim = await claimPublishOutbox({
         workspaceId: workspace.workspaceId,
         publishRunId: partialPlan.run.id,
@@ -167,9 +169,12 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         expectedCutoverEpoch: 1,
         executionEnabled: true,
       });
-      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, enqueued.outbox.id));
       const retryClaim = await claimPublishOutbox({
         workspaceId: workspace.workspaceId,
+        publishRunId: partialPlan.run.id,
         leaseOwner: "m05b-worker-2",
         leaseExpiresAt: new Date(Date.now() + 60_000),
       });
@@ -196,12 +201,17 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         expectedLastPublishedSha256: snapshot.normalizedSha256,
         items: [{ itemKey: "dead-letter-item", sourceSha256: "f".repeat(64) }],
       });
-      await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: deadLetterPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
+      const deadLetterEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: deadLetterPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, deadLetterEnqueue.outbox.id));
       const deadLetterProvider = makeProvider({ failItemKey: "dead-letter-item" });
       const deadLetterClaim1 = await claimPublishOutbox({ workspaceId: workspace.workspaceId, publishRunId: deadLetterPlan.run.id, leaseOwner: "dead-letter-1", leaseExpiresAt: new Date(Date.now() + 60_000), maxAttempts: 2 });
       const deadLetterResult1 = await processClaimedPublishOutbox({ workspaceId: workspace.workspaceId, outboxId: deadLetterClaim1!.id, leaseOwner: "dead-letter-1", provider: deadLetterProvider.provider, expectedCutoverEpoch: 1, executionEnabled: true, maxAttempts: 2 });
       expect(deadLetterResult1.outboxStatus).toBe("failed");
-      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, deadLetterEnqueue.outbox.id));
       await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: deadLetterPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
       const deadLetterClaim2 = await claimPublishOutbox({ workspaceId: workspace.workspaceId, publishRunId: deadLetterPlan.run.id, leaseOwner: "dead-letter-2", leaseExpiresAt: new Date(Date.now() + 60_000), maxAttempts: 2 });
       const deadLetterResult2 = await processClaimedPublishOutbox({ workspaceId: workspace.workspaceId, outboxId: deadLetterClaim2!.id, leaseOwner: "dead-letter-2", provider: deadLetterProvider.provider, expectedCutoverEpoch: 1, executionEnabled: true, maxAttempts: 2 });
