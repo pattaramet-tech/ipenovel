@@ -57,6 +57,7 @@ jobs:
           server/workspace/editorialForeignChecker.static.test.ts
           server/workspace/editorialForeignChecker.service.integration.test.ts
           server/workspace/editorialApproval.static.test.ts
+          server/workspace/editorialEditor.static.test.ts
           server/workspace/editorialBulkFindingCleanup.domain.test.ts
           server/workspace/editorialBulkFindingCleanup.static.test.ts
           server/workspace/editorialBulkFindingCleanup.service.integration.test.ts
