@@ -187,12 +187,12 @@ function classifyTab(tab: EditorialStructuralTabInput) {
     .filter(Boolean)
     .filter(text => !isSeparator(text));
 
-  const sourceBackedMeaningful = tab.paragraphs
-    .filter(paragraph => Number(paragraph.sourceParagraphIndex ?? 1) > 0)
+  const contentBackedMeaningful = tab.paragraphs
+    .filter(paragraph => Number(paragraph.sourceParagraphIndex ?? 1) !== 0)
     .map(paragraph => normalizeForShape(paragraph.text))
     .filter(Boolean)
     .filter(text => !isSeparator(text));
-  if (sourceBackedMeaningful.length === 0) return "empty_tab" as const;
+  if (contentBackedMeaningful.length === 0) return "empty_tab" as const;
 
   const withoutEnd = meaningful.filter(text => !isEndMarker(text));
   const headingRows = withoutEnd.filter(text => isChapterHeading(text));

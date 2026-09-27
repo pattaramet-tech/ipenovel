@@ -414,6 +414,13 @@
       "when": 1790458200000,
       "tag": "0058_workspace_editorial_structural_anomalies",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "5",
+      "when": 1790460000000,
+      "tag": "0059_workspace_editorial_tab_editor",
+      "breakpoints": true
     }
   ]
 }

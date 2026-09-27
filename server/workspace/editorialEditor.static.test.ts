@@ -14,6 +14,13 @@ describe("Workspace Editorial editor static boundaries", () => {
     );
   });
 
+  it("keeps migration 0059 additive while extending the editor audit enum", () => {
+    const migration = source("drizzle/0059_workspace_editorial_tab_editor.sql");
+    expect(migration).toContain("'replace_tab'");
+    expect(migration).toContain("workspaceEditorialDraftEditEvents");
+    expect(migration).not.toMatch(/DROP TABLE|DROP COLUMN|DROP FOREIGN KEY/i);
+  });
+
   it("binds every edit to exact Draft id/version/hash and paragraph/range expectations", () => {
     const service = source("server/workspace/editorialEditor.service.ts");
     const domain = source("server/workspace/editorialEditor.domain.ts");
@@ -90,7 +97,13 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain('submitEditorEdit("autosave")');
     expect(page).toContain("บันทึกทันที + ตรวจซ้ำ");
     expect(page).toContain("Workspace Editor");
-    expect(page).toContain('<details className="rounded-md border">');
+    expect(page).toContain('id="workspace-chapter-editor"');
     expect(page).toContain("Undo");
+    expect(page).toContain("Chapter Editor");
+    expect(page).toContain("เติมเนื้อหา");
+    expect(page).toContain('kind: "replace_tab"');
+    expect(page).toContain("ChapterEditorSurface");
+    expect(page).toContain("ไฮไลต์คำต่างประเทศ");
+    expect(page).toContain("ไม่ Publish อัตโนมัติ");
   });
 });

@@ -108,6 +108,97 @@ function EmptyState({ children }: { children: React.ReactNode }) {
   return <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{children}</p>;
 }
 
+function editorialTabText(tab: any) {
+  return (tab?.paragraphs ?? []).map((paragraph: any) => String(paragraph.text ?? "")).join("\n\n");
+}
+
+function foreignHighlightRanges(text: string, tokens: string[]) {
+  const candidates: Array<{ start: number; end: number }> = [];
+  for (const token of Array.from(new Set(tokens.filter(Boolean)))) {
+    let cursor = 0;
+    while (cursor < text.length) {
+      const start = text.indexOf(token, cursor);
+      if (start < 0) break;
+      candidates.push({ start, end: start + token.length });
+      cursor = start + Math.max(1, token.length);
+    }
+  }
+  candidates.sort((a, b) => a.start - b.start || b.end - a.end);
+  const ranges: Array<{ start: number; end: number }> = [];
+  let coveredUntil = -1;
+  for (const range of candidates) {
+    if (range.start < coveredUntil) continue;
+    ranges.push(range);
+    coveredUntil = range.end;
+  }
+  return ranges;
+}
+
+function ChapterEditorSurface({
+  value,
+  tokens,
+  highlight,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  tokens: string[];
+  highlight: boolean;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const backdropRef = useRef<HTMLPreElement>(null);
+  const ranges = useMemo(
+    () => (highlight ? foreignHighlightRanges(value, tokens) : []),
+    [highlight, value, tokens.join("\u0000")]
+  );
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach((range, index) => {
+    if (range.start > cursor) {
+      parts.push(value.slice(cursor, range.start));
+    }
+    parts.push(
+      <mark
+        key={`${range.start}:${range.end}:${index}`}
+        className="rounded-sm bg-yellow-300/70 text-transparent"
+      >
+        {value.slice(range.start, range.end)}
+      </mark>
+    );
+    cursor = range.end;
+  });
+  parts.push(value.slice(cursor));
+
+  return (
+    <div className="relative overflow-hidden rounded-lg border bg-background shadow-inner">
+      <pre
+        ref={backdropRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words p-5 font-sans text-base leading-8 text-transparent"
+      >
+        {parts}
+        {"\n"}
+      </pre>
+      <textarea
+        aria-label="Chapter editor"
+        spellCheck={false}
+        className="relative z-10 min-h-[30rem] w-full resize-y bg-transparent p-5 font-sans text-base leading-8 outline-none"
+        value={value}
+        disabled={disabled}
+        placeholder="เริ่มเขียนเนื้อหาของบทนี้..."
+        onChange={event => onChange(event.target.value)}
+        onScroll={event => {
+          if (!backdropRef.current) return;
+          backdropRef.current.scrollTop = event.currentTarget.scrollTop;
+          backdropRef.current.scrollLeft = event.currentTarget.scrollLeft;
+        }}
+      />
+    </div>
+  );
+}
+
+
 export default function WorkspacePage() {
   const [name, setName] = useState("");
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number>();
@@ -185,6 +276,17 @@ export default function WorkspacePage() {
     findingKey?: string;
   }>();
   const [editorText, setEditorText] = useState("");
+  const [chapterEditorTarget, setChapterEditorTarget] = useState<{
+    sourceTabId: string;
+    title: string;
+    expectedTabStructuralSha256: string;
+    expectedText: string;
+    draftId: number;
+    draftVersion: number;
+    draftSha256: string;
+  }>();
+  const [chapterEditorText, setChapterEditorText] = useState("");
+  const [chapterEditorHighlight, setChapterEditorHighlight] = useState(true);
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
   const [selectedAiJobId, setSelectedAiJobId] = useState<number>();
   const [selectedPublishRunId, setSelectedPublishRunId] = useState<number>();
@@ -400,6 +502,8 @@ export default function WorkspacePage() {
     setUploadedSource(undefined);
     setEditorTarget(undefined);
     setEditorText("");
+    setChapterEditorTarget(undefined);
+    setChapterEditorText("");
     setSelectedCheckerRunId(undefined);
     setSelectedAiJobId(undefined);
     setSelectedPublishRunId(undefined);
@@ -890,6 +994,8 @@ export default function WorkspacePage() {
     onSuccess: async (result) => {
       setEditorTarget(undefined);
       setEditorText("");
+      setChapterEditorTarget(undefined);
+      setChapterEditorText("");
       await Promise.all([
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
@@ -935,6 +1041,8 @@ export default function WorkspacePage() {
     onSuccess: async (result) => {
       setEditorTarget(undefined);
       setEditorText("");
+      setChapterEditorTarget(undefined);
+      setChapterEditorText("");
       await Promise.all([
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
@@ -1087,6 +1195,34 @@ export default function WorkspacePage() {
     });
   };
 
+  const submitChapterEditorEdit = () => {
+    if (
+      !selectedWorkspaceId ||
+      !selectedSourceWorkItemId ||
+      !chapterEditorTarget ||
+      editEditorialDraft.isPending ||
+      chapterEditorText === chapterEditorTarget.expectedText
+    ) {
+      return;
+    }
+    editEditorialDraft.mutate({
+      workspaceId: selectedWorkspaceId,
+      workItemId: selectedSourceWorkItemId,
+      expectedDraftId: chapterEditorTarget.draftId,
+      expectedDraftVersion: chapterEditorTarget.draftVersion,
+      expectedDraftSha256: chapterEditorTarget.draftSha256,
+      command: {
+        kind: "replace_tab",
+        sourceTabId: chapterEditorTarget.sourceTabId,
+        expectedTabStructuralSha256:
+          chapterEditorTarget.expectedTabStructuralSha256,
+        expectedText: chapterEditorTarget.expectedText,
+        replacementText: chapterEditorText,
+      },
+      idempotencyKey: `editor-tab:${chapterEditorTarget.draftId}:${chapterEditorTarget.sourceTabId}:${Date.now()}`,
+    });
+  };
+
   useEffect(() => {
     if (
       !editorTarget ||
@@ -1159,6 +1295,57 @@ export default function WorkspacePage() {
         editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion
       )
   );
+  const openChapterEditor = (tab: any) => {
+    if (!latestEditorialDraft) return;
+    if (
+      chapterEditorTarget &&
+      chapterEditorText !== chapterEditorTarget.expectedText &&
+      !window.confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วเปิดแท็บอื่นหรือไม่?")
+    ) {
+      return;
+    }
+    const text = editorialTabText(tab);
+    setEditorTarget(undefined);
+    setEditorText("");
+    setChapterEditorTarget({
+      sourceTabId: tab.sourceTabId,
+      title: tab.title,
+      expectedTabStructuralSha256: tab.structuralSha256,
+      expectedText: text,
+      draftId: latestEditorialDraft.id,
+      draftVersion: latestEditorialDraft.version,
+      draftSha256: latestEditorialDraft.draftSha256,
+    });
+    setChapterEditorText(text);
+    window.requestAnimationFrame(() =>
+      document.getElementById("workspace-chapter-editor")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      })
+    );
+  };
+  const closeChapterEditor = () => {
+    if (
+      chapterEditorTarget &&
+      chapterEditorText !== chapterEditorTarget.expectedText &&
+      !window.confirm("ทิ้งการแก้ไขที่ยังไม่ได้บันทึกหรือไม่?")
+    ) {
+      return;
+    }
+    setChapterEditorTarget(undefined);
+    setChapterEditorText("");
+  };
+  const chapterEditorFindings = chapterEditorTarget && !editorialCheckerRunStale
+    ? (editorialCheckerData?.findings ?? []).filter(
+        (finding: any) =>
+          finding.sourceTabId === chapterEditorTarget.sourceTabId &&
+          finding.disposition === "open"
+      )
+    : [];
+  const chapterEditorForeignTokens = Array.from(
+    new Set(chapterEditorFindings.map((finding: any) => String(finding.token ?? "")).filter(Boolean))
+  ) as string[];
+
   const googleConnections = (
     (editorialGoogleConnections.data as any[] | undefined) ?? []
   ).filter((connection: any) => connection.status === "active" && connection.scopeReady);
@@ -2796,6 +2983,19 @@ export default function WorkspacePage() {
                                 <span className="text-xs text-muted-foreground">
                                   {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
                                 </span>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant={tab.paragraphs.length ? "outline" : "default"}
+                                  disabled={!latestEditorialDraft || editEditorialDraft.isPending}
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    openChapterEditor(tab);
+                                  }}
+                                >
+                                  {tab.paragraphs.length ? "เปิด Editor" : "เติมเนื้อหา"}
+                                </Button>
                                 {editorialEditorData?.latestDraft && (() => {
                                   const draftTab = (editorialEditorData.tabs ?? []).find((candidate: any) => candidate.sourceTabId === tab.sourceTabId);
                                   if (!draftTab) return null;
@@ -2815,7 +3015,11 @@ export default function WorkspacePage() {
                     </details>
                   )}
 
-                  <details className="rounded-md border">
+                  <details
+                    id="workspace-chapter-editor"
+                    className="rounded-md border"
+                    open={chapterEditorTarget ? true : undefined}
+                  >
                     <summary className="cursor-pointer list-none p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="font-medium">Workspace Editor</div>
@@ -2855,6 +3059,77 @@ export default function WorkspacePage() {
                           Undo
                         </Button>
                       </div>
+
+
+                    {chapterEditorTarget && (
+                      <div className="space-y-3 rounded-xl border bg-muted/10 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="text-lg font-semibold">Chapter Editor</div>
+                            <div className="text-sm text-muted-foreground">
+                              {chapterEditorTarget.title} · Draft v{chapterEditorTarget.draftVersion}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={editEditorialDraft.isPending}
+                            onClick={closeChapterEditor}
+                          >
+                            ปิด Editor
+                          </Button>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2 text-sm">
+                          <span className="rounded-md border px-2 py-1 font-medium">ข้อความบท</span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={chapterEditorHighlight ? "secondary" : "outline"}
+                            onClick={() => setChapterEditorHighlight(value => !value)}
+                          >
+                            ไฮไลต์คำต่างประเทศ {chapterEditorHighlight ? "เปิด" : "ปิด"}
+                          </Button>
+                          <span className="rounded-md bg-yellow-100 px-2 py-1 text-yellow-900">
+                            พบ {chapterEditorFindings.length} จุด · {chapterEditorForeignTokens.length} คำ
+                          </span>
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            {chapterEditorText.length.toLocaleString()} ตัวอักษร
+                          </span>
+                        </div>
+
+                        <ChapterEditorSurface
+                          value={chapterEditorText}
+                          tokens={chapterEditorForeignTokens}
+                          highlight={chapterEditorHighlight}
+                          disabled={editEditorialDraft.isPending}
+                          onChange={setChapterEditorText}
+                        />
+
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-xs text-muted-foreground">
+                            เว้น 1 บรรทัดว่างเพื่อแยกย่อหน้า · สีไฮไลต์เป็น UI เท่านั้น ไม่ถูกบันทึกลงเนื้อหา
+                          </div>
+                          <Button
+                            type="button"
+                            disabled={
+                              editEditorialDraft.isPending ||
+                              chapterEditorText === chapterEditorTarget.expectedText
+                            }
+                            onClick={submitChapterEditorEdit}
+                          >
+                            {editEditorialDraft.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            บันทึก Draft + ตรวจซ้ำ
+                          </Button>
+                        </div>
+                        <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                          การบันทึกสร้าง Draft revision ใหม่เท่านั้น ไม่ Publish อัตโนมัติ และต้องผ่าน QC/Confirm เดิมก่อน Stage/Publish
+                        </div>
+                      </div>
+                    )}
 
                     {editorTarget && !editorTarget.findingId && (
                       <div className="space-y-2 rounded-md border bg-muted/20 p-3">

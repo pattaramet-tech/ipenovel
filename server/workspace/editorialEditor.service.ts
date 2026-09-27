@@ -32,6 +32,7 @@ import {
   editorialEditIdempotencyPayloadSha256,
   EditorialEditorDomainError,
   type EditorialDraftEditCommand,
+  type EditorialParagraphEditCommand,
 } from "./editorialEditor.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 
@@ -282,7 +283,7 @@ async function validateFinding(
     workItemId: number;
     currentDraftId: number;
     findingId: number;
-    command: EditorialDraftEditCommand;
+    command: EditorialParagraphEditCommand;
   }
 ) {
   const [row] = await tx
@@ -347,6 +348,9 @@ function mapDomainError(error: unknown): never {
       "PARAGRAPH_NOT_FOUND",
       "PARAGRAPH_AMBIGUOUS",
       "PARAGRAPH_CONFLICT",
+      "TAB_NOT_FOUND",
+      "TAB_AMBIGUOUS",
+      "TAB_CONFLICT",
       "RANGE_CONFLICT",
     ].includes(error.code);
     throw new WorkspaceEditorialEditorError(
@@ -503,6 +507,12 @@ export async function applyEditorialEditorEdit(input: {
       "Finding id and finding key must be supplied together."
     );
   }
+  if (input.command.kind === "replace_tab" && input.findingId) {
+    throw new WorkspaceEditorialEditorError(
+      "FINDING_CONFLICT",
+      "Whole-tab edits cannot be bound to one finding."
+    );
+  }
   const payloadSha256 = editorialEditIdempotencyPayloadSha256({
     expectedDraftId: input.expectedDraftId,
     expectedDraftVersion: input.expectedDraftVersion,
@@ -581,7 +591,7 @@ export async function applyEditorialEditorEdit(input: {
     }
 
     let findingKey = input.findingKey ?? null;
-    if (input.findingId) {
+    if (input.findingId && input.command.kind !== "replace_tab") {
       const finding = await validateFinding(tx, {
         workItemId: input.workItemId,
         currentDraftId: current.id,
@@ -628,16 +638,19 @@ export async function applyEditorialEditorEdit(input: {
         fromDraftId: current.id,
         toDraftId: persisted.draftId,
         editKind: input.command.kind,
-        paragraphKey: input.command.paragraphKey,
+        paragraphKey:
+          input.command.kind === "replace_tab" ? null : input.command.paragraphKey,
         findingKey,
         startOffset:
-          input.command.kind === "replace_paragraph"
-            ? null
-            : (input.command.startOffset ?? null),
+          input.command.kind === "replace_sentence" ||
+          input.command.kind === "replace_range"
+            ? (input.command.startOffset ?? null)
+            : null,
         endOffset:
-          input.command.kind === "replace_paragraph"
-            ? null
-            : (input.command.endOffset ?? null),
+          input.command.kind === "replace_sentence" ||
+          input.command.kind === "replace_range"
+            ? (input.command.endOffset ?? null)
+            : null,
         expectedTextSha256: sha256(input.command.expectedText),
         replacementTextSha256: sha256(input.command.replacementText),
         payloadSha256,

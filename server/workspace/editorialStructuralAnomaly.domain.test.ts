@@ -105,6 +105,21 @@ describe("Editorial Structural Anomaly domain", () => {
     expect(result.summary.counts.end_only_tab).toBe(1);
   });
 
+  it("treats manually authored negative-index paragraphs as real repaired content", () => {
+    const repaired = tab({
+      sourceTabId: "manual-repair",
+      tabOrder: 0,
+      paragraphs: ["บทที่ 9", "เนื้อหาที่เติมด้วย Chapter Editor", "จบตอน"],
+    });
+    repaired.paragraphs[0]!.sourceParagraphIndex = -1;
+    repaired.paragraphs[1]!.sourceParagraphIndex = -2;
+    repaired.paragraphs[2]!.sourceParagraphIndex = 0;
+    const result = evaluateEditorialStructuralAnomalies({ tabs: [repaired] });
+    expect(result.summary.counts.empty_tab).toBe(0);
+    expect(result.summary.counts.end_only_tab).toBe(0);
+    expect(result.summary.counts.heading_only_tab).toBe(0);
+  });
+
   it("detects heading-only and source-note-only tabs", () => {
     const result = evaluateEditorialStructuralAnomalies({
       episodeNumber: "13-14",

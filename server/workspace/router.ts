@@ -454,6 +454,13 @@ const editorialEditCommandInput = z.discriminatedUnion("kind", [
     expectedText: z.string().max(200000),
     replacementText: z.string().max(200000),
   }),
+  z.object({
+    kind: z.literal("replace_tab"),
+    sourceTabId: z.string().trim().min(1).max(255),
+    expectedTabStructuralSha256: z.string().trim().length(64),
+    expectedText: z.string().max(2_000_000),
+    replacementText: z.string().max(2_000_000),
+  }),
 ]);
 const legacyRetirementEvidenceInput = z.object({
   sustainedParity: z.object({ passed: z.boolean(), evidenceRef: z.string().trim().min(1).max(255) }),

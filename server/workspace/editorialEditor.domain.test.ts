@@ -8,6 +8,7 @@ import {
 import {
   applyEditorialDraftEdit,
   editorialEditIdempotencyPayloadSha256,
+  editorialTabEditorText,
 } from "./editorialEditor.domain";
 
 function document(
@@ -189,6 +190,53 @@ describe("Workspace Editorial editor domain", () => {
     expect(
       result.document.tabs[0].paragraphs.map(p => p.occurrenceOrdinal)
     ).toEqual([1, 2]);
+  });
+
+
+  it("fills an empty tab with a guarded whole-tab edit and reindexes paragraphs", () => {
+    const empty = document("placeholder");
+    empty.tabs[0].paragraphs = [];
+    const input = reindexEditorialDraftDocument(empty);
+    const beforeHash = editorialDraftSha256(input);
+
+    const result = applyEditorialDraftEdit(input, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: input.tabs[0].structuralSha256,
+      expectedText: "",
+      replacementText: "บทที่ 1 เริ่มต้น\n\nเนื้อหาใหม่บรรทัดแรก\n\nเนื้อหาใหม่บรรทัดสอง",
+    });
+
+    expect(editorialTabEditorText(result.document.tabs[0])).toBe(
+      "บทที่ 1 เริ่มต้น\n\nเนื้อหาใหม่บรรทัดแรก\n\nเนื้อหาใหม่บรรทัดสอง"
+    );
+    expect(result.document.tabs[0].paragraphs).toHaveLength(3);
+    expect(result.document.tabs[0].paragraphs.every(p => p.sourceParagraphIndex < 0)).toBe(true);
+    expect(result.document.tabs[0].chapterNumber).toBe("1");
+    expect(result.afterSha256).not.toBe(beforeHash);
+  });
+
+  it("fails closed when a whole-tab structural hash or expected text is stale", () => {
+    const input = document("ย่อหน้าเดิม");
+    expect(() =>
+      applyEditorialDraftEdit(input, {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256: "0".repeat(64),
+        expectedText: "ย่อหน้าเดิม",
+        replacementText: "ย่อหน้าใหม่",
+      })
+    ).toThrow("Tab structure changed");
+
+    expect(() =>
+      applyEditorialDraftEdit(input, {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256: input.tabs[0].structuralSha256,
+        expectedText: "ข้อความเก่า",
+        replacementText: "ย่อหน้าใหม่",
+      })
+    ).toThrow("Whole-tab expected text no longer matches");
   });
 
   it("hashes the idempotency payload deterministically and changes it for different replacement text", () => {

@@ -9,10 +9,13 @@ import {
 export const EDITORIAL_EDITOR_VERSION = "workspace-editor-v1" as const;
 
 export type EditorialEditKind =
-  "replace_sentence" | "replace_range" | "replace_paragraph";
+  | "replace_sentence"
+  | "replace_range"
+  | "replace_paragraph"
+  | "replace_tab";
 
-export type EditorialDraftEditCommand = {
-  kind: EditorialEditKind;
+export type EditorialParagraphEditCommand = {
+  kind: "replace_sentence" | "replace_range" | "replace_paragraph";
   paragraphKey: string;
   expectedParagraphFingerprint: string;
   startOffset?: number;
@@ -21,12 +24,27 @@ export type EditorialDraftEditCommand = {
   replacementText: string;
 };
 
+export type EditorialTabEditCommand = {
+  kind: "replace_tab";
+  sourceTabId: string;
+  expectedTabStructuralSha256: string;
+  expectedText: string;
+  replacementText: string;
+};
+
+export type EditorialDraftEditCommand =
+  | EditorialParagraphEditCommand
+  | EditorialTabEditCommand;
+
 export class EditorialEditorDomainError extends Error {
   constructor(
     readonly code:
       | "PARAGRAPH_NOT_FOUND"
       | "PARAGRAPH_AMBIGUOUS"
       | "PARAGRAPH_CONFLICT"
+      | "TAB_NOT_FOUND"
+      | "TAB_AMBIGUOUS"
+      | "TAB_CONFLICT"
       | "RANGE_INVALID"
       | "RANGE_CONFLICT"
       | "REPLACEMENT_INVALID"
@@ -65,10 +83,143 @@ function validateReplacement(value: string) {
   return replacement;
 }
 
+function normalizeTabEditorText(value: string) {
+  return String(value ?? "").normalize("NFC").replace(/\r\n?/g, "\n");
+}
+
+export function editorialTabEditorText(
+  tab: EditorialDraftDocument["tabs"][number]
+) {
+  return tab.paragraphs.map(paragraph => paragraph.text).join("\n\n");
+}
+
+function tabEditorParagraphs(value: string) {
+  const normalized = normalizeTabEditorText(value).trim();
+  if (!normalized) return [];
+  if (normalized.length > 2_000_000) {
+    throw new EditorialEditorDomainError(
+      "REPLACEMENT_INVALID",
+      "Tab replacement exceeds the 2,000,000-character limit."
+    );
+  }
+  const paragraphs = normalized
+    .split(/\n[\t ]*\n+/)
+    .map(text => text.trim())
+    .filter(Boolean);
+  if (paragraphs.length > 10_000 || paragraphs.some(text => text.length > 200_000)) {
+    throw new EditorialEditorDomainError(
+      "REPLACEMENT_INVALID",
+      "Tab replacement exceeds the paragraph count or paragraph size limit."
+    );
+  }
+  return paragraphs;
+}
+
+function applyEditorialTabEdit(
+  document: EditorialDraftDocument,
+  command: EditorialTabEditCommand
+) {
+  const next = cloneDocument(document);
+  const matches = next.tabs
+    .map((tab, tabIndex) => ({ tab, tabIndex }))
+    .filter(({ tab }) => tab.sourceTabId === command.sourceTabId);
+  if (!matches.length) {
+    throw new EditorialEditorDomainError(
+      "TAB_NOT_FOUND",
+      "Tab identity was not found in the expected Draft."
+    );
+  }
+  if (matches.length !== 1) {
+    throw new EditorialEditorDomainError(
+      "TAB_AMBIGUOUS",
+      "Tab identity is ambiguous in the expected Draft."
+    );
+  }
+
+  const { tab, tabIndex } = matches[0]!;
+  if (tab.structuralSha256 !== command.expectedTabStructuralSha256) {
+    throw new EditorialEditorDomainError(
+      "TAB_CONFLICT",
+      "Tab structure changed before the edit was applied."
+    );
+  }
+  const beforeText = editorialTabEditorText(tab);
+  if (normalizeTabEditorText(command.expectedText) !== beforeText) {
+    throw new EditorialEditorDomainError(
+      "TAB_CONFLICT",
+      "Whole-tab expected text no longer matches the Draft."
+    );
+  }
+
+  const replacementText = normalizeTabEditorText(command.replacementText);
+  const replacementParagraphs = tabEditorParagraphs(replacementText);
+  const canonicalReplacement = replacementParagraphs.join("\n\n");
+  if (canonicalReplacement === beforeText) {
+    throw new EditorialEditorDomainError(
+      "NO_CHANGE",
+      "Replacement does not change the Draft."
+    );
+  }
+
+  const previousParagraphs = tab.paragraphs;
+  tab.paragraphs = replacementParagraphs.map((text, index) => {
+    const previous = previousParagraphs[index];
+    const unchanged = previous?.text === text;
+    const sourceParagraphIndex =
+      previous && (unchanged || previous.sourceParagraphIndex > 0)
+        ? previous.sourceParagraphIndex
+        : -(index + 1);
+    const sourceParagraphFingerprint =
+      previous && (unchanged || previous.sourceParagraphIndex > 0)
+        ? previous.sourceParagraphFingerprint
+        : paragraphFingerprint(text);
+    return {
+      paragraphKey:
+        previous?.paragraphKey ??
+        sha256(
+          ["workspace-editorial-tab-paragraph-v1", tab.sourceTabId, String(index), text].join("\0")
+        ),
+      sourceParagraphIndex,
+      paragraphOrder: index + 1,
+      text,
+      sourceParagraphFingerprint,
+      sourceOccurrenceCount: previous?.sourceOccurrenceCount ?? 1,
+      sourceOccurrenceOrdinal: previous?.sourceOccurrenceOrdinal ?? 1,
+      paragraphFingerprint: paragraphFingerprint(text),
+      occurrenceCount: 1,
+      occurrenceOrdinal: 1,
+    };
+  });
+
+  const reindexed = reindexEditorialDraftDocument(next);
+  const updatedTab = reindexed.tabs[tabIndex]!;
+  const beforeSha256 = editorialDraftSha256(reindexEditorialDraftDocument(document));
+  const afterSha256 = editorialDraftSha256(reindexed);
+  return {
+    document: reindexed,
+    beforeSha256,
+    afterSha256,
+    details: {
+      editorVersion: EDITORIAL_EDITOR_VERSION,
+      kind: command.kind,
+      sourceTabId: command.sourceTabId,
+      beforeTabStructuralSha256: command.expectedTabStructuralSha256,
+      afterTabStructuralSha256: updatedTab.structuralSha256,
+      expectedTextSha256: sha256(command.expectedText),
+      replacementTextSha256: sha256(canonicalReplacement),
+      beforeParagraphCount: previousParagraphs.length,
+      afterParagraphCount: updatedTab.paragraphs.length,
+    },
+  };
+}
+
 export function applyEditorialDraftEdit(
   document: EditorialDraftDocument,
   command: EditorialDraftEditCommand
 ) {
+  if (command.kind === "replace_tab") {
+    return applyEditorialTabEdit(document, command);
+  }
   const next = cloneDocument(document);
   const matches: Array<{
     tabIndex: number;
