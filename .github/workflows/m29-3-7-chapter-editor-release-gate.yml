@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/nqa-m29-3-chapter-editor
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
