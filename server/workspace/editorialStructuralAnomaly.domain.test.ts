@@ -28,6 +28,7 @@ function tab(input: {
     paragraphs: input.paragraphs.map((text, index) => ({
       paragraphKey: `${input.sourceTabId}:p:${index + 1}`,
       paragraphOrder: index + 1,
+      sourceParagraphIndex: index + 1,
       text,
     })),
   };
@@ -83,6 +84,25 @@ describe("Editorial Structural Anomaly domain", () => {
     expect(result.summary.counts.end_only_tab).toBe(5);
     expect(result.summary.counts.missing_expected_chapter).toBe(5);
     expect(result.summary.counts.tab_count_mismatch).toBe(0);
+  });
+
+  it("distinguishes an originally empty tab from a source tab that literally contains only จบตอน", () => {
+    const generatedEndOnly = tab({
+      sourceTabId: "empty",
+      tabOrder: 0,
+      paragraphs: ["จบตอน"],
+    });
+    generatedEndOnly.paragraphs[0]!.sourceParagraphIndex = 0;
+    const sourceEndOnly = tab({
+      sourceTabId: "end-only",
+      tabOrder: 1,
+      paragraphs: ["จบตอน"],
+    });
+    const result = evaluateEditorialStructuralAnomalies({
+      tabs: [generatedEndOnly, sourceEndOnly],
+    });
+    expect(result.summary.counts.empty_tab).toBe(1);
+    expect(result.summary.counts.end_only_tab).toBe(1);
   });
 
   it("detects heading-only and source-note-only tabs", () => {
