@@ -83,6 +83,27 @@ function StatusPill({ value }: { value: unknown }) {
   );
 }
 
+function formatCompactNumberRanges(values: number[]) {
+  const numbers = Array.from(
+    new Set(values.filter(value => Number.isInteger(value)))
+  ).sort((a, b) => a - b);
+  if (!numbers.length) return "";
+  const ranges: string[] = [];
+  let start = numbers[0]!;
+  let previous = start;
+  for (const value of numbers.slice(1)) {
+    if (value === previous + 1) {
+      previous = value;
+      continue;
+    }
+    ranges.push(start === previous ? String(start) : `${start}-${previous}`);
+    start = value;
+    previous = value;
+  }
+  ranges.push(start === previous ? String(start) : `${start}-${previous}`);
+  return ranges.join(", ");
+}
+
 function EmptyState({ children }: { children: React.ReactNode }) {
   return <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{children}</p>;
 }
@@ -2009,31 +2030,108 @@ export default function WorkspacePage() {
                   const needsFix = bulkCheckerSummary.filter((result: any) => result.ok && result.effectiveStatus === "failed").length;
                   const technicalFailed = bulkCheckerSummary.filter((result: any) => !result.ok).length;
                   const openFindings = bulkCheckerSummary.reduce((sum: number, result: any) => sum + (result.ok ? Number(result.unresolvedCount ?? 0) : 0), 0);
+                  const structuralAnomalies = bulkCheckerSummary.reduce((sum: number, result: any) => sum + (result.ok ? Number(result.structuralSummary?.anomalyCount ?? 0) : 0), 0);
+                  const totalTabs = bulkCheckerSummary.reduce((sum: number, result: any) => sum + (result.ok ? Number(result.structuralSummary?.tabCount ?? 0) : 0), 0);
                   return <div className="space-y-2 rounded-md border bg-background p-3">
                     <div className="flex flex-wrap items-center gap-3 text-sm font-medium">
-                      <span>สรุปผลตรวจ {bulkCheckerSummary.length} ตอน</span>
+                      <span>สรุปผลตรวจ {bulkCheckerSummary.length} ไฟล์</span>
+                      <span>รวม {totalTabs} แท็บ</span>
                       <span className="text-emerald-700">ผ่าน {passed}</span>
                       <span className="text-amber-700">ต้องแก้ {needsFix}</span>
+                      <span className="text-orange-700">ผิดปกติ {structuralAnomalies}</span>
                       <span className="text-red-700">ผิดพลาด {technicalFailed}</span>
-                      <span>ค้างตรวจ {openFindings}</span>
+                      <span>ค้างแก้คำ {openFindings}</span>
                     </div>
                     <div className="space-y-1">
                       {bulkCheckerSummary.map((result: any) => {
                         const card = editorialCards.find((candidate: any) => candidate.workItemId === result.workItemId);
                         const label = `${card?.novel?.title ?? "ไม่ทราบเรื่อง"} · ${card?.episodeNumber ?? `Work item #${result.workItemId}`}`;
                         const paragraphs = result.ok ? groupBulkCheckerParagraphs(result.openFindings ?? []) : [];
+                        const anomalies = result.ok ? (result.anomalies ?? []) : [];
+                        const missingChapters = anomalies
+                          .filter((anomaly: any) => anomaly.anomalyType === "missing_expected_chapter")
+                          .map((anomaly: any) => Number(anomaly.chapterNumber))
+                          .filter((value: number) => Number.isInteger(value));
+                        const endOnlyCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "end_only_tab").length;
+                        const emptyCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "empty_tab").length;
+                        const headingOnlyCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "heading_only_tab").length;
+                        const sourceNoteCount = anomalies.filter((anomaly: any) => anomaly.anomalyType === "source_note_only").length;
+                        const duplicateAnomalies = anomalies.filter((anomaly: any) =>
+                          anomaly.anomalyType === "duplicate_content_exact" ||
+                          anomaly.anomalyType === "duplicate_content_near"
+                        );
+                        const duplicatePairs = duplicateAnomalies.map((anomaly: any) => {
+                          const left = anomaly.details?.leftChapterNumber ?? anomaly.chapterNumber ?? anomaly.tabTitle ?? "?";
+                          const right = anomaly.details?.rightChapterNumber ?? "?";
+                          const score = anomaly.anomalyType === "duplicate_content_near"
+                            ? ` · similarity ${Math.round(Math.max(Number(anomaly.details?.dice ?? 0), Number(anomaly.details?.containment ?? 0)) * 100)}%`
+                            : "";
+                          return `${left} ↔ ${right}${score}`;
+                        });
+                        const structuralSummary = result.structuralSummary;
                         return <div key={result.workItemId} className="rounded border px-3 py-2 text-xs">
                           <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_auto]">
                             <div>
                               <div className="font-medium">{label}</div>
-                              {result.ok && result.effectiveStatus === "failed" && <div className="text-amber-700">พบ {result.findingCount ?? result.unresolvedCount ?? 0} · ค้าง {result.unresolvedCount ?? 0} · {paragraphs.length} ย่อหน้าที่ต้องแก้</div>}
-                              {result.ok && result.effectiveStatus === "passed" && <div className="text-emerald-700">ผ่าน · ไม่พบคำต่างประเทศที่ต้องแก้</div>}
+                              {result.ok && (
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                  <span>
+                                    แท็บ {structuralSummary?.tabCount ?? 0}
+                                    {structuralSummary?.expectedTabCount ? `/${structuralSummary.expectedTabCount}` : ""}
+                                  </span>
+                                  <span>คำ/อักษรค้าง {result.unresolvedCount ?? 0}</span>
+                                  <span className={Number(structuralSummary?.anomalyCount ?? 0) ? "text-orange-700" : "text-emerald-700"}>
+                                    ผิดปกติ {structuralSummary?.anomalyCount ?? 0}
+                                  </span>
+                                  {Number(structuralSummary?.blockingAnomalyCount ?? 0) > 0 && (
+                                    <span className="text-red-700">บล็อก {structuralSummary.blockingAnomalyCount}</span>
+                                  )}
+                                </div>
+                              )}
+                              {result.ok && result.effectiveStatus === "failed" && <div className="text-amber-700">ต้องแก้ก่อนยืนยัน Draft · {paragraphs.length} ย่อหน้าที่มี finding</div>}
+                              {result.ok && result.effectiveStatus === "passed" && Number(structuralSummary?.anomalyCount ?? 0) === 0 && <div className="text-emerald-700">ผ่าน · ไม่พบคำต่างประเทศหรือโครงสร้างผิดปกติ</div>}
+                              {result.ok && result.effectiveStatus === "passed" && Number(structuralSummary?.anomalyCount ?? 0) > 0 && <div className="text-orange-700">ผ่านด้าน blocking QC แต่มี anomaly ที่ควรตรวจทาน</div>}
                               {!result.ok && <div className="text-red-700">ตรวจไม่สำเร็จ: {result.error}</div>}
                             </div>
                             <div className={result.ok ? (result.effectiveStatus === "passed" ? "text-emerald-700" : "text-amber-700") : "text-red-700"}>
                               {result.ok ? (result.effectiveStatus === "passed" ? "ผ่าน" : "ต้องแก้") : "ผิดพลาด"}
                             </div>
                           </div>
+                          {result.ok && anomalies.length > 0 && (
+                            <div className="mt-2 space-y-1 rounded-md border border-orange-200 bg-orange-50/40 p-3 text-xs">
+                              <div className="font-semibold text-orange-800">ค่าผิดปกติของไฟล์</div>
+                              {missingChapters.length > 0 && (
+                                <div>บทที่หาย: <span className="font-medium">{formatCompactNumberRanges(missingChapters)}</span></div>
+                              )}
+                              {endOnlyCount > 0 && <div>แท็บมีเฉพาะ “จบตอน”: <span className="font-medium">{endOnlyCount} แท็บ</span></div>}
+                              {emptyCount > 0 && <div>แท็บไม่มีเนื้อหา: <span className="font-medium">{emptyCount} แท็บ</span></div>}
+                              {headingOnlyCount > 0 && <div>แท็บมีเฉพาะชื่อบท: <span className="font-medium">{headingOnlyCount} แท็บ</span></div>}
+                              {sourceNoteCount > 0 && <div>หมายเหตุจากต้นฉบับ: <span className="font-medium">{sourceNoteCount} แท็บ</span></div>}
+                              {duplicatePairs.length > 0 && (
+                                <div className="space-y-1">
+                                  <div>เนื้อหาซ้ำ/คล้ายซ้ำ: <span className="font-medium">{duplicatePairs.length} คู่</span></div>
+                                  {duplicatePairs.slice(0, 12).map((pair: string, index: number) => (
+                                    <div key={`${result.workItemId}:duplicate:${index}`} className="pl-3">• {pair}</div>
+                                  ))}
+                                  {duplicatePairs.length > 12 && <div className="pl-3 text-muted-foreground">…และอีก {duplicatePairs.length - 12} คู่</div>}
+                                </div>
+                              )}
+                              {anomalies
+                                .filter((anomaly: any) => ![
+                                  "missing_expected_chapter",
+                                  "end_only_tab",
+                                  "empty_tab",
+                                  "heading_only_tab",
+                                  "source_note_only",
+                                  "duplicate_content_exact",
+                                  "duplicate_content_near",
+                                ].includes(anomaly.anomalyType))
+                                .slice(0, 10)
+                                .map((anomaly: any) => (
+                                  <div key={anomaly.anomalyKey}>• {anomaly.message}</div>
+                                ))}
+                            </div>
+                          )}
                           {result.ok && result.effectiveStatus === "failed" && paragraphs.length > 0 && (
                             <div className="mt-2 space-y-2">
                               {paragraphs.map((paragraph: any) => {
