@@ -311,6 +311,19 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
   },
 
   {
+    table: "workspaceMasterIntakeRows",
+    column: "lastSyncedByUserId",
+    category: "deliberately_ignored",
+    reason: "Master Intake sync actor identity records who synchronized shared Workspace intake provenance; it is audit metadata, not source-account-owned data to move.",
+  },
+  {
+    table: "workspaceEditorialStructuralConfirmations",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Structural-confirmation actor identity is immutable editorial decision provenance and must remain attributable rather than be reassigned during account recovery.",
+  },
+
+  {
     table: "adminGiftEntitlements",
     column: "actorAdminId",
     category: "deliberately_ignored",
