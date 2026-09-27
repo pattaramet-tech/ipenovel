@@ -98,6 +98,12 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("บันทึกทันที + ตรวจซ้ำ");
     expect(page).toContain("Workspace Editor");
     expect(page).toContain('id="workspace-chapter-editor"');
+    expect(page).toContain("Workspace Editor ·");
+    expect(page).toContain("แท็บใน Draft");
+    expect(page).toContain("แท็บที่นำออก");
+    expect(page).toContain("เครื่องมือแก้ไขรายย่อหน้า");
+    expect(page).not.toContain("Draft structure ·");
+    expect(page).not.toContain("Draft tabs");
     expect(page).toContain("Undo");
     expect(page).toContain("Chapter Editor");
     expect(page).toContain("เติมเนื้อหา");

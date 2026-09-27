@@ -3066,42 +3066,58 @@ export default function WorkspacePage() {
                   </div>
 
 
-                  {!!(editorialSourceDraft.data as any)?.tabs?.length && (
-                    <details className="rounded-md border bg-muted/10">
-                      <summary className="cursor-pointer list-none p-3">
+                  <details
+                    id="workspace-chapter-editor"
+                    className="rounded-md border bg-muted/10"
+                    open={chapterEditorTarget ? true : undefined}
+                  >
+                    <summary className="cursor-pointer list-none p-3">
+                      <div className="space-y-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="font-medium">
-                            Draft structure · {draftStructureSummary.totalTabs} แท็บ
+                            Workspace Editor · {draftStructureSummary.totalTabs} แท็บ
                           </div>
-                          <div className="flex flex-wrap gap-2 text-xs">
-                            {draftStructureSummary.sequenceIssues.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                เลขแท็บไม่เรียง {draftStructureSummary.sequenceIssues.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.emptyTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                แท็บว่าง {draftStructureSummary.emptyTabs.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.unnumberedTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                ไม่มีเลขแท็บ {draftStructureSummary.unnumberedTabs.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.shortTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                เนื้อหาสั้นผิดปกติ {draftStructureSummary.shortTabs.length}
-                              </span>
-                            )}
-                            {draftStructureSummary.warningTabs.length > 0 && (
-                              <span className="rounded-full border px-2 py-0.5">
-                                warning {draftStructureSummary.warningTabs.length}
-                              </span>
-                            )}
+                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            <span>Draft v{latestEditorialDraft?.version ?? "—"}</span>
+                            <span>SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
+                            <span>แก้ไข {editorialEditorData?.history?.length ?? 0}</span>
                           </div>
                         </div>
-                        <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          {draftStructureSummary.sequenceIssues.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              เลขแท็บไม่เรียง {draftStructureSummary.sequenceIssues.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.emptyTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              แท็บว่าง {draftStructureSummary.emptyTabs.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.unnumberedTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              ไม่มีเลขแท็บ {draftStructureSummary.unnumberedTabs.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.shortTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              เนื้อหาสั้นผิดปกติ {draftStructureSummary.shortTabs.length}
+                            </span>
+                          )}
+                          {draftStructureSummary.warningTabs.length > 0 && (
+                            <span className="rounded-full border px-2 py-0.5">
+                              warning {draftStructureSummary.warningTabs.length}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </summary>
+                    <div className="space-y-3 border-t p-3">
+                      {(draftStructureSummary.sequenceIssues.length > 0 ||
+                        draftStructureSummary.emptyTabs.length > 0 ||
+                        draftStructureSummary.unnumberedTabs.length > 0 ||
+                        draftStructureSummary.shortTabs.length > 0) && (
+                        <div className="space-y-1 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
                           {draftStructureSummary.sequenceIssues.length > 0 && (
                             <div>ลำดับ: {draftStructureSummary.sequenceIssues.join(", ")}</div>
                           )}
@@ -3127,68 +3143,13 @@ export default function WorkspacePage() {
                             </div>
                           )}
                         </div>
-                      </summary>
-                      <div className="space-y-2 border-t p-3">
-                        {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
-                          <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span>{tab.title}</span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-muted-foreground">
-                                  {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
-                                </span>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant={tab.paragraphs.length ? "outline" : "default"}
-                                  disabled={!latestEditorialDraft || editEditorialDraft.isPending}
-                                  onClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    openChapterEditor(tab);
-                                  }}
-                                >
-                                  {tab.paragraphs.length ? "เปิด Editor" : "เติมเนื้อหา"}
-                                </Button>
-                                {editorialEditorData?.latestDraft && (() => {
-                                  const draftTab = (editorialEditorData.tabs ?? []).find((candidate: any) => candidate.sourceTabId === tab.sourceTabId);
-                                  if (!draftTab) return null;
-                                  return <Button type="button" size="sm" variant="outline" disabled={excludeEditorialTab.isPending || editorialEditorData.tabs.length <= 1} onClick={(event) => { event.preventDefault(); event.stopPropagation(); if(window.confirm(`นำแท็บ ${tab.title} ออกจาก Draft นี้หรือไม่? ระบบจะสร้าง Draft revision ใหม่ และต้องตรวจ QC/ยืนยันใหม่`)) excludeEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:draftTab.sourceTabId}); }}>นำออก</Button>;
-                                })()}
-                              </div>
-                            </div>
-                            {(tab.chapterNumber || tab.warnings?.length) && (
-                              <div className="mt-1 text-xs text-muted-foreground">
-                                {tab.chapterNumber ? `บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}` : ""}
-                                {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
+                      )}
 
-                  <details
-                    id="workspace-chapter-editor"
-                    className="rounded-md border"
-                    open={chapterEditorTarget ? true : undefined}
-                  >
-                    <summary className="cursor-pointer list-none p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="font-medium">Workspace Editor</div>
-                        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                          <span>Draft v{latestEditorialDraft?.version ?? "—"}</span>
-                          <span>SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
-                          <span>แก้ไข {editorialEditorData?.history?.length ?? 0}</span>
-                        </div>
-                      </div>
-                    </summary>
-                    <div className="space-y-3 border-t p-3">
-                      {editorialEditorData?.latestDraft && <div className="rounded-lg border p-3"><div className="font-medium">Draft tabs</div><div className="mt-2 space-y-2">{(editorialEditorData.tabs ?? []).map((tab:any)=><div key={tab.sourceTabId} className="flex items-center justify-between rounded border p-2"><span>{tab.title}</span><Button type="button" size="sm" variant="outline" disabled={excludeEditorialTab.isPending || editorialEditorData.tabs.length<=1} onClick={()=>{if(window.confirm(`Remove tab ${tab.title} from this Draft? A new Draft revision will be created and current QC/approval becomes stale.`))excludeEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:tab.sourceTabId});}}>นำออก</Button></div>)}</div>{(editorialEditorData.excludedTabs ?? []).length>0&&<div className="mt-4"><div className="text-sm font-medium">แท็บที่นำออก</div>{editorialEditorData.excludedTabs.map((tab:any)=><div key={tab.sourceTabId} className="mt-2 flex items-center justify-between rounded border p-2"><span>{tab.title}</span><Button type="button" size="sm" variant="outline" onClick={()=>restoreEditorialTab.mutate({workspaceId:selectedWorkspaceId!,workItemId:selectedSourceWorkItemId!,expectedDraftId:editorialEditorData.latestDraft.id,expectedDraftSha256:editorialEditorData.latestDraft.draftSha256,sourceTabId:tab.sourceTabId})}>คืนแท็บ</Button></div>)}</div>}</div>}
-                      <div className="flex justify-end">
+                        <div className="font-medium">แท็บใน Draft</div>
                         <Button
                           type="button"
+                          size="sm"
                           variant="outline"
                           disabled={
                             !editorialEditorData?.canUndo ||
@@ -3214,6 +3175,110 @@ export default function WorkspacePage() {
                         </Button>
                       </div>
 
+                      {!!(editorialSourceDraft.data as any)?.tabs?.length ? (
+                        <div className="space-y-2">
+                          {(editorialSourceDraft.data as any).tabs.map((tab: any) => (
+                            <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <div>{tab.title}</div>
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
+                                    {tab.chapterNumber
+                                      ? ` · บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}`
+                                      : ""}
+                                    {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant={tab.paragraphs.length ? "outline" : "default"}
+                                    disabled={!latestEditorialDraft || editEditorialDraft.isPending}
+                                    onClick={() => openChapterEditor(tab)}
+                                  >
+                                    {tab.paragraphs.length ? "เปิด Editor" : "เติมเนื้อหา"}
+                                  </Button>
+                                  {editorialEditorData?.latestDraft && (() => {
+                                    const draftTab = (editorialEditorData.tabs ?? []).find(
+                                      (candidate: any) => candidate.sourceTabId === tab.sourceTabId
+                                    );
+                                    if (!draftTab) return null;
+                                    return (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={
+                                          excludeEditorialTab.isPending ||
+                                          editorialEditorData.tabs.length <= 1
+                                        }
+                                        onClick={() => {
+                                          if (
+                                            window.confirm(
+                                              `นำแท็บ ${tab.title} ออกจาก Draft นี้หรือไม่? ระบบจะสร้าง Draft revision ใหม่ และต้องตรวจ QC/ยืนยันใหม่`
+                                            )
+                                          ) {
+                                            excludeEditorialTab.mutate({
+                                              workspaceId: selectedWorkspaceId!,
+                                              workItemId: selectedSourceWorkItemId!,
+                                              expectedDraftId: editorialEditorData.latestDraft.id,
+                                              expectedDraftSha256:
+                                                editorialEditorData.latestDraft.draftSha256,
+                                              sourceTabId: draftTab.sourceTabId,
+                                            });
+                                          }
+                                        }}
+                                      >
+                                        นำออก
+                                      </Button>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <EmptyState>ยังไม่มีแท็บใน Draft</EmptyState>
+                      )}
+
+                      {(editorialEditorData?.excludedTabs ?? []).length > 0 && (
+                        <details className="rounded-md border bg-background">
+                          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                            แท็บที่นำออก {editorialEditorData.excludedTabs.length}
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            {editorialEditorData.excludedTabs.map((tab: any) => (
+                              <div
+                                key={tab.sourceTabId}
+                                className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-sm"
+                              >
+                                <span>{tab.title}</span>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={restoreEditorialTab.isPending}
+                                  onClick={() =>
+                                    restoreEditorialTab.mutate({
+                                      workspaceId: selectedWorkspaceId!,
+                                      workItemId: selectedSourceWorkItemId!,
+                                      expectedDraftId: editorialEditorData.latestDraft.id,
+                                      expectedDraftSha256:
+                                        editorialEditorData.latestDraft.draftSha256,
+                                      sourceTabId: tab.sourceTabId,
+                                    })
+                                  }
+                                >
+                                  คืนแท็บ
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
 
                     {chapterEditorTarget && (
                       <div className="space-y-3 rounded-xl border bg-muted/10 p-3">
@@ -3362,7 +3427,11 @@ export default function WorkspacePage() {
                       </div>
                     )}
 
-                    <div className="space-y-2">
+                    <details className="rounded-md border bg-background">
+                      <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                        เครื่องมือแก้ไขรายย่อหน้า
+                      </summary>
+                      <div className="space-y-2 border-t p-3">
                       {(editorialDraftData?.tabs ?? []).map((tab: any) => (
                         <details key={tab.id} className="rounded-md border">
                           <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
@@ -3408,7 +3477,8 @@ export default function WorkspacePage() {
                           </div>
                         </details>
                       ))}
-                    </div>
+                      </div>
+                    </details>
                   </div>
                   </details>
 
