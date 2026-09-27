@@ -29,7 +29,7 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(domain).toContain("\\u1CD0-\\u1CFF");
     expect(domain).toContain("isLikelyKaomoji");
     expect(domain).toContain("const checkAsciiAlphabet = false");
-    expect(domain).toContain("v4 emits blocking findings only for non-ASCII foreign scripts");
+    expect(domain).toContain("v5 emits blocking findings only for non-ASCII foreign scripts");
     expect(domain).not.toMatch(/SpreadsheetApp|DocumentApp|setBackgroundColor/);
   });
 
