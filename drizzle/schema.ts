@@ -2928,6 +2928,10 @@ export const workspaceEditorialCheckerRuns = mysqlTable(
     idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
     status: mysqlEnum("status", ["passed", "failed"]).notNull(),
     findingCount: int("findingCount").notNull(),
+    tabCount: int("tabCount").default(0).notNull(),
+    expectedTabCount: int("expectedTabCount"),
+    anomalyCount: int("anomalyCount").default(0).notNull(),
+    blockingAnomalyCount: int("blockingAnomalyCount").default(0).notNull(),
     createdByUserId: int("createdByUserId").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -2995,6 +2999,39 @@ export const workspaceEditorialCheckerFindings = mysqlTable(
     ),
     runFk: foreignKey({
       name: "wecf_run_fk",
+      columns: [table.runId],
+      foreignColumns: [workspaceEditorialCheckerRuns.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export const workspaceEditorialCheckerAnomalies = mysqlTable(
+  "workspaceEditorialCheckerAnomalies",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    runId: int("runId").notNull(),
+    anomalyKey: varchar("anomalyKey", { length: 64 }).notNull(),
+    anomalyType: varchar("anomalyType", { length: 80 }).notNull(),
+    severity: mysqlEnum("severity", ["warning", "error"]).notNull(),
+    sourceTabId: varchar("sourceTabId", { length: 255 }),
+    tabTitle: varchar("tabTitle", { length: 500 }),
+    chapterNumber: varchar("chapterNumber", { length: 100 }),
+    relatedSourceTabIdsJson: text("relatedSourceTabIdsJson").notNull(),
+    message: text("message").notNull(),
+    detailsJson: text("detailsJson").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    runAnomalyUnique: uniqueIndex("weca_run_anomaly_unique").on(
+      table.runId,
+      table.anomalyKey
+    ),
+    runTypeIdx: index("weca_run_type_idx").on(
+      table.runId,
+      table.anomalyType
+    ),
+    runFk: foreignKey({
+      name: "weca_run_fk",
       columns: [table.runId],
       foreignColumns: [workspaceEditorialCheckerRuns.id],
     }).onDelete("cascade"),

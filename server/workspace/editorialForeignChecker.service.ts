@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   workspaceEditorialCheckerAllowWords,
+  workspaceEditorialCheckerAnomalies,
   workspaceEditorialCheckerFindings,
   workspaceEditorialCheckerFindingStates,
   workspaceEditorialCheckerResolutionEvents,
@@ -17,6 +18,10 @@ import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import {
+  evaluateEditorialStructuralAnomalies,
+  type EditorialStructuralTabInput,
+} from "./editorialStructuralAnomaly.domain";
 import {
   EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
   EDITORIAL_FOREIGN_CHECKER_RULES,
@@ -154,6 +159,85 @@ async function loadDraftParagraphs(db: any, draftId: number) {
         text: row.paragraph.text,
       }) satisfies EditorialCheckerParagraphInput
   );
+}
+
+async function loadDraftStructure(
+  db: any,
+  draftId: number
+): Promise<{
+  tabs: EditorialStructuralTabInput[];
+  paragraphs: EditorialCheckerParagraphInput[];
+}> {
+  const tabs = await db
+    .select()
+    .from(workspaceEditorialDraftTabs)
+    .where(eq(workspaceEditorialDraftTabs.draftId, draftId))
+    .orderBy(
+      asc(workspaceEditorialDraftTabs.tabOrder),
+      asc(workspaceEditorialDraftTabs.id)
+    );
+  const paragraphRows = await db
+    .select({
+      draftTabId: workspaceEditorialDraftParagraphs.draftTabId,
+      paragraphKey: workspaceEditorialDraftParagraphs.paragraphKey,
+      paragraphOrder: workspaceEditorialDraftParagraphs.paragraphOrder,
+      sourceParagraphIndex: workspaceEditorialDraftParagraphs.sourceParagraphIndex,
+      paragraphFingerprint: workspaceEditorialDraftParagraphs.paragraphFingerprint,
+      text: workspaceEditorialDraftParagraphs.text,
+    })
+    .from(workspaceEditorialDraftParagraphs)
+    .innerJoin(
+      workspaceEditorialDraftTabs,
+      eq(
+        workspaceEditorialDraftParagraphs.draftTabId,
+        workspaceEditorialDraftTabs.id
+      )
+    )
+    .where(eq(workspaceEditorialDraftTabs.draftId, draftId))
+    .orderBy(
+      asc(workspaceEditorialDraftTabs.tabOrder),
+      asc(workspaceEditorialDraftParagraphs.paragraphOrder)
+    );
+
+  const paragraphsByTab = new Map<number, typeof paragraphRows>();
+  for (const row of paragraphRows) {
+    const bucket = paragraphsByTab.get(Number(row.draftTabId)) ?? [];
+    bucket.push(row);
+    paragraphsByTab.set(Number(row.draftTabId), bucket);
+  }
+
+  const structuralTabs: EditorialStructuralTabInput[] = tabs.map((tab: any) => ({
+    sourceTabId: tab.sourceTabId,
+    tabOrder: tab.tabOrder,
+    tabTitle: tab.title,
+    chapterNumber: tab.chapterNumber,
+    chapterTitle: tab.chapterTitle,
+    paragraphs: (paragraphsByTab.get(Number(tab.id)) ?? []).map((row: any) => ({
+      paragraphKey: row.paragraphKey,
+      paragraphOrder: row.paragraphOrder,
+      sourceParagraphIndex: row.sourceParagraphIndex,
+      text: row.text,
+    })),
+  }));
+
+  const tabById = new Map<number, any>(
+    tabs.map((tab: any) => [Number(tab.id), tab])
+  );
+  const paragraphs: EditorialCheckerParagraphInput[] = paragraphRows.map(
+    (row: any) => {
+      const tab = tabById.get(Number(row.draftTabId));
+      return {
+        sourceTabId: String(tab?.sourceTabId ?? ""),
+        tabTitle: String(tab?.title ?? ""),
+        paragraphKey: row.paragraphKey,
+        paragraphOrder: row.paragraphOrder,
+        paragraphFingerprint: row.paragraphFingerprint,
+        text: row.text,
+      };
+    }
+  );
+
+  return { tabs: structuralTabs, paragraphs };
 }
 
 async function loadAllowWords(db: any, workspaceId: number) {
@@ -387,8 +471,11 @@ export async function getEditorialForeignCheckerReadModel(input: {
       latestDraft: draft,
       run: null,
       findings: [],
+      anomalies: [],
+      structuralSummary: null,
       allowWords,
       unresolvedCount: 0,
+      blockingIssueCount: 0,
       isCurrent: false,
       effectiveStatus: null,
     };
@@ -403,6 +490,15 @@ export async function getEditorialForeignCheckerReadModel(input: {
       asc(workspaceEditorialCheckerFindings.paragraphOrder),
       asc(workspaceEditorialCheckerFindings.startOffset),
       asc(workspaceEditorialCheckerFindings.id)
+    );
+  const anomalies = await db
+    .select()
+    .from(workspaceEditorialCheckerAnomalies)
+    .where(eq(workspaceEditorialCheckerAnomalies.runId, run.id))
+    .orderBy(
+      asc(workspaceEditorialCheckerAnomalies.severity),
+      asc(workspaceEditorialCheckerAnomalies.anomalyType),
+      asc(workspaceEditorialCheckerAnomalies.id)
     );
   const states = await db
     .select()
@@ -441,15 +537,30 @@ export async function getEditorialForeignCheckerReadModel(input: {
       run.draftId === draft.id &&
       run.engineVersion === EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
   );
+  const blockingIssueCount =
+    unresolvedCount + Number(run.blockingAnomalyCount ?? 0);
   return {
     engineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
     latestDraft: draft,
     run,
     findings: projected,
+    anomalies: anomalies.map((row: any) => ({
+      ...row,
+      relatedSourceTabIds: JSON.parse(row.relatedSourceTabIdsJson),
+      details: JSON.parse(row.detailsJson),
+    })),
+    structuralSummary: {
+      tabCount: Number(run.tabCount ?? 0),
+      expectedTabCount:
+        run.expectedTabCount === null ? null : Number(run.expectedTabCount),
+      anomalyCount: Number(run.anomalyCount ?? anomalies.length),
+      blockingAnomalyCount: Number(run.blockingAnomalyCount ?? 0),
+    },
     allowWords,
     unresolvedCount,
+    blockingIssueCount,
     isCurrent,
-    effectiveStatus: unresolvedCount === 0 ? "passed" : "failed",
+    effectiveStatus: blockingIssueCount === 0 ? "passed" : "failed",
   };
 }
 
@@ -469,7 +580,10 @@ export async function runEditorialForeignChecker(input: {
 
   const result = await db.transaction(async (tx: any) => {
     const [lockedWorkItem] = await tx
-      .select({ id: workspaceEditorialWorkItems.id })
+      .select({
+        id: workspaceEditorialWorkItems.id,
+        episodeNumber: workspaceEditorialWorkItems.episodeNumber,
+      })
       .from(workspaceEditorialWorkItems)
       .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
       .for("update")
@@ -518,11 +632,20 @@ export async function runEditorialForeignChecker(input: {
       return { runId: existing.id, draftId: existing.draftId, created: false };
     }
 
-    const paragraphs = await loadDraftParagraphs(tx, draft.id);
+    const structure = await loadDraftStructure(tx, draft.id);
     const evaluated = evaluateEditorialForeignDraft({
-      paragraphs,
+      paragraphs: structure.paragraphs,
       allowWords,
     });
+    const structural = evaluateEditorialStructuralAnomalies({
+      tabs: structure.tabs,
+      episodeNumber: lockedWorkItem.episodeNumber,
+    });
+    const runStatus =
+      evaluated.findings.length > 0 ||
+      structural.summary.blockingAnomalyCount > 0
+        ? "failed"
+        : "passed";
     const runId = insertId(
       await tx.insert(workspaceEditorialCheckerRuns).values({
         workItemId: input.workItemId,
@@ -530,8 +653,12 @@ export async function runEditorialForeignChecker(input: {
         engineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
         allowListSha256,
         idempotencyKey,
-        status: evaluated.status,
+        status: runStatus,
         findingCount: evaluated.findings.length,
+        tabCount: structural.summary.tabCount,
+        expectedTabCount: structural.summary.expectedTabCount,
+        anomalyCount: structural.summary.anomalyCount,
+        blockingAnomalyCount: structural.summary.blockingAnomalyCount,
         createdByUserId: input.actorUserId,
       })
     );
@@ -561,6 +688,22 @@ export async function runEditorialForeignChecker(input: {
         }))
       );
     }
+    if (structural.anomalies.length) {
+      await tx.insert(workspaceEditorialCheckerAnomalies).values(
+        structural.anomalies.map(anomaly => ({
+          runId,
+          anomalyKey: anomaly.anomalyKey,
+          anomalyType: anomaly.anomalyType,
+          severity: anomaly.severity,
+          sourceTabId: anomaly.sourceTabId,
+          tabTitle: anomaly.tabTitle,
+          chapterNumber: anomaly.chapterNumber,
+          relatedSourceTabIdsJson: JSON.stringify(anomaly.relatedSourceTabIds),
+          message: anomaly.message,
+          detailsJson: JSON.stringify(anomaly.details),
+        }))
+      );
+    }
     return { runId, draftId: draft.id, created: true };
   });
 
@@ -571,7 +714,7 @@ export async function runEditorialForeignChecker(input: {
     runId: result.runId,
   });
   const targetColumnKey =
-    readModel.unresolvedCount > 0 ? "needs_fix" : "pending_confirm";
+    readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
   const kanbanProjection = await db.transaction((tx: any) =>
     projectEditorialQcColumn(tx, {
       workItemId: input.workItemId,
@@ -580,7 +723,7 @@ export async function runEditorialForeignChecker(input: {
       actorUserId: input.actorUserId,
       reason:
         targetColumnKey === "needs_fix"
-          ? "editorial_checker_findings_open"
+          ? "editorial_checker_issues_open"
           : "editorial_checker_clean",
       idempotencyKey: `editorial-qc-${result.runId}-${targetColumnKey}`,
     })

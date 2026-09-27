@@ -3,6 +3,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import {
   episodes,
   workspaceEditorialCheckerAllowWords,
+  workspaceEditorialCheckerAnomalies,
   workspaceEditorialCheckerFindings,
   workspaceEditorialCheckerFindingStates,
   workspaceEditorialCheckerRuns,
@@ -234,7 +235,7 @@ async function currentQcEvidence(
     };
   }
 
-  const [allowRows, findings, states] = await Promise.all([
+  const [allowRows, findings, states, anomalies] = await Promise.all([
     db
       .select()
       .from(workspaceEditorialCheckerAllowWords)
@@ -259,6 +260,15 @@ async function currentQcEvidence(
       .select()
       .from(workspaceEditorialCheckerFindingStates)
       .where(eq(workspaceEditorialCheckerFindingStates.workItemId, workItemId)),
+    db
+      .select()
+      .from(workspaceEditorialCheckerAnomalies)
+      .where(eq(workspaceEditorialCheckerAnomalies.runId, run.id))
+      .orderBy(
+        asc(workspaceEditorialCheckerAnomalies.severity),
+        asc(workspaceEditorialCheckerAnomalies.anomalyType),
+        asc(workspaceEditorialCheckerAnomalies.id)
+      ),
   ]);
   const activeAllow = new Set(allowRows.map((row: any) => row.normalizedWord));
   const currentAllowListSha256 = editorialAllowListSha256(
@@ -294,19 +304,31 @@ async function currentQcEvidence(
   const unresolvedCount = projected.filter(
     (finding: any) => finding.disposition === "open"
   ).length;
+  const projectedAnomalies = anomalies.map((anomaly: any) => ({
+    anomalyKey: anomaly.anomalyKey,
+    anomalyType: anomaly.anomalyType,
+    severity: anomaly.severity,
+  }));
+  const blockingAnomalyCount = projectedAnomalies.filter(
+    (anomaly: any) => anomaly.severity === "error"
+  ).length;
   const qcEvidenceSha256 = editorialQcEvidenceSha256({
     runId: run.id,
     draftId,
     engineVersion: run.engineVersion,
     allowListSha256: currentAllowListSha256,
     findings: projected,
+    anomalies: projectedAnomalies,
   });
+  const ready = unresolvedCount === 0 && blockingAnomalyCount === 0;
   return {
-    ready: unresolvedCount === 0,
-    reason: unresolvedCount === 0 ? null : ("QC_UNRESOLVED" as const),
+    ready,
+    reason: ready ? null : ("QC_UNRESOLVED" as const),
     run,
     qcEvidenceSha256,
     unresolvedCount,
+    blockingAnomalyCount,
+    anomalies: projectedAnomalies,
     findings: projected,
   };
 }
@@ -604,6 +626,13 @@ export async function getEditorialApprovalReadModel(input: {
       checkerRunId: qc.run?.id ?? null,
       qcEvidenceSha256: qc.qcEvidenceSha256,
       unresolvedCount: qc.unresolvedCount,
+      blockingAnomalyCount: qc.blockingAnomalyCount ?? 0,
+      anomalyCount: Number(qc.run?.anomalyCount ?? 0),
+      tabCount: Number(qc.run?.tabCount ?? 0),
+      expectedTabCount:
+        qc.run?.expectedTabCount === null || qc.run?.expectedTabCount === undefined
+          ? null
+          : Number(qc.run.expectedTabCount),
     },
     approval,
     approvalStatus,
@@ -695,10 +724,15 @@ export async function approveEditorialDraft(input: {
         "Checker/QC evidence changed before approval. Recheck the current Draft."
       );
     }
-    if (!qc.ready || qc.unresolvedCount !== 0 || !qc.qcEvidenceSha256) {
+    if (
+      !qc.ready ||
+      qc.unresolvedCount !== 0 ||
+      Number(qc.blockingAnomalyCount ?? 0) !== 0 ||
+      !qc.qcEvidenceSha256
+    ) {
       throw new WorkspaceEditorialApprovalError(
         "QC_UNRESOLVED",
-        "All deterministic checker findings must be resolved before approval."
+        "All deterministic checker findings and blocking structural anomalies must be resolved before approval."
       );
     }
 

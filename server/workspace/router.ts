@@ -1119,6 +1119,9 @@ export const workspaceRouter = router({
               effectiveStatus: checker.effectiveStatus,
               findingCount: checker.findings.length,
               unresolvedCount: checker.unresolvedCount,
+              blockingIssueCount: checker.blockingIssueCount,
+              structuralSummary: checker.structuralSummary,
+              anomalies: checker.anomalies,
               latestDraft: checker.latestDraft
                 ? {
                     id: checker.latestDraft.id,

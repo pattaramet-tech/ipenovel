@@ -407,6 +407,13 @@
       "when": 1790456400000,
       "tag": "0057_workspace_editorial_bulk_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "5",
+      "when": 1790458200000,
+      "tag": "0058_workspace_editorial_structural_anomalies",
+      "breakpoints": true
     }
   ]
 }
