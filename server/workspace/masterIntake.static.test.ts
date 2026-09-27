@@ -63,6 +63,9 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(service).toContain("if (preparedSourceDocUrl && !preparedSourceDocumentId)");
     expect(service).toContain("preparedSourceDocUrl: preparedSourceDocUrl || null");
     expect(service).not.toContain('if (!preparedSourceDocumentId) blockers.push("PREPARED_SOURCE_DOC_INVALID")');
+    const page = read("client/src/pages/WorkspacePage.tsx");
+    expect(page).toContain('href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">O</a>');
+    expect(page).not.toContain('href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">K</a>');
     const migration = read("drizzle/0056_workspace_master_intake_optional_prepared_source.sql");
     expect(migration).toContain("preparedSourceDocUrl");
     expect(migration).toContain("preparedSourceDocumentId");
