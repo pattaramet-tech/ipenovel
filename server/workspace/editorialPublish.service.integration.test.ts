@@ -243,13 +243,6 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
         executionEnabled: true,
-        executionScope: {
-          workspaceId: workspace.workspaceId,
-          workspaceNovelId: workspaceNovel.workspaceNovelId,
-          runId: staleRunId,
-          expectedCutoverEpoch: 1,
-          expectedOwnershipVersion: 1,
-        },
       });
 
       const draftV1 = await getEditorialDraftReadModel({
@@ -278,7 +271,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
       });
 
       const provider = createIpeNovelWorkspacePublishProvider();
-      const staleWorker = await runScopedPublishWorkerOnce({
+      await expect(runScopedPublishWorkerOnce({
         scope: {
           workspaceId: workspace.workspaceId,
           workspaceNovelId: workspaceNovel.workspaceNovelId,
@@ -290,8 +283,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         provider,
         executionEnabled: true,
         allowExternalProvider: true,
-      });
-      expect(staleWorker.claimed).toBe(false);
+      })).rejects.toMatchObject({ code: "STAGE_NOT_READY" });
       expect((await db.select().from(episodes)
         .where(eq(episodes.id, staged.episode.id)))[0].isPublished).toBe(false);
       expect((await db.select().from(workspaceOutbox)
@@ -365,13 +357,6 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
         executionEnabled: true,
-        executionScope: {
-          workspaceId: workspace.workspaceId,
-          workspaceNovelId: workspaceNovel.workspaceNovelId,
-          runId,
-          expectedCutoverEpoch: 1,
-          expectedOwnershipVersion: 1,
-        },
       });
       expect(enqueued.execution.outbox.status).toBe("pending");
 
@@ -607,15 +592,9 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
         executionEnabled: true,
-        executionScope: {
-          workspaceId: workspace.workspaceId,
-          workspaceNovelId: workspaceNovel.workspaceNovelId,
-          runId,
-          expectedCutoverEpoch: 1,
-          expectedOwnershipVersion: 1,
-        },
       });
 
+      await new Promise(resolve => setTimeout(resolve, 1_050));
       const baseProvider = createIpeNovelWorkspacePublishProvider();
       const execute = vi.fn((request: any) => baseProvider.execute(request));
       const published = await runScopedPublishWorkerOnce({

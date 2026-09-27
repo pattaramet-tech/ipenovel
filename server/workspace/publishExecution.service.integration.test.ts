@@ -133,10 +133,14 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
       expect(enqueued.run.status).toBe("publishing");
       expect(enqueued.outbox.status).toBe("pending");
 
+      await new Promise(resolve => setTimeout(resolve, 1_050));
       const firstClaim = await claimPublishOutbox({
         workspaceId: workspace.workspaceId,
+        publishRunId: partialPlan.run.id,
         leaseOwner: "m05b-worker-1",
         leaseExpiresAt: new Date(Date.now() + 60_000),
+        expectedCutoverEpoch: 1,
+        expectedOwnershipVersion: 1,
       });
       expect(firstClaim?.id).toBe(enqueued.outbox.id);
       const partialProvider = makeProvider({ failItemKey: "chapter-2" });
