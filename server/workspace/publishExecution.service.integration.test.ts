@@ -219,7 +219,13 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         items: [{ itemKey: "crash-item", sourceSha256: "c".repeat(64) }],
       });
       const crashEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: crashPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
-      const crashClaim = await claimPublishOutbox({ workspaceId: workspace.workspaceId, leaseOwner: "crash-worker", leaseExpiresAt: new Date(Date.now() + 60_000) });
+      await new Promise(resolve => setTimeout(resolve, 1_050));
+      const crashClaim = await claimPublishOutbox({
+        workspaceId: workspace.workspaceId,
+        publishRunId: crashPlan.run.id,
+        leaseOwner: "crash-worker",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      });
       const crashProvider = makeProvider({ crashOnce: true });
       await expect(processClaimedPublishOutbox({
         workspaceId: workspace.workspaceId,
@@ -230,7 +236,12 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         executionEnabled: true,
       })).rejects.toThrow("synthetic worker crash");
       await new Promise(resolve => setTimeout(resolve, 1_050));
-      const recoveryClaim = await claimPublishOutbox({ workspaceId: workspace.workspaceId, leaseOwner: "recovery-worker", leaseExpiresAt: new Date(Date.now() + 60_000) });
+      const recoveryClaim = await claimPublishOutbox({
+        workspaceId: workspace.workspaceId,
+        publishRunId: crashPlan.run.id,
+        leaseOwner: "recovery-worker",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      });
       expect(recoveryClaim?.id).toBe(crashEnqueue.outbox.id);
       const recovered = await processClaimedPublishOutbox({
         workspaceId: workspace.workspaceId,
@@ -253,7 +264,13 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         items: [{ itemKey: "persisted-receipt-item", sourceSha256: "e".repeat(64) }],
       });
       const persistedReceiptEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: persistedReceiptPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
-      const persistedReceiptClaim = await claimPublishOutbox({ workspaceId: workspace.workspaceId, leaseOwner: "persisted-receipt-worker", leaseExpiresAt: new Date(Date.now() + 60_000) });
+      await new Promise(resolve => setTimeout(resolve, 1_050));
+      const persistedReceiptClaim = await claimPublishOutbox({
+        workspaceId: workspace.workspaceId,
+        publishRunId: persistedReceiptPlan.run.id,
+        leaseOwner: "persisted-receipt-worker",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      });
       const [persistedReceiptItem] = await db.select().from(workspacePublishItems).where(eq(workspacePublishItems.runId, persistedReceiptPlan.run.id));
       await db.update(workspacePublishItems).set({
         status: "publishing",

@@ -271,6 +271,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
       });
 
       const provider = createIpeNovelWorkspacePublishProvider();
+      await new Promise(resolve => setTimeout(resolve, 1_050));
       await expect(runScopedPublishWorkerOnce({
         scope: {
           workspaceId: workspace.workspaceId,
