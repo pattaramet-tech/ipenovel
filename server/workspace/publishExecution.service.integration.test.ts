@@ -219,7 +219,9 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         items: [{ itemKey: "crash-item", sourceSha256: "c".repeat(64) }],
       });
       const crashEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: crashPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
-      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, crashEnqueue.outbox.id));
       const crashClaim = await claimPublishOutbox({
         workspaceId: workspace.workspaceId,
         publishRunId: crashPlan.run.id,
@@ -235,7 +237,9 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         expectedCutoverEpoch: 1,
         executionEnabled: true,
       })).rejects.toThrow("synthetic worker crash");
-      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, crashEnqueue.outbox.id));
       const recoveryClaim = await claimPublishOutbox({
         workspaceId: workspace.workspaceId,
         publishRunId: crashPlan.run.id,
@@ -264,7 +268,9 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         items: [{ itemKey: "persisted-receipt-item", sourceSha256: "e".repeat(64) }],
       });
       const persistedReceiptEnqueue = await requestPublishExecution({ actorUserId: owner.id, workspaceId: workspace.workspaceId, runId: persistedReceiptPlan.run.id, expectedCutoverEpoch: 1, executionEnabled: true });
-      await new Promise(resolve => setTimeout(resolve, 1_050));
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, persistedReceiptEnqueue.outbox.id));
       const persistedReceiptClaim = await claimPublishOutbox({
         workspaceId: workspace.workspaceId,
         publishRunId: persistedReceiptPlan.run.id,

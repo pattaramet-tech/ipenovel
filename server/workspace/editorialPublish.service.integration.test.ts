@@ -270,8 +270,10 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         idempotencyKey: "ipe055g-edit-v2",
       });
 
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.publishRunId, staleRunId));
       const provider = createIpeNovelWorkspacePublishProvider();
-      await new Promise(resolve => setTimeout(resolve, 1_050));
       await expect(runScopedPublishWorkerOnce({
         scope: {
           workspaceId: workspace.workspaceId,
@@ -360,6 +362,9 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         executionEnabled: true,
       });
       expect(enqueued.execution.outbox.status).toBe("pending");
+      await db.update(workspaceOutbox)
+        .set({ availableAt: new Date(Date.now() - 1_000) })
+        .where(eq(workspaceOutbox.id, enqueued.execution.outbox.id));
 
       const published = await runScopedPublishWorkerOnce({
         scope: enqueued.scope,
