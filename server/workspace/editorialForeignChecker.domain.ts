@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v4" as const;
+  "workspace-editorial-foreign-checker-v5" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
@@ -296,7 +296,7 @@ export function evaluateEditorialForeignParagraph(
   const kaomojiSkipMap = buildKaomojiSkipMap(text);
   // Product rule: basic A-Z/a-z alphabet is intentionally non-blocking.
   // We keep the historical latin_word/long_english rule keys for old evidence,
-  // but v4 emits blocking findings only for non-ASCII foreign scripts and
+  // but v5 emits blocking findings only for non-ASCII foreign scripts and
   // deterministic source-junk tail blocks.
   const checkAsciiAlphabet = false;
   if (checkAsciiAlphabet) {
