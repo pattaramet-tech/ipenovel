@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chapterEditorFindingRanges,
+  chapterEditorTabStatus,
   parseChapterEditorPasteText,
   serializeChapterEditorParagraphs,
 } from "./workspaceChapterEditor";
@@ -47,5 +48,55 @@ describe("workspace Chapter Editor paragraph helpers", () => {
         { startOffset: 9, endOffset: 16, token: "support" },
       ])
     ).toEqual([]);
+  });
+
+  it("derives edited, foreign-word and structural status per tab", () => {
+    expect(
+      chapterEditorTabStatus({
+        sourceTabId: "tab-2",
+        paragraphs: [
+          {
+            sourceParagraphIndex: 1,
+            sourceParagraphFingerprint: "source-a",
+            paragraphFingerprint: "source-a",
+          },
+          {
+            sourceParagraphIndex: -2,
+            sourceParagraphFingerprint: "manual-b",
+            paragraphFingerprint: "manual-b",
+          },
+        ],
+        findings: [
+          { sourceTabId: "tab-2", disposition: "open" },
+          { sourceTabId: "tab-2", disposition: "fixed" },
+          { sourceTabId: "tab-3", disposition: "open" },
+        ],
+        anomalies: [
+          { relatedSourceTabIds: ["tab-1", "tab-2"] },
+          { relatedSourceTabIds: ["tab-3"] },
+        ],
+      })
+    ).toEqual({
+      edited: true,
+      foreignFindingCount: 1,
+      structuralIssueCount: 1,
+    });
+
+    expect(
+      chapterEditorTabStatus({
+        sourceTabId: "tab-1",
+        paragraphs: [
+          {
+            sourceParagraphIndex: 1,
+            sourceParagraphFingerprint: "same",
+            paragraphFingerprint: "same",
+          },
+        ],
+      })
+    ).toEqual({
+      edited: false,
+      foreignFindingCount: 0,
+      structuralIssueCount: 0,
+    });
   });
 });

@@ -112,6 +112,14 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("pasteChapterEditorParagraphs");
     expect(page).toContain("วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ");
     expect(page).toContain("ไฮไลต์คำต่างประเทศ");
+    expect(page).toContain("chapterEditorTabStatus");
+    expect(page).toContain("ก่อนหน้า");
+    expect(page).toContain("ถัดไป");
+    expect(page).toContain("Ctrl/Cmd+S = บันทึก");
+    expect(page).toContain("beforeunload");
+    expect(page).toContain("sessionStorage");
+    expect(page).toContain("ยังไม่บันทึก");
+    expect(page).toContain("savedChapterTarget");
     expect(page).toContain("ไม่ Publish อัตโนมัติ");
   });
 });

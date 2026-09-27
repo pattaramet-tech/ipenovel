@@ -4,6 +4,40 @@ export type ChapterEditorFindingRangeInput = {
   token?: string | null;
 };
 
+export type ChapterEditorTabStatusInput = {
+  sourceTabId: string;
+  paragraphs: readonly {
+    sourceParagraphIndex: number;
+    sourceParagraphFingerprint: string;
+    paragraphFingerprint: string;
+  }[];
+  findings?: readonly {
+    sourceTabId: string;
+    disposition?: string | null;
+  }[];
+  anomalies?: readonly {
+    relatedSourceTabIds?: readonly string[] | null;
+  }[];
+};
+
+export function chapterEditorTabStatus(input: ChapterEditorTabStatusInput) {
+  const edited = input.paragraphs.some(
+    paragraph =>
+      paragraph.sourceParagraphIndex < 0 ||
+      (paragraph.sourceParagraphIndex > 0 &&
+        paragraph.paragraphFingerprint !== paragraph.sourceParagraphFingerprint)
+  );
+  const foreignFindingCount = (input.findings ?? []).filter(
+    finding =>
+      finding.sourceTabId === input.sourceTabId &&
+      (finding.disposition ?? "open") === "open"
+  ).length;
+  const structuralIssueCount = (input.anomalies ?? []).filter(anomaly =>
+    (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)
+  ).length;
+  return { edited, foreignFindingCount, structuralIssueCount };
+}
+
 function normalizeNewlines(value: string) {
   return String(value ?? "").normalize("NFC").replace(/\r\n?/g, "\n");
 }

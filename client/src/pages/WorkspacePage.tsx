@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
 import {
   chapterEditorFindingRanges,
+  chapterEditorTabStatus,
   parseChapterEditorPasteText,
   serializeChapterEditorParagraphs,
 } from "./workspaceChapterEditor";
@@ -330,9 +331,14 @@ export default function WorkspacePage() {
   }>();
   const [chapterEditorParagraphs, setChapterEditorParagraphs] = useState<ChapterEditorParagraphState[]>([]);
   const chapterEditorParagraphSequence = useRef(0);
+  const chapterEditorScrollRef = useRef<HTMLDivElement>(null);
+  const chapterEditorScrollByTab = useRef(new Map<string, number>());
   const chapterEditorText = useMemo(
     () => serializeChapterEditorParagraphs(chapterEditorParagraphs.map(paragraph => paragraph.text)),
     [chapterEditorParagraphs]
+  );
+  const chapterEditorDirty = Boolean(
+    chapterEditorTarget && chapterEditorText !== chapterEditorTarget.expectedText
   );
   const [chapterEditorHighlight, setChapterEditorHighlight] = useState(true);
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
@@ -1039,12 +1045,16 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      const savedChapterTarget =
+        variables.command.kind === "replace_tab" ? chapterEditorTarget : undefined;
       setEditorTarget(undefined);
       setEditorText("");
-      setChapterEditorTarget(undefined);
-      setChapterEditorParagraphs([]);
-      await Promise.all([
+      if (!savedChapterTarget) {
+        setChapterEditorTarget(undefined);
+        setChapterEditorParagraphs([]);
+      }
+      const [sourceDraftResult] = await Promise.all([
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
         editorialForeignChecker.refetch(),
@@ -1062,6 +1072,44 @@ export default function WorkspacePage() {
           workItemId: selectedSourceWorkItemId,
           expectedDraftId: result.draft.id,
         });
+      }
+      if (savedChapterTarget) {
+        const freshDraftData = sourceDraftResult.data as any;
+        const freshDraft = freshDraftData?.latestDraft;
+        const freshTab = (freshDraftData?.tabs ?? []).find(
+          (tab: any) => tab.sourceTabId === savedChapterTarget.sourceTabId
+        );
+        if (freshDraft && freshTab) {
+          const freshParagraphs: ChapterEditorParagraphState[] = (
+            freshTab.paragraphs ?? []
+          ).map((paragraph: any, index: number) => ({
+            id: String(
+              paragraph.paragraphKey ??
+                `source-${freshTab.sourceTabId}-${index}`
+            ),
+            paragraphKey: paragraph.paragraphKey
+              ? String(paragraph.paragraphKey)
+              : undefined,
+            text: String(paragraph.text ?? ""),
+          }));
+          setChapterEditorTarget({
+            sourceTabId: freshTab.sourceTabId,
+            title: freshTab.title,
+            expectedTabStructuralSha256: freshTab.structuralSha256,
+            expectedText: editorialTabText(freshTab),
+            draftId: freshDraft.id,
+            draftVersion: freshDraft.version,
+            draftSha256: freshDraft.draftSha256,
+          });
+          setChapterEditorParagraphs(
+            freshParagraphs.length
+              ? freshParagraphs
+              : [{ id: `source-${freshTab.sourceTabId}-0`, text: "" }]
+          );
+        } else {
+          setChapterEditorTarget(undefined);
+          setChapterEditorParagraphs([]);
+        }
       }
       toast.success(
         result.replayed
@@ -1272,6 +1320,73 @@ export default function WorkspacePage() {
   };
 
   useEffect(() => {
+    if (!chapterEditorDirty) return;
+    const warning = "มีการแก้ไข Chapter Editor ที่ยังไม่ได้บันทึก ต้องการออกจากหน้านี้หรือไม่?";
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const clickGuard = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      const element = event.target instanceof Element ? event.target : null;
+      const anchor = element?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      const destination = new URL(anchor.href, window.location.href);
+      if (
+        destination.href === window.location.href ||
+        (destination.pathname === window.location.pathname &&
+          destination.search === window.location.search &&
+          destination.hash !== window.location.hash)
+      ) {
+        return;
+      }
+      if (!window.confirm(warning)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", clickGuard, true);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      document.removeEventListener("click", clickGuard, true);
+    };
+  }, [chapterEditorDirty]);
+
+  useEffect(() => {
+    if (!chapterEditorTarget) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "s"
+      ) {
+        event.preventDefault();
+        if (chapterEditorDirty && !editEditorialDraft.isPending) {
+          submitChapterEditorEdit();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    chapterEditorTarget,
+    chapterEditorDirty,
+    chapterEditorText,
+    editEditorialDraft.isPending,
+    selectedWorkspaceId,
+    selectedSourceWorkItemId,
+  ]);
+
+  useEffect(() => {
     if (
       !editorTarget ||
       editorText === editorTarget.expectedText ||
@@ -1343,6 +1458,69 @@ export default function WorkspacePage() {
         editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion
       )
   );
+  const chapterEditorTabs = (editorialDraftData?.tabs ?? []) as any[];
+  const currentCheckerFindings = editorialCheckerRunStale
+    ? []
+    : ((editorialCheckerData?.findings ?? []) as any[]);
+  const currentCheckerAnomalies = editorialCheckerRunStale
+    ? []
+    : ((editorialCheckerData?.anomalies ?? []) as any[]);
+  const chapterEditorStatusByTab = new Map(
+    chapterEditorTabs.map((tab: any) => [
+      tab.sourceTabId,
+      chapterEditorTabStatus({
+        sourceTabId: tab.sourceTabId,
+        paragraphs: tab.paragraphs ?? [],
+        findings: currentCheckerFindings,
+        anomalies: currentCheckerAnomalies,
+      }),
+    ])
+  );
+  const chapterEditorCurrentIndex = chapterEditorTarget
+    ? chapterEditorTabs.findIndex(
+        (tab: any) => tab.sourceTabId === chapterEditorTarget.sourceTabId
+      )
+    : -1;
+  const previousChapterTab =
+    chapterEditorCurrentIndex > 0
+      ? chapterEditorTabs[chapterEditorCurrentIndex - 1]
+      : undefined;
+  const nextChapterTab =
+    chapterEditorCurrentIndex >= 0 &&
+    chapterEditorCurrentIndex < chapterEditorTabs.length - 1
+      ? chapterEditorTabs[chapterEditorCurrentIndex + 1]
+      : undefined;
+  const currentChapterStatus = chapterEditorTarget
+    ? chapterEditorStatusByTab.get(chapterEditorTarget.sourceTabId)
+    : undefined;
+  const chapterEditorScrollStorageKey = (sourceTabId: string) =>
+    `workspace:chapter-editor-scroll:${selectedWorkspaceId ?? "none"}:${selectedSourceWorkItemId ?? "none"}:${sourceTabId}`;
+  const rememberChapterEditorScroll = () => {
+    if (!chapterEditorTarget || !chapterEditorScrollRef.current) return;
+    const scrollTop = chapterEditorScrollRef.current.scrollTop;
+    chapterEditorScrollByTab.current.set(chapterEditorTarget.sourceTabId, scrollTop);
+    window.sessionStorage.setItem(
+      chapterEditorScrollStorageKey(chapterEditorTarget.sourceTabId),
+      String(scrollTop)
+    );
+  };
+  const restoreChapterEditorScroll = (sourceTabId: string) => {
+    const memory = chapterEditorScrollByTab.current.get(sourceTabId);
+    const stored = Number(
+      window.sessionStorage.getItem(chapterEditorScrollStorageKey(sourceTabId)) ?? "0"
+    );
+    const scrollTop =
+      typeof memory === "number" && Number.isFinite(memory)
+        ? memory
+        : Number.isFinite(stored)
+          ? stored
+          : 0;
+    window.requestAnimationFrame(() => {
+      if (chapterEditorScrollRef.current) {
+        chapterEditorScrollRef.current.scrollTop = scrollTop;
+      }
+    });
+  };
   const nextChapterEditorParagraphId = () => {
     chapterEditorParagraphSequence.current += 1;
     return `manual-${chapterEditorParagraphSequence.current}`;
@@ -1366,6 +1544,7 @@ export default function WorkspacePage() {
     ) {
       return;
     }
+    rememberChapterEditorScroll();
     const text = editorialTabText(tab);
     const paragraphs: ChapterEditorParagraphState[] = (tab.paragraphs ?? []).map(
       (paragraph: any, index: number) => ({
@@ -1389,12 +1568,13 @@ export default function WorkspacePage() {
       draftSha256: latestEditorialDraft.draftSha256,
     });
     setChapterEditorParagraphs(paragraphs);
-    window.requestAnimationFrame(() =>
+    window.requestAnimationFrame(() => {
       document.getElementById("workspace-chapter-editor")?.scrollIntoView({
         behavior: "smooth",
         block: "start",
-      })
-    );
+      });
+      restoreChapterEditorScroll(tab.sourceTabId);
+    });
   };
   const closeChapterEditor = () => {
     if (
@@ -1404,6 +1584,7 @@ export default function WorkspacePage() {
     ) {
       return;
     }
+    rememberChapterEditorScroll();
     setChapterEditorTarget(undefined);
     setChapterEditorParagraphs([]);
   };
@@ -1481,8 +1662,8 @@ export default function WorkspacePage() {
       paragraphs[paragraphs.length - 1]!.length
     );
   };
-  const chapterEditorFindings = chapterEditorTarget && !editorialCheckerRunStale
-    ? (editorialCheckerData?.findings ?? []).filter(
+  const chapterEditorFindings = chapterEditorTarget
+    ? currentCheckerFindings.filter(
         (finding: any) =>
           finding.sourceTabId === chapterEditorTarget.sourceTabId &&
           finding.disposition === "open"
@@ -3182,6 +3363,32 @@ export default function WorkspacePage() {
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div>
                                   <div>{tab.title}</div>
+                                  {(() => {
+                                    const status = chapterEditorStatusByTab.get(tab.sourceTabId);
+                                    return (
+                                      <div className="mt-1 flex flex-wrap gap-1 text-xs">
+                                        <span
+                                          className={
+                                            status?.edited
+                                              ? "rounded-full bg-blue-100 px-2 py-0.5 text-blue-800"
+                                              : "rounded-full bg-muted px-2 py-0.5 text-muted-foreground"
+                                          }
+                                        >
+                                          {status?.edited ? "แก้แล้ว" : "ยังไม่แก้"}
+                                        </span>
+                                        {(status?.foreignFindingCount ?? 0) > 0 && (
+                                          <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-900">
+                                            คำต่างประเทศ {status?.foreignFindingCount}
+                                          </span>
+                                        )}
+                                        {(status?.structuralIssueCount ?? 0) > 0 && (
+                                          <span className="rounded-full bg-orange-100 px-2 py-0.5 text-orange-900">
+                                            structural issue {status?.structuralIssueCount}
+                                          </span>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
                                   <div className="mt-1 text-xs text-muted-foreground">
                                     {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
                                     {tab.chapterNumber
@@ -3288,16 +3495,69 @@ export default function WorkspacePage() {
                             <div className="text-sm text-muted-foreground">
                               {chapterEditorTarget.title} · Draft v{chapterEditorTarget.draftVersion}
                             </div>
+                            <div className="mt-2 flex flex-wrap gap-1 text-xs">
+                              <span
+                                className={
+                                  currentChapterStatus?.edited
+                                    ? "rounded-full bg-blue-100 px-2 py-0.5 text-blue-800"
+                                    : "rounded-full bg-muted px-2 py-0.5 text-muted-foreground"
+                                }
+                              >
+                                {currentChapterStatus?.edited ? "แก้แล้ว" : "ยังไม่แก้"}
+                              </span>
+                              {(currentChapterStatus?.foreignFindingCount ?? 0) > 0 && (
+                                <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-900">
+                                  มีคำต่างประเทศ {currentChapterStatus?.foreignFindingCount}
+                                </span>
+                              )}
+                              {(currentChapterStatus?.structuralIssueCount ?? 0) > 0 && (
+                                <span className="rounded-full bg-orange-100 px-2 py-0.5 text-orange-900">
+                                  มี structural issue {currentChapterStatus?.structuralIssueCount}
+                                </span>
+                              )}
+                              {chapterEditorDirty && (
+                                <span className="rounded-full bg-red-100 px-2 py-0.5 text-red-800">
+                                  ยังไม่บันทึก
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={editEditorialDraft.isPending}
-                            onClick={closeChapterEditor}
-                          >
-                            ปิด Editor
-                          </Button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={!previousChapterTab || editEditorialDraft.isPending}
+                              onClick={() => previousChapterTab && openChapterEditor(previousChapterTab)}
+                            >
+                              <ChevronLeft className="mr-1 h-4 w-4" />
+                              ก่อนหน้า
+                            </Button>
+                            <span className="text-xs text-muted-foreground">
+                              {chapterEditorCurrentIndex >= 0
+                                ? `${chapterEditorCurrentIndex + 1}/${chapterEditorTabs.length}`
+                                : "—"}
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={!nextChapterTab || editEditorialDraft.isPending}
+                              onClick={() => nextChapterTab && openChapterEditor(nextChapterTab)}
+                            >
+                              ถัดไป
+                              <ChevronRight className="ml-1 h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={editEditorialDraft.isPending}
+                              onClick={closeChapterEditor}
+                            >
+                              ปิด Editor
+                            </Button>
+                          </div>
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2 text-sm">
@@ -3318,7 +3578,20 @@ export default function WorkspacePage() {
                           </span>
                         </div>
 
-                        <div className="min-h-[30rem] max-h-[48rem] overflow-y-auto rounded-lg border bg-background p-5 shadow-inner">
+                        <div
+                          ref={chapterEditorScrollRef}
+                          className="min-h-[30rem] max-h-[48rem] overflow-y-auto rounded-lg border bg-background p-5 shadow-inner"
+                          onScroll={event => {
+                            const sourceTabId = chapterEditorTarget?.sourceTabId;
+                            if (!sourceTabId) return;
+                            const scrollTop = event.currentTarget.scrollTop;
+                            chapterEditorScrollByTab.current.set(sourceTabId, scrollTop);
+                            window.sessionStorage.setItem(
+                              chapterEditorScrollStorageKey(sourceTabId),
+                              String(scrollTop)
+                            );
+                          }}
+                        >
                           <div className="space-y-1">
                             {chapterEditorParagraphs.map((paragraph, index) => (
                               <ChapterEditorParagraphBlock
@@ -3354,7 +3627,7 @@ export default function WorkspacePage() {
 
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="text-xs text-muted-foreground">
-                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
+                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
                           </div>
                           <Button
                             type="button"
