@@ -140,7 +140,7 @@ export function editorialDuplicateSimilarity(a: string, b: string) {
     return { dice: 0, containment: 0 };
   }
   let intersection = 0;
-  for (const item of left) {
+  for (const item of Array.from(left)) {
     if (right.has(item)) intersection += 1;
   }
   return {
@@ -271,7 +271,7 @@ export function evaluateEditorialStructuralAnomalies(input: {
     chapterToTabs.set(row.chapter, bucket);
   }
 
-  for (const [chapter, duplicates] of chapterToTabs.entries()) {
+  for (const [chapter, duplicates] of Array.from(chapterToTabs.entries())) {
     if (duplicates.length <= 1) continue;
     anomalies.push(
       buildAnomaly({
@@ -280,11 +280,11 @@ export function evaluateEditorialStructuralAnomalies(input: {
         sourceTabId: duplicates[0]!.sourceTabId,
         tabTitle: duplicates[0]!.tabTitle,
         chapterNumber: String(chapter),
-        relatedSourceTabIds: duplicates.slice(1).map(tab => tab.sourceTabId),
+        relatedSourceTabIds: duplicates.slice(1).map((tab: EditorialStructuralTabInput) => tab.sourceTabId),
         message: `เลขบท ${chapter} ซ้ำใน ${duplicates.length} แท็บ`,
         details: {
           chapter,
-          tabOrders: duplicates.map(tab => tab.tabOrder),
+          tabOrders: duplicates.map((tab: EditorialStructuralTabInput) => tab.tabOrder),
         },
       })
     );
