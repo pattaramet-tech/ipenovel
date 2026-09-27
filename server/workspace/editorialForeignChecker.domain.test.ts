@@ -137,12 +137,30 @@ describe("Editorial deterministic foreign-word checker", () => {
     ).toEqual([]);
   });
 
-  it("ignores long English alphabet spans", () => {
+  it("flags long English spans while ordinary ASCII words remain non-blocking", () => {
     const text =
       "นี่คือ The quick brown fox jumps over the lazy dog while another person keeps writing a sufficiently long untranslated English sentence ต่อด้วยไทย";
-    expect(
-      evaluateEditorialForeignParagraph(paragraph(text), new Set())
-    ).toEqual([]);
+    const findings = evaluateEditorialForeignParagraph(paragraph(text), new Set());
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      ruleKey: EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish,
+    });
+    expect(findings[0].message).toContain("พบประโยคภาษาอังกฤษยาว");
+  });
+
+  it("flags leaked write_control revision payloads as long English/control spans", () => {
+    const text =
+      'อิชูนะถอนหายใจ ”}}],"write_control":{"requiredRevisionId":"ANLCKQltefh534_M0rfjVhNAJM9PmNmBCaSHz22Skd9a2MV0Jf447IJ3Z1T4V00Z3st_fX5D-rKYWSSVPYw-PYFxw1m6xDr9uZ60TpCMm3M อิชูนะประสานอินเพิ่ม';
+    const findings = evaluateEditorialForeignParagraph(paragraph(text), new Set());
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      ruleKey: EDITORIAL_FOREIGN_CHECKER_RULES.longEnglish,
+    });
+    expect(findings[0].token).toContain('"write_control"');
+    expect(findings[0].token).toContain('"requiredRevisionId"');
+    expect(text.slice(findings[0].startOffset, findings[0].endOffset)).toBe(
+      findings[0].token
+    );
   });
 
   it("does not treat short English names or skill labels as long-English spans", () => {

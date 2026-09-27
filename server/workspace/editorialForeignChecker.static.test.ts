@@ -19,7 +19,7 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     );
   });
 
-  it("keeps Production foreign-script/kaomoji detection while alphabet checks are non-blocking", () => {
+  it("keeps Production foreign-script/kaomoji detection while isolated ASCII words stay non-blocking", () => {
     const domain = source("server/workspace/editorialForeignChecker.domain.ts");
     expect(domain).toContain("\\u0600-\\u06FF");
     expect(domain).toContain("\\u3040-\\u30FF");
@@ -28,16 +28,17 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(domain).toContain("\\uA8E0-\\uA8FF");
     expect(domain).toContain("\\u1CD0-\\u1CFF");
     expect(domain).toContain("isLikelyKaomoji");
-    expect(domain).toContain("const checkAsciiAlphabet = false");
-    expect(domain).toContain("v5 emits blocking findings only for non-ASCII foreign scripts");
+    expect(domain).toContain("ordinary isolated A-Z/a-z words, names and acronyms");
+    expect(domain).not.toContain("const checkAsciiAlphabet = false");
     expect(domain).not.toMatch(/SpreadsheetApp|DocumentApp|setBackgroundColor/);
   });
 
-  it("keeps historical alphabet rule keys for old evidence but excludes A-Z/a-z from new v4 findings", () => {
+  it("keeps latin_word historical-only but restores blocking long_english spans in v6", () => {
     const domain = source("server/workspace/editorialForeignChecker.domain.ts");
     expect(domain).toContain('latinWord: "latin_word"');
     expect(domain).toContain('longEnglish: "long_english"');
-    expect(domain).toContain("const checkAsciiAlphabet = false");
+    expect(domain).toContain("const longSpans = englishSpans(text)");
+    expect(domain).toContain("leaked machine/control payloads");
     expect(domain).toContain("sentenceText");
     expect(domain).toContain("contextText");
     expect(domain).toContain('offsetEncoding: "utf16"');

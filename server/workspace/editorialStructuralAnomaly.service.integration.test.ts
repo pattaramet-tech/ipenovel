@@ -116,7 +116,7 @@ describe.sequential("Workspace Editorial structural anomaly integration", () => 
       });
 
       expect(checked.run.engineVersion).toBe(
-        "workspace-editorial-foreign-checker-v5"
+        "workspace-editorial-foreign-checker-v6"
       );
       expect(checked.structuralSummary).toMatchObject({
         tabCount: 5,

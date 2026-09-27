@@ -258,7 +258,7 @@ describe.sequential(
       }
     });
 
-    it("detects Devanagari plus source-junk tails and refuses to allowlist junk", async () => {
+    it("detects Devanagari, long control payloads and source-junk tails", async () => {
       if (!process.env.TEST_DATABASE_URL) return;
       assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
@@ -289,9 +289,10 @@ describe.sequential(
           actorUserId: owner.id,
           workspaceId: workspace.workspaceId,
           workItemId,
-          payload: source("checker-v4-junk", [
+          payload: source("checker-v6-junk", [
             "บทที่ 74",
             "มันคือโปเกมอนโอมา\u093E\u0907\u091Fกับคาบูโตะ",
+            '”}}],"write_control":{"requiredRevisionId":"ANLCKQltefh534_M0rfjVhNAJM9PmNmBCaSHz22Skd9a2MV0Jf447IJ3Z1T4V00Z3st_fX5D-rKYWSSVPYw-PYFxw1m6xDr9uZ60TpCMm3M',
             "ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด",
             "1.Unown",
             "2. Oboro21",
@@ -309,7 +310,7 @@ describe.sequential(
         });
 
         expect(checked.run.engineVersion).toBe(
-          "workspace-editorial-foreign-checker-v5"
+          "workspace-editorial-foreign-checker-v6"
         );
         const devanagari = checked.findings.find(
           (finding: any) => finding.token === "\u093E\u0907\u091F"
@@ -318,6 +319,14 @@ describe.sequential(
           ruleKey: "foreign_script",
           disposition: "open",
         });
+        const leakedControl = checked.findings.find(
+          (finding: any) => finding.ruleKey === "long_english"
+        );
+        expect(leakedControl).toMatchObject({
+          disposition: "open",
+        });
+        expect(leakedControl?.token).toContain('"write_control"');
+        expect(leakedControl?.message).toContain("พบประโยคภาษาอังกฤษยาว");
         const junk = checked.findings.filter(
           (finding: any) => finding.ruleKey === "source_junk"
         );
