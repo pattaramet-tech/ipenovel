@@ -95,8 +95,29 @@ fresh MySQL 8 `ipenovel_test`, applies migrations including 0060, runs the
 Workspace integration regression and the dedicated Chapter Editor end-to-end
 test, then runs typecheck/build and diff safety.
 
+## M29.3.7 final DB-backed gate
+
+The authoritative GitHub Actions run for commit
+`71ecde2b4a4523e0214370f79942f16d0e55c01b` completed successfully:
+
+- run `36326023638` — **M29.3 Chapter Editor Release Gate: PASS**;
+- full NQA + Workspace unit regression: **175 files / 875 tests PASS**;
+- full Workspace DB-backed integration regression: **27 files / 38 tests PASS**;
+- dedicated Chapter Editor edit -> QC -> structural confirm -> Confirm/Stage gate:
+  **1 file / 1 test PASS**;
+- TypeScript `tsc --noEmit`: **PASS**;
+- production Vite + esbuild build: **PASS**;
+- migration 0060 + diff/encoding/private-key safety gate: **PASS**.
+
+The integration reconciliation also removed clock-bound outbox-availability
+flakiness by making test retry/claim eligibility explicit and run-scoped.
+Production execution semantics were not changed.
+
+PR #78 remains the release handoff. It is intentionally left open and
+unmerged. No Production deployment is part of M29.3.7.
+
 ## Release rule
 
 M29.3.7 may push/update the feature PR after all available local gates pass and
-the DB-backed GitHub Actions gate is present. The PR must not be merged and no
+the DB-backed GitHub Actions gate is green. The PR must not be merged and no
 Production deployment may occur as part of this milestone.
