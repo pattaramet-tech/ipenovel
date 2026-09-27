@@ -2208,7 +2208,7 @@ export default function WorkspacePage() {
                               <td className="whitespace-nowrap px-2 py-2">
                                 {row.translationDocUrl && <a className="mr-2 text-primary underline" href={row.translationDocUrl} target="_blank" rel="noreferrer">C</a>}
                                 {row.webSourceUrl && <a className="mr-2 text-primary underline" href={row.webSourceUrl} target="_blank" rel="noreferrer">E</a>}
-                                {row.preparedSourceDocUrl && <a className="text-primary underline" href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">K</a>}
+                                {row.preparedSourceDocUrl && <a className="text-primary underline" href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">O</a>}
                               </td>
                               <td className="px-2 py-2 text-muted-foreground">
                                 {row.blockers?.length ? row.blockers.join(", ") : row.existingNovelId ? `Novel #${row.existingNovelId}` : "พร้อมสร้างฉบับซ่อน"}
