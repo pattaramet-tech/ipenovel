@@ -102,7 +102,9 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("Chapter Editor");
     expect(page).toContain("เติมเนื้อหา");
     expect(page).toContain('kind: "replace_tab"');
-    expect(page).toContain("ChapterEditorSurface");
+    expect(page).toContain("ChapterEditorParagraphBlock");
+    expect(page).toContain("pasteChapterEditorParagraphs");
+    expect(page).toContain("วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ");
     expect(page).toContain("ไฮไลต์คำต่างประเทศ");
     expect(page).toContain("ไม่ Publish อัตโนมัติ");
   });
