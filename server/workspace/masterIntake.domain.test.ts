@@ -34,7 +34,7 @@ describe("Workspace Master Intake domain", () => {
     expect(parseMasterIntakeTitleRange("001 - 050")).toBeNull();
   });
 
-  it("accepts only Google Docs document identities for C/K", () => {
+  it("accepts only Google Docs document identities for C/O", () => {
     const id = "1_PJbiXFkkXVfPpQsu2gIzTkfksQAAOYRUhQJIaX1gRs";
     expect(googleDocumentIdFromUrlOrId(`https://docs.google.com/document/d/${id}/edit?tab=t.1`)).toBe(id);
     expect(googleDocumentIdFromUrlOrId(id)).toBe(id);
@@ -85,7 +85,7 @@ describe("Workspace Master Intake domain", () => {
     ).not.toBe(fingerprint);
   });
 
-  it("allows a missing prepared English source K in the canonical fingerprint", () => {
+  it("allows a missing prepared English source O in the canonical fingerprint", () => {
     const row = {
       spreadsheetId: "sheet",
       sheetId: 10,

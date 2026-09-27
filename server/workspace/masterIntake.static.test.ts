@@ -6,7 +6,7 @@ const root = process.cwd();
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8");
 
 describe("M29 Workspace Master Intake safety", () => {
-  it("persists Sheet row provenance and C/E with optional K without touching publish/writeback", () => {
+  it("persists Sheet row provenance and C/E with optional O without touching publish/writeback", () => {
     const service = read("server/workspace/masterIntake.service.ts");
     const schema = read("drizzle/schema.ts");
     expect(schema).toContain("workspaceMasterIntakeRows");
@@ -55,8 +55,11 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(service).toContain("bindPublicationNovel");
   });
 
-  it("does not block when K is empty but still rejects a malformed non-empty K", () => {
+  it("reads prepared source from optional O, ignores K notes, and rejects malformed non-empty O", () => {
     const service = read("server/workspace/masterIntake.service.ts");
+    expect(service).toContain('\":O\" +');
+    expect(service).toContain('String(cells[13] ?? "").trim()');
+    expect(service).not.toContain('String(cells[9] ?? "").trim()');
     expect(service).toContain("if (preparedSourceDocUrl && !preparedSourceDocumentId)");
     expect(service).toContain("preparedSourceDocUrl: preparedSourceDocUrl || null");
     expect(service).not.toContain('if (!preparedSourceDocumentId) blockers.push("PREPARED_SOURCE_DOC_INVALID")');
