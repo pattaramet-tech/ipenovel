@@ -211,29 +211,28 @@ async function loadDraftStructure(
     tabTitle: tab.title,
     chapterNumber: tab.chapterNumber,
     chapterTitle: tab.chapterTitle,
-    paragraphs: (paragraphsByTab.get(Number(tab.id)) ?? []).map(row => ({
+    paragraphs: (paragraphsByTab.get(Number(tab.id)) ?? []).map((row: any) => ({
       paragraphKey: row.paragraphKey,
       paragraphOrder: row.paragraphOrder,
       text: row.text,
     })),
   }));
 
-  const paragraphs: EditorialCheckerParagraphInput[] = structuralTabs.flatMap(
-    tab =>
-      tab.paragraphs.map(paragraph => ({
-        sourceTabId: tab.sourceTabId,
-        tabTitle: tab.tabTitle,
-        paragraphKey: paragraph.paragraphKey,
-        paragraphOrder: paragraph.paragraphOrder,
-        paragraphFingerprint:
-          paragraphRows.find(
-            row =>
-              Number(row.draftTabId) ===
-                Number(tabs.find((item: any) => item.sourceTabId === tab.sourceTabId)?.id) &&
-              row.paragraphKey === paragraph.paragraphKey
-          )?.paragraphFingerprint ?? "",
-        text: paragraph.text,
-      }))
+  const tabById = new Map<number, any>(
+    tabs.map((tab: any) => [Number(tab.id), tab])
+  );
+  const paragraphs: EditorialCheckerParagraphInput[] = paragraphRows.map(
+    (row: any) => {
+      const tab = tabById.get(Number(row.draftTabId));
+      return {
+        sourceTabId: String(tab?.sourceTabId ?? ""),
+        tabTitle: String(tab?.title ?? ""),
+        paragraphKey: row.paragraphKey,
+        paragraphOrder: row.paragraphOrder,
+        paragraphFingerprint: row.paragraphFingerprint,
+        text: row.text,
+      };
+    }
   );
 
   return { tabs: structuralTabs, paragraphs };
