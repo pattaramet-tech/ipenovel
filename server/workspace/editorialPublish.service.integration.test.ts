@@ -278,7 +278,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
       });
 
       const provider = createIpeNovelWorkspacePublishProvider();
-      await expect(runScopedPublishWorkerOnce({
+      const staleWorker = await runScopedPublishWorkerOnce({
         scope: {
           workspaceId: workspace.workspaceId,
           workspaceNovelId: workspaceNovel.workspaceNovelId,
@@ -290,7 +290,8 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         provider,
         executionEnabled: true,
         allowExternalProvider: true,
-      })).rejects.toMatchObject({ code: "STAGE_NOT_READY" });
+      });
+      expect(staleWorker.claimed).toBe(false);
       expect((await db.select().from(episodes)
         .where(eq(episodes.id, staged.episode.id)))[0].isPublished).toBe(false);
       expect((await db.select().from(workspaceOutbox)
@@ -432,7 +433,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
     }
   });
 
-  it("publishes a staged Episode range as multiple items, retries only the failed item, and projects Published after the whole batch is durable", async () => {
+  it("publishes a staged Episode range as one commercial package and projects Published after the package is durable", async () => {
     if (!process.env.TEST_DATABASE_URL) return;
     assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
@@ -511,7 +512,8 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         expectedDraftSha256: approvalState.latestDraft!.draftSha256,
         idempotencyKey: "ipe055g-range-stage",
       });
-      expect(staged.episodes).toHaveLength(3);
+      expect(staged.episodes).toHaveLength(1);
+      expect(staged.episode.episodeNumber).toBe("036 - 038");
 
       const connection = await saveGoogleConnection({
         userId: owner.id,
@@ -572,7 +574,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         workspaceId: workspace.workspaceId,
         workItemId,
       });
-      expect(ready.stages).toHaveLength(3);
+      expect(ready.stages).toHaveLength(1);
       expect(ready.stageSetSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(ready.requestReady).toBe(true);
 
@@ -594,7 +596,7 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
         workspaceId: workspace.workspaceId,
         workItemId,
       });
-      expect(prepared.publishItems).toHaveLength(3);
+      expect(prepared.publishItems).toHaveLength(1);
       const runId = prepared.publishRun!.id;
       const enqueued = await requestEditorialPublish({
         actorUserId: owner.id,
@@ -615,81 +617,41 @@ describe.sequential("IPE-055-G Controlled Publish integration", () => {
       });
 
       const baseProvider = createIpeNovelWorkspacePublishProvider();
-      const failEpisodeId = staged.episodes[1].id;
-      const firstExecute = vi.fn(async (request: any) => {
-        if (request.episodeId === failEpisodeId) {
-          return {
-            status: "failed" as const,
-            errorClass: "SYNTHETIC_RANGE_FAILURE",
-          };
-        }
-        return baseProvider.execute(request);
-      });
-      const firstPass = await runScopedPublishWorkerOnce({
+      const execute = vi.fn((request: any) => baseProvider.execute(request));
+      const published = await runScopedPublishWorkerOnce({
         scope: enqueued.scope,
-        leaseOwner: "ipe055g-range-worker-1",
+        leaseOwner: "ipe055g-range-worker",
         provider: {
           mode: "external",
           reconcile: request => baseProvider.reconcile(request),
-          execute: firstExecute,
+          execute,
         },
         executionEnabled: true,
         allowExternalProvider: true,
       });
-      expect(firstPass.result.status).toBe("partially_failed");
-      expect(firstPass.editorialProjection).toMatchObject({
-        matched: true,
-        projected: false,
-      });
-
-      const firstItems = await db
-        .select()
-        .from(workspacePublishItems)
-        .where(eq(workspacePublishItems.runId, runId));
-      expect(firstItems.filter(item => item.status === "published")).toHaveLength(
-        2
-      );
-      expect(firstItems.filter(item => item.status === "failed")).toHaveLength(1);
-
-      await new Promise(resolve => setTimeout(resolve, 1_050));
-      const retryExecute = vi.fn((request: any) => baseProvider.execute(request));
-      const retry = await runScopedPublishWorkerOnce({
-        scope: enqueued.scope,
-        leaseOwner: "ipe055g-range-worker-2",
-        provider: {
-          mode: "external",
-          reconcile: request => baseProvider.reconcile(request),
-          execute: retryExecute,
-        },
-        executionEnabled: true,
-        allowExternalProvider: true,
-      });
-      expect(retry.result.status).toBe("published");
-      expect(retryExecute).toHaveBeenCalledTimes(1);
-      expect(retryExecute.mock.calls[0][0].episodeId).toBe(failEpisodeId);
-      expect(retry.editorialProjection).toMatchObject({
+      expect(published.result.status).toBe("published");
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0][0].episodeId).toBe(staged.episode.id);
+      expect(published.editorialProjection).toMatchObject({
         matched: true,
         projected: true,
-        itemCount: 3,
+        itemCount: 1,
       });
 
       const finalItems = await db
         .select()
         .from(workspacePublishItems)
         .where(eq(workspacePublishItems.runId, runId));
-      expect(finalItems).toHaveLength(3);
-      expect(
-        finalItems.every(
-          item => item.status === "published" && Boolean(item.providerReceipt)
-        )
-      ).toBe(true);
+      expect(finalItems).toHaveLength(1);
+      expect(finalItems[0]?.status).toBe("published");
+      expect(Boolean(finalItems[0]?.providerReceipt)).toBe(true);
       const finalEpisodes = await db
         .select()
         .from(episodes)
         .where(eq(episodes.novelId, novel.id));
-      expect(finalEpisodes).toHaveLength(3);
-      expect(finalEpisodes.every(episode => episode.isPublished)).toBe(true);
-
+      expect(finalEpisodes).toHaveLength(1);
+      expect(finalEpisodes[0]?.episodeNumber).toBe("036 - 038");
+      expect(finalEpisodes[0]?.isPublished).toBe(true);
       const publishedBoard = await getEditorialBoard({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,

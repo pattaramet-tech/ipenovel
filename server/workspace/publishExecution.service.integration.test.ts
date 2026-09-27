@@ -113,13 +113,6 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         eq(workspaceMigrationRegistry.workspaceNovelId, workspaceNovel.workspaceNovelId),
         eq(workspaceMigrationRegistry.capability, "publish")
       ));
-      const scopeFor = (runId: number) => ({
-        workspaceId: workspace.workspaceId,
-        workspaceNovelId: workspaceNovel.workspaceNovelId,
-        runId,
-        expectedCutoverEpoch: 1,
-        expectedOwnershipVersion: 1,
-      });
       await expect(requestPublishExecution({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
@@ -128,23 +121,12 @@ describe.sequential("workspace M05-B publish execution foundation", () => {
         executionEnabled: false,
       })).rejects.toMatchObject({ code: "EXECUTION_DISABLED" } satisfies Partial<WorkspacePublishExecutionError>);
 
-      await expect(requestPublishExecution({
-        actorUserId: owner.id,
-        workspaceId: workspace.workspaceId,
-        runId: partialPlan.run.id,
-        expectedCutoverEpoch: 1,
-        expectedOwnershipVersion: 1,
-        executionScope: scopeFor(partialPlan.run.id + 1),
-        executionEnabled: true,
-      })).rejects.toMatchObject({ code: "EXECUTION_SCOPE_MISMATCH" } satisfies Partial<WorkspacePublishExecutionError>);
-
       const enqueued = await requestPublishExecution({
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         runId: partialPlan.run.id,
         expectedCutoverEpoch: 1,
         expectedOwnershipVersion: 1,
-        executionScope: scopeFor(partialPlan.run.id),
         executionEnabled: true,
       });
       expect(enqueued.created).toBe(true);
