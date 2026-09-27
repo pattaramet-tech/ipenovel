@@ -120,6 +120,12 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("sessionStorage");
     expect(page).toContain("ยังไม่บันทึก");
     expect(page).toContain("savedChapterTarget");
+    expect(page).toContain("Finding / Inline QC");
+    expect(page).toContain("Previous finding");
+    expect(page).toContain("Next finding");
+    expect(page).toContain("navigateChapterEditorIssue");
+    expect(page).toContain("ไปยัง structural issue");
+    expect(page).toContain("StatusPill");
     expect(page).toContain("ไม่ Publish อัตโนมัติ");
   });
 });

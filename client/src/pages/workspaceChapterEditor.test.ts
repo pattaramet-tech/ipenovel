@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chapterEditorFindingRanges,
+  chapterEditorIssues,
   chapterEditorTabStatus,
   parseChapterEditorPasteText,
   serializeChapterEditorParagraphs,
@@ -48,6 +49,89 @@ describe("workspace Chapter Editor paragraph helpers", () => {
         { startOffset: 9, endOffset: 16, token: "support" },
       ])
     ).toEqual([]);
+  });
+
+  it("builds a chapter issue stream from foreign findings and structural anomalies", () => {
+    expect(
+      chapterEditorIssues({
+        sourceTabId: "tab-2",
+        findings: [
+          {
+            id: 2,
+            findingKey: "b",
+            sourceTabId: "tab-2",
+            paragraphKey: "p2",
+            paragraphOrder: 2,
+            startOffset: 5,
+            endOffset: 8,
+            token: "B",
+            ruleKey: "latin_word",
+            disposition: "fixed",
+          },
+          {
+            id: 1,
+            findingKey: "a",
+            sourceTabId: "tab-2",
+            paragraphKey: "p1",
+            paragraphOrder: 1,
+            startOffset: 1,
+            endOffset: 4,
+            token: "A",
+            ruleKey: "latin_word",
+            disposition: "open",
+          },
+          {
+            id: 4,
+            findingKey: "accepted",
+            sourceTabId: "tab-2",
+            paragraphKey: "p3",
+            paragraphOrder: 3,
+            startOffset: 0,
+            endOffset: 8,
+            token: "Accepted",
+            ruleKey: "latin_word",
+            disposition: "accepted",
+          },
+          {
+            id: 3,
+            findingKey: "c",
+            sourceTabId: "tab-3",
+            paragraphKey: "p3",
+            paragraphOrder: 1,
+            startOffset: 0,
+            endOffset: 1,
+            token: "C",
+            ruleKey: "latin_word",
+          },
+        ],
+        anomalies: [
+          {
+            id: 5,
+            anomalyKey: "z",
+            anomalyType: "duplicate_content_exact",
+            severity: "warning",
+            sourceTabId: "tab-1",
+            relatedSourceTabIds: ["tab-1", "tab-2"],
+            message: "duplicate",
+          },
+          {
+            id: 4,
+            anomalyKey: "y",
+            anomalyType: "empty_tab",
+            severity: "error",
+            sourceTabId: "tab-2",
+            relatedSourceTabIds: ["tab-2"],
+            message: "empty",
+          },
+        ],
+      }).map(issue => issue.key)
+    ).toEqual([
+      "finding:a",
+      "finding:b",
+      "finding:accepted",
+      "structural:z",
+      "structural:y",
+    ]);
   });
 
   it("derives edited, foreign-word and structural status per tab", () => {

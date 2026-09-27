@@ -16,9 +16,67 @@ export type ChapterEditorTabStatusInput = {
     disposition?: string | null;
   }[];
   anomalies?: readonly {
+    sourceTabId?: string | null;
     relatedSourceTabIds?: readonly string[] | null;
   }[];
 };
+
+export type ChapterEditorIssueFindingInput = {
+  id: number;
+  findingKey: string;
+  sourceTabId: string;
+  paragraphKey: string;
+  paragraphOrder: number;
+  startOffset: number;
+  endOffset: number;
+  token: string;
+  ruleKey: string;
+  disposition?: string | null;
+  resolutionVersion?: number | null;
+};
+
+export type ChapterEditorIssueAnomalyInput = {
+  id: number;
+  anomalyKey: string;
+  anomalyType: string;
+  severity: string;
+  sourceTabId?: string | null;
+  relatedSourceTabIds?: readonly string[] | null;
+  message: string;
+};
+
+export function chapterEditorIssues(input: {
+  sourceTabId: string;
+  findings?: readonly ChapterEditorIssueFindingInput[];
+  anomalies?: readonly ChapterEditorIssueAnomalyInput[];
+}) {
+  const findings = (input.findings ?? [])
+    .filter(finding => finding.sourceTabId === input.sourceTabId)
+    .sort(
+      (left, right) =>
+        left.paragraphOrder - right.paragraphOrder ||
+        left.startOffset - right.startOffset ||
+        left.id - right.id
+    )
+    .map(finding => ({
+      kind: "finding" as const,
+      key: `finding:${finding.findingKey}`,
+      finding,
+    }));
+  const anomalies = (input.anomalies ?? [])
+    .filter(
+      anomaly =>
+        anomaly.sourceTabId === input.sourceTabId ||
+        (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)
+    )
+    .sort((left, right) => left.anomalyType.localeCompare(right.anomalyType) || left.id - right.id)
+    .map(anomaly => ({
+      kind: "structural" as const,
+      key: `structural:${anomaly.anomalyKey}`,
+      anomaly,
+    }));
+  return [...findings, ...anomalies];
+}
 
 export function chapterEditorTabStatus(input: ChapterEditorTabStatusInput) {
   const edited = input.paragraphs.some(
@@ -32,8 +90,10 @@ export function chapterEditorTabStatus(input: ChapterEditorTabStatusInput) {
       finding.sourceTabId === input.sourceTabId &&
       (finding.disposition ?? "open") === "open"
   ).length;
-  const structuralIssueCount = (input.anomalies ?? []).filter(anomaly =>
-    (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)
+  const structuralIssueCount = (input.anomalies ?? []).filter(
+    anomaly =>
+      anomaly.sourceTabId === input.sourceTabId ||
+      (anomaly.relatedSourceTabIds ?? []).includes(input.sourceTabId)
   ).length;
   return { edited, foreignFindingCount, structuralIssueCount };
 }

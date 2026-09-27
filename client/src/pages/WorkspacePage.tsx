@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
 import {
   chapterEditorFindingRanges,
+  chapterEditorIssues,
   chapterEditorTabStatus,
   parseChapterEditorPasteText,
   serializeChapterEditorParagraphs,
@@ -332,6 +333,7 @@ export default function WorkspacePage() {
   const [chapterEditorParagraphs, setChapterEditorParagraphs] = useState<ChapterEditorParagraphState[]>([]);
   const chapterEditorParagraphSequence = useRef(0);
   const chapterEditorScrollRef = useRef<HTMLDivElement>(null);
+  const [chapterEditorIssueIndex, setChapterEditorIssueIndex] = useState(0);
   const chapterEditorScrollByTab = useRef(new Map<string, number>());
   const chapterEditorText = useMemo(
     () => serializeChapterEditorParagraphs(chapterEditorParagraphs.map(paragraph => paragraph.text)),
@@ -1558,6 +1560,7 @@ export default function WorkspacePage() {
     }
     setEditorTarget(undefined);
     setEditorText("");
+    setChapterEditorIssueIndex(0);
     setChapterEditorTarget({
       sourceTabId: tab.sourceTabId,
       title: tab.title,
@@ -1585,6 +1588,7 @@ export default function WorkspacePage() {
       return;
     }
     rememberChapterEditorScroll();
+    setChapterEditorIssueIndex(0);
     setChapterEditorTarget(undefined);
     setChapterEditorParagraphs([]);
   };
@@ -1662,6 +1666,18 @@ export default function WorkspacePage() {
       paragraphs[paragraphs.length - 1]!.length
     );
   };
+  const chapterEditorIssueItems = chapterEditorTarget
+    ? chapterEditorIssues({
+        sourceTabId: chapterEditorTarget.sourceTabId,
+        findings: currentCheckerFindings,
+        anomalies: currentCheckerAnomalies,
+      })
+    : [];
+  const chapterEditorIssueSignature = chapterEditorIssueItems
+    .map(issue => issue.key)
+    .join("|");
+  const selectedChapterEditorIssue =
+    chapterEditorIssueItems[chapterEditorIssueIndex];
   const chapterEditorFindings = chapterEditorTarget
     ? currentCheckerFindings.filter(
         (finding: any) =>
@@ -1680,6 +1696,69 @@ export default function WorkspacePage() {
   const chapterEditorForeignTokens = Array.from(
     new Set(chapterEditorFindings.map((finding: any) => String(finding.token ?? "")).filter(Boolean))
   ) as string[];
+
+  useEffect(() => {
+    setChapterEditorIssueIndex(current =>
+      chapterEditorIssueItems.length
+        ? Math.min(current, chapterEditorIssueItems.length - 1)
+        : 0
+    );
+  }, [chapterEditorTarget?.sourceTabId, chapterEditorIssueSignature]);
+
+  const navigateChapterEditorIssue = (issue: any, index: number) => {
+    if (!chapterEditorTarget) return;
+    setChapterEditorIssueIndex(index);
+    if (issue.kind === "finding") {
+      const finding = issue.finding;
+      const paragraph = chapterEditorParagraphs.find(
+        candidate => candidate.paragraphKey === finding.paragraphKey
+      );
+      if (!paragraph) {
+        toast.error("หา paragraph ของ finding นี้ใน Draft ปัจจุบันไม่พบ");
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        const textarea = document.getElementById(
+          `chapter-editor-paragraph-${paragraph.id}`
+        ) as HTMLTextAreaElement | null;
+        if (!textarea) return;
+        textarea.scrollIntoView({ behavior: "smooth", block: "center" });
+        textarea.focus();
+        const start = Math.max(0, Math.min(Number(finding.startOffset ?? 0), textarea.value.length));
+        const end = Math.max(
+          start,
+          Math.min(Number(finding.endOffset ?? start), textarea.value.length)
+        );
+        textarea.setSelectionRange(start, end);
+      });
+      return;
+    }
+    const anomaly = issue.anomaly;
+    const primaryTabId = String(anomaly.sourceTabId ?? "");
+    if (primaryTabId && primaryTabId !== chapterEditorTarget.sourceTabId) {
+      const targetTab = chapterEditorTabs.find(
+        (tab: any) => tab.sourceTabId === primaryTabId
+      );
+      if (targetTab) {
+        openChapterEditor(targetTab);
+        return;
+      }
+    }
+    chapterEditorScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const navigateRelativeChapterEditorIssue = (delta: number) => {
+    if (!chapterEditorIssueItems.length) return;
+    const nextIndex = Math.max(
+      0,
+      Math.min(
+        chapterEditorIssueItems.length - 1,
+        chapterEditorIssueIndex + delta
+      )
+    );
+    const issue = chapterEditorIssueItems[nextIndex];
+    if (issue) navigateChapterEditorIssue(issue, nextIndex);
+  };
 
   const googleConnections = (
     (editorialGoogleConnections.data as any[] | undefined) ?? []
@@ -3577,6 +3656,264 @@ export default function WorkspacePage() {
                             {chapterEditorText.length.toLocaleString()} ตัวอักษร
                           </span>
                         </div>
+
+                        <details open className="rounded-lg border bg-background">
+                          <summary className="cursor-pointer list-none px-3 py-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="font-medium">
+                                Finding / Inline QC · {chapterEditorIssueItems.length}
+                              </div>
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                {chapterEditorIssueItems.length > 0
+                                  ? `${Math.min(
+                                      chapterEditorIssueIndex + 1,
+                                      chapterEditorIssueItems.length
+                                    )}/${chapterEditorIssueItems.length}`
+                                  : "ไม่มี issue"}
+                              </div>
+                            </div>
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-xs text-muted-foreground">
+                                กด finding เพื่อกระโดดไปยัง paragraph/range ที่ตรวจพบ · structural issue จะพาไปยังแท็บต้นทางหรือด้านบนของบท
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    !chapterEditorIssueItems.length ||
+                                    chapterEditorIssueIndex <= 0
+                                  }
+                                  onClick={() => navigateRelativeChapterEditorIssue(-1)}
+                                >
+                                  <ChevronLeft className="mr-1 h-4 w-4" />
+                                  Previous finding
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    !chapterEditorIssueItems.length ||
+                                    chapterEditorIssueIndex >=
+                                      chapterEditorIssueItems.length - 1
+                                  }
+                                  onClick={() => navigateRelativeChapterEditorIssue(1)}
+                                >
+                                  Next finding
+                                  <ChevronRight className="ml-1 h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+
+                            {chapterEditorIssueItems.length ? (
+                              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                                {chapterEditorIssueItems.map((issue, issueIndex) => {
+                                  const selected =
+                                    selectedChapterEditorIssue?.key === issue.key;
+                                  if (issue.kind === "finding") {
+                                    const finding = issue.finding as any;
+                                    const canAccept =
+                                      finding.disposition !== "accepted" &&
+                                      finding.ruleKey !== "long_english" &&
+                                      finding.ruleKey !== "source_junk";
+                                    return (
+                                      <div
+                                        key={issue.key}
+                                        className={
+                                          selected
+                                            ? "rounded-md border border-primary bg-primary/5 p-2 text-sm"
+                                            : "rounded-md border p-2 text-sm"
+                                        }
+                                      >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                          <button
+                                            type="button"
+                                            className="min-w-0 flex-1 text-left"
+                                            onClick={() =>
+                                              navigateChapterEditorIssue(
+                                                issue,
+                                                issueIndex
+                                              )
+                                            }
+                                          >
+                                            <div className="font-medium">
+                                              {finding.token}
+                                            </div>
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                              {finding.ruleKey} · paragraph{" "}
+                                              {finding.paragraphOrder} ·{" "}
+                                              {finding.startOffset}-
+                                              {finding.endOffset}
+                                            </div>
+                                          </button>
+                                          <StatusPill
+                                            value={finding.disposition ?? "open"}
+                                          />
+                                        </div>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                              navigateChapterEditorIssue(
+                                                issue,
+                                                issueIndex
+                                              )
+                                            }
+                                          >
+                                            ไปยังจุด
+                                          </Button>
+                                          {finding.disposition === "open" && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                resolveEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                resolveEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  disposition: "fixed",
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-fixed:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              Mark fixed
+                                            </Button>
+                                          )}
+                                          {(finding.disposition === "fixed" ||
+                                            finding.disposition === "ignored") && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                resolveEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                resolveEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  disposition: "open",
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-reopen:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              Reopen
+                                            </Button>
+                                          )}
+                                          {canAccept && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                allowEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                allowEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-allow:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              ยอมรับคำนี้
+                                            </Button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+                                  const anomaly = issue.anomaly as any;
+                                  return (
+                                    <div
+                                      key={issue.key}
+                                      className={
+                                        selected
+                                          ? "rounded-md border border-orange-500 bg-orange-50 p-2 text-sm"
+                                          : "rounded-md border p-2 text-sm"
+                                      }
+                                    >
+                                      <div className="flex flex-wrap items-start justify-between gap-2">
+                                        <button
+                                          type="button"
+                                          className="min-w-0 flex-1 text-left"
+                                          onClick={() =>
+                                            navigateChapterEditorIssue(
+                                              issue,
+                                              issueIndex
+                                            )
+                                          }
+                                        >
+                                          <div className="font-medium">
+                                            Structural · {anomaly.anomalyType}
+                                          </div>
+                                          <div className="mt-1 text-xs text-muted-foreground">
+                                            {anomaly.message}
+                                          </div>
+                                        </button>
+                                        <span
+                                          className={
+                                            anomaly.severity === "error"
+                                              ? "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
+                                              : "rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-900"
+                                          }
+                                        >
+                                          {anomaly.severity}
+                                        </span>
+                                      </div>
+                                      <div className="mt-2">
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() =>
+                                            navigateChapterEditorIssue(
+                                              issue,
+                                              issueIndex
+                                            )
+                                          }
+                                        >
+                                          ไปยัง structural issue
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                                ไม่พบ foreign finding หรือ structural issue ในบทนี้
+                              </div>
+                            )}
+                          </div>
+                        </details>
 
                         <div
                           ref={chapterEditorScrollRef}
