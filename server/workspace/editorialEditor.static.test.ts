@@ -57,7 +57,7 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(editor).toContain('targetColumnKey: "editing"');
     expect(editor).toContain("expectedDraftId: persisted.draftId");
     expect(checker).toContain(
-      'readModel.unresolvedCount > 0 ? "needs_fix" : "pending_confirm"'
+      'readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm"'
     );
     expect(checker).toContain("expectedDraftId: result.draftId");
     expect(projection).toContain("latestDraft.id !== input.expectedDraftId");
