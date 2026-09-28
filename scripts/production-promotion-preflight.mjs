@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { execFileSync } from "node:child_process";
+import { verifyFrontendAssetGraph } from "./lib/frontendAssetGraph.mjs";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const MAIN_BOUND_CONTEXT = "production-staging/main-bound-rc";
@@ -216,6 +217,14 @@ async function main() {
       "Production staging /readyz does not report the exact candidate and production-staging environment."
     );
   }
+
+  const stagingAssetGraph = await verifyFrontendAssetGraph({
+    baseUrl: stagingBase,
+    label: "production-staging promotion preflight",
+  });
+  console.log(
+    `[production-preflight] assetGraph routes=${stagingAssetGraph.routesChecked} assets=${stagingAssetGraph.assetsChecked} missing404=${stagingAssetGraph.missingAssetStatus}`
+  );
 
   const statuses = await fetchJson(
     `${apiBase}/repos/${repository}/commits/${candidate}/statuses?per_page=100`,
