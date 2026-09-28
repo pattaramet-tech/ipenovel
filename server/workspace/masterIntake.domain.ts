@@ -36,7 +36,8 @@ export function normalizeMasterIntakeNovelTitle(value: string) {
 
 export function parseMasterIntakeTitleRange(rawValue: string): MasterIntakeParsedTitle | null {
   const rawTitle = normalizeSpace(rawValue);
-  const match = rawTitle.match(/^(.*?)\s+(\d{1,7})\s*-\s*(\d{1,7})$/);
+  const rangeTitle = rawTitle.replace(/\s+(?:ต้นฉบับ|จบ)$/, "");
+  const match = rangeTitle.match(/^(.*?)\s+(\d{1,7})\s*-\s*(\d{1,7})$/);
   if (!match) return null;
   const novelTitle = normalizeSpace(match[1] ?? "");
   const startText = match[2] ?? "";

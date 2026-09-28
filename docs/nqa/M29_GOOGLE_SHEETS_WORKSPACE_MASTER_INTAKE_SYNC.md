@@ -7,11 +7,11 @@ M29 imports editorial intake metadata from the approved Google Sheet into IpeNov
 Source:
 - Spreadsheet: `รวมนิยาย`
 - Tab: `นิยายยังไม่จบ/ยังไม่ยื่น`
-- B: novel title + terminal episode range
+- B: novel title + terminal episode range; trailing `ต้นฉบับ` or `จบ` after the numeric range is ignored
 - C: Thai translation Google Doc
 - E: web source URL
 - K: operator note (ignored by Master Intake)
-- O: prepared English source Google Doc (optional; empty O does not block Sync)
+- O: prepared English source Google Doc (optional; empty or non-link/unsupported O is ignored and does not block Sync)
 
 The feature uses the selected durable Workspace Google connection with read-only Sheets/Docs scopes.
 
@@ -39,7 +39,7 @@ The preview fingerprint includes the row fingerprint plus resolved DB target ide
 
 ## Conflict and idempotency policy
 
-Preview fails closed per row for malformed B/C/E values, a malformed non-empty O value, ambiguous titles, overlapping ranges, duplicate/overlapping identities inside the same batch, shifted provenance, an already-owned work item, changed Thai source identity, missing durable targets, or a pack that has advanced beyond the editable intake state. Column K is operator notes and is ignored by Master Intake. An empty O is accepted and persisted as missing optional prepared-source metadata.
+Preview fails closed per row for malformed B/C/E values, ambiguous titles, overlapping ranges, duplicate/overlapping identities inside the same batch, shifted provenance, an already-owned work item, changed Thai source identity, missing durable targets, or a pack that has advanced beyond the editable intake state. Column K is operator notes and is ignored by Master Intake. Column O is optional: a valid prepared-source Google Docs link is persisted, while an empty, non-link, or unsupported O value is ignored and persisted as missing prepared-source metadata instead of becoming a blocker.
 
 Repeated identical syncs do not create duplicate novels, Episode Packs, or provenance rows.
 
