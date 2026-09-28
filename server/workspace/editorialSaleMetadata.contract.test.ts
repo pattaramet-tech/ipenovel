@@ -71,6 +71,15 @@ describe("M12D.7 sale metadata contract", () => {
     expect(router).toContain("projectEditorialBoardSaleFallback(board)");
   });
 
+  it("resolves Stage replacement targets through canonical episode identity", () => {
+    const service = source("server/workspace/editorialApproval.service.ts");
+    expect(service).toContain('normalizeEpisodeRange(episodeNumber)');
+    expect(service).toContain('normalizeEpisodeRange(episode.episodeNumber) === canonicalIdentity');
+    expect(service).toContain('Multiple Episodes already match canonical identity');
+    expect(service).toContain('.from(novels)');
+    expect(service).toContain('.for("update")');
+  });
+
   it("rejects an existing episode identity with different sale metadata", () => {
     const board = source("server/workspace/editorialBoard.service.ts");
     expect(board).toContain("already exists with different intake metadata");

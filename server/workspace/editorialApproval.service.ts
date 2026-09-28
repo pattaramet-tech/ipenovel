@@ -15,10 +15,12 @@ import {
   workspaceEditorialEpisodeStages,
   workspaceEditorialWorkItems,
   workspaceKanbanBoards,
+  novels,
   workspaceKanbanCards,
   workspaceNovels,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { normalizeEpisodeRange } from "../services/readerService";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   analyzeEditorialEpisodeDraftBatch,
@@ -92,6 +94,56 @@ function isDuplicateKey(error: unknown) {
     value?.cause?.code === "ER_DUP_ENTRY" ||
     value?.cause?.errno === 1062
   );
+}
+
+async function lockEpisodeByCanonicalIdentity(
+  tx: any,
+  novelId: number,
+  episodeNumber: string
+) {
+  const canonicalIdentity = normalizeEpisodeRange(episodeNumber);
+  if (!canonicalIdentity) {
+    throw new WorkspaceEditorialApprovalError(
+      "EPISODE_CONFLICT",
+      `Episode ${episodeNumber} does not have a canonical identity.`
+    );
+  }
+
+  // Serialize Stage identity resolution per novel. The database uniqueness
+  // constraint is on the raw episodeNumber string, so formatting variants
+  // such as "001-030" and "001 - 030" would otherwise be able to race each
+  // other and create two rows that represent the same commercial package.
+  const [lockedNovel] = await tx
+    .select({ id: novels.id })
+    .from(novels)
+    .where(eq(novels.id, novelId))
+    .limit(1)
+    .for("update");
+  if (!lockedNovel) {
+    throw new WorkspaceEditorialApprovalError(
+      "EPISODE_CONFLICT",
+      `Novel ${novelId} disappeared before Episode staging.`
+    );
+  }
+
+  const candidateRows = await tx
+    .select()
+    .from(episodes)
+    .where(eq(episodes.novelId, novelId))
+    .orderBy(asc(episodes.id))
+    .for("update");
+  const canonicalMatches = candidateRows.filter(
+    (episode: any) =>
+      normalizeEpisodeRange(episode.episodeNumber) === canonicalIdentity
+  );
+
+  if (canonicalMatches.length > 1) {
+    throw new WorkspaceEditorialApprovalError(
+      "EPISODE_CONFLICT",
+      `Multiple Episodes already match canonical identity ${canonicalIdentity}; reconcile duplicates before staging.`
+    );
+  }
+  return canonicalMatches[0] ?? null;
 }
 
 function stageItemIdempotencyKey(base: string, episodeNumber: string) {
@@ -1116,17 +1168,11 @@ export async function stageEditorialEpisodeDraft(input: {
         continue;
       }
 
-      const [existingEpisode] = await tx
-        .select()
-        .from(episodes)
-        .where(
-          and(
-            eq(episodes.novelId, novelId),
-            eq(episodes.episodeNumber, plan.episodeNumber)
-          )
-        )
-        .limit(1)
-        .for("update");
+      const existingEpisode = await lockEpisodeByCanonicalIdentity(
+        tx,
+        novelId,
+        plan.episodeNumber
+      );
 
       let episodeId: number;
       let stageContract: string = EDITORIAL_EPISODE_STAGE_CONTRACT_V2;

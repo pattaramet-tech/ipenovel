@@ -42,20 +42,20 @@ import type { EditorialSourcePayload } from "./editorialDraft.domain";
 function replacementSource(): EditorialSourcePayload {
   return {
     sourceKind: "uploaded_file",
-    sourceKey: "uploaded-file:replacement-episode-55",
+    sourceKey: "uploaded-file:replacement-episode-range-001-002",
     mimeType: "text/plain",
-    title: "episode-55-replacement.txt",
+    title: "episode-range-001-002-replacement.txt",
     revisionKey: "replacement-r1",
-    tabs: [{
-      sourceTabId: "replacement-tab-55",
-      tabOrder: 0,
-      title: "ตอนที่ 55",
+    tabs: [1, 2].map((number, index) => ({
+      sourceTabId: `replacement-tab-${number}`,
+      tabOrder: index,
+      title: `ตอนที่ ${number}`,
       paragraphs: [
-        "ตอนที่ 55 ทดสอบเขียนทับ",
-        "เนื้อหาใหม่ที่ผ่านการตรวจและพร้อมเผยแพร่",
+        `ตอนที่ ${number} ทดสอบเขียนทับ`,
+        `เนื้อหาใหม่บทที่ ${number} ที่ผ่านการตรวจและพร้อมเผยแพร่`,
         "จบตอน",
       ],
-    }],
+    })),
   };
 }
 
@@ -72,7 +72,7 @@ describe.sequential("Editorial published Episode replacement", () => {
 
     await db.insert(episodes).values({
       novelId: novel.id,
-      episodeNumber: "55",
+      episodeNumber: "001-002",
       title: "ตอนเก่าที่เผยแพร่แล้ว",
       content: "เนื้อหาเก่าที่เผยแพร่อยู่",
       contentFormat: "plain_text",
@@ -89,7 +89,7 @@ describe.sequential("Editorial published Episode replacement", () => {
     const [originalEpisode] = await db
       .select()
       .from(episodes)
-      .where(and(eq(episodes.novelId, novel.id), eq(episodes.episodeNumber, "55")))
+      .where(and(eq(episodes.novelId, novel.id), eq(episodes.episodeNumber, "001-002")))
       .limit(1);
 
     try {
@@ -108,7 +108,7 @@ describe.sequential("Editorial published Episode replacement", () => {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         workspaceNovelId: workspaceNovel.workspaceNovelId,
-        episodeNumber: "55",
+        episodeNumber: "001 - 002",
         episodeTitle: "Replacement",
         saleMode: "package",
         price: "15.00",
@@ -116,7 +116,7 @@ describe.sequential("Editorial published Episode replacement", () => {
       });
       const workItem = created.board?.columns
         .flatMap(column => column.cards)
-        .find(card => card.workItemType === "NEW_EPISODE" && card.episodeNumber === "55");
+        .find(card => card.workItemType === "NEW_EPISODE" && card.episodeNumber === "001 - 002");
       const workItemId = workItem!.workItemId!;
 
       const imported = await importEditorialSource({
@@ -147,7 +147,7 @@ describe.sequential("Editorial published Episode replacement", () => {
         expectedQcEvidenceSha256: approvalState.qc.qcEvidenceSha256!,
         idempotencyKey: "replacement-approve",
       });
-      const staged = await stageEditorialEpisodeDraft({
+      const stageInput = {
         actorUserId: owner.id,
         workspaceId: workspace.workspaceId,
         workItemId,
@@ -155,10 +155,26 @@ describe.sequential("Editorial published Episode replacement", () => {
         expectedDraftId: approvalState.latestDraft!.id,
         expectedDraftVersion: approvalState.latestDraft!.version,
         expectedDraftSha256: approvalState.latestDraft!.draftSha256,
-        idempotencyKey: "replacement-stage",
-      });
+      };
+      const [stagedA, stagedB] = await Promise.all([
+        stageEditorialEpisodeDraft({
+          ...stageInput,
+          idempotencyKey: "replacement-stage-a",
+        }),
+        stageEditorialEpisodeDraft({
+          ...stageInput,
+          idempotencyKey: "replacement-stage-b",
+        }),
+      ]);
+      const staged = stagedA.replayed ? stagedB : stagedA;
 
+      expect(stagedA.episode.id).toBe(originalEpisode.id);
+      expect(stagedB.episode.id).toBe(originalEpisode.id);
+      expect(stagedA.stage.id).toBe(stagedB.stage.id);
+      expect([stagedA.replayed, stagedB.replayed].sort()).toEqual([false, true]);
       expect(staged.episode.id).toBe(originalEpisode.id);
+      expect(staged.episode.episodeNumber).toBe("001-002");
+      expect(staged.stage.episodeNumber).toBe("001 - 002");
       expect(staged.stage.stageContract).toBe("workspace-editorial-episode-stage-v3");
       expect(staged.readModel.readyToPublish).toBe(true);
       const [stillLive] = await db
@@ -167,6 +183,7 @@ describe.sequential("Editorial published Episode replacement", () => {
         .where(eq(episodes.id, originalEpisode.id));
       expect(stillLive).toMatchObject({
         id: originalEpisode.id,
+        episodeNumber: "001-002",
         isPublished: true,
         title: "ตอนเก่าที่เผยแพร่แล้ว",
         content: "เนื้อหาเก่าที่เผยแพร่อยู่",
@@ -308,8 +325,9 @@ describe.sequential("Editorial published Episode replacement", () => {
         .from(episodes)
         .where(eq(episodes.id, originalEpisode.id));
       expect(replaced.id).toBe(originalEpisode.id);
+      expect(replaced.episodeNumber).toBe("001-002");
       expect(replaced.isPublished).toBe(true);
-      expect(replaced.content).toContain("เนื้อหาใหม่ที่ผ่านการตรวจ");
+      expect(replaced.content).toContain("เนื้อหาใหม่บทที่ 1 ที่ผ่านการตรวจ");
       expect(replaced.content).not.toContain("เนื้อหาเก่าที่เผยแพร่อยู่");
       expect(replaced.price).toBe("15.00");
       expect(replaced.saleMode).toBe("package");
