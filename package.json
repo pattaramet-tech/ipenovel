@@ -38,7 +38,8 @@
     "production:deployment:verify": "node scripts/production-deployment-verify.mjs",
     "production:staging:gate": "node scripts/e2e-production-staging-gate.mjs",
     "production:staging:preflight": "node scripts/production-staging-preflight.mjs",
-    "database:identity": "node scripts/database-identity-fingerprint.mjs"
+    "database:identity": "node scripts/database-identity-fingerprint.mjs",
+    "frontend:asset-graph:smoke": "node scripts/frontend-asset-graph-smoke.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
