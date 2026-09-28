@@ -57,6 +57,9 @@ describe("M12D.7 sale metadata contract", () => {
     expect(board).toContain("Episode Pack sale metadata is immutable after Stage evidence exists.");
     expect(router).toContain("updateEpisodeSale: adminProcedure");
     expect(page).toContain("แก้การขาย");
+    expect(page).toContain(
+      '!card.evidence?.published || card.evidence?.publishedSource === "published_episode"'
+    );
   });
 
   it("falls back to exact published Episode Pack sale metadata for historical Workspace rows", () => {
