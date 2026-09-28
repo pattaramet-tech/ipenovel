@@ -22,7 +22,10 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
-import { EDITORIAL_EPISODE_STAGE_CONTRACT_V2 } from "./editorialApproval.domain";
+import {
+  EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
+  EDITORIAL_EPISODE_STAGE_CONTRACT_V3,
+} from "./editorialApproval.domain";
 import { getEditorialApprovalReadModel } from "./editorialApproval.service";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 import { createPublishDestination, createPublishDryRun } from "./publishDryRun.service";
@@ -665,7 +668,9 @@ export async function assertEditorialPublishRequestCurrent(
     !state.stagePlan?.ready ||
     !stageCurrent ||
     !currentEpisode ||
-    currentEpisode.isPublished ||
+    (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3
+      ? !currentEpisode.isPublished
+      : currentEpisode.isPublished) ||
     (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 &&
       (stage.saleMode !== currentEpisode.saleMode ||
         stage.price !== currentEpisode.price ||
@@ -749,7 +754,8 @@ export async function reconcileEditorialPublishRun(input: {
       );
     }
     if (
-      stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 &&
+      (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 ||
+        stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3) &&
       (stage.saleMode !== episode.saleMode ||
         stage.price !== episode.price ||
         stage.isFree !== episode.isFree)

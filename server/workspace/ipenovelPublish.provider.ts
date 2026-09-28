@@ -1,7 +1,21 @@
-import { and, eq } from "drizzle-orm";
-import { episodes, novels, workspaceAuditEvents } from "../../drizzle/schema";
+import { and, asc, eq } from "drizzle-orm";
+import {
+  episodes,
+  novels,
+  workspaceAuditEvents,
+  workspaceEditorialDraftParagraphs,
+  workspaceEditorialDraftTabs,
+  workspaceEditorialEpisodeStages,
+  workspaceEditorialWorkItems,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { buildNqaPrePublishHygieneGate } from "../nqa/prepublish";
+import {
+  analyzeEditorialEpisodeDraftBatch,
+  buildEditorialEpisodePackPlan,
+  EDITORIAL_EPISODE_STAGE_CONTRACT_V3,
+  editorialEpisodeReplacementTargetStateSha256,
+} from "./editorialApproval.domain";
 import {
   WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
   type WorkspacePublishProvider,
@@ -15,6 +29,7 @@ export class IpeNovelWorkspacePublishProviderError extends Error {
       | "DATABASE_UNAVAILABLE"
       | "TARGET_INVALID"
       | "TARGET_NOT_FOUND"
+      | "TARGET_CHANGED"
       | "CONTENT_HYGIENE_BLOCKED",
     message: string
   ) {
@@ -60,6 +75,91 @@ function parseReceiptMetadata(
 function wordCount(text: string): number {
   const trimmed = text.trim();
   return trimmed ? trimmed.split(/\s+/).length : 0;
+}
+
+function parseEditorialStageItemKey(value: string) {
+  const match = value.match(/^editorial-stage:(\d+):episode:(\d+)$/);
+  if (!match) return null;
+  const stageId = Number(match[1]);
+  const episodeId = Number(match[2]);
+  return Number.isSafeInteger(stageId) && stageId > 0 &&
+    Number.isSafeInteger(episodeId) && episodeId > 0
+    ? { stageId, episodeId }
+    : null;
+}
+
+async function loadEditorialReplacementPlan(tx: any, stage: any) {
+  const [workItem] = await tx
+    .select()
+    .from(workspaceEditorialWorkItems)
+    .where(eq(workspaceEditorialWorkItems.id, stage.workItemId))
+    .limit(1);
+  if (!workItem) {
+    throw new IpeNovelWorkspacePublishProviderError(
+      "TARGET_CHANGED",
+      "Replacement Editorial work item no longer exists."
+    );
+  }
+
+  const draftTabs = await tx
+    .select()
+    .from(workspaceEditorialDraftTabs)
+    .where(eq(workspaceEditorialDraftTabs.draftId, stage.draftId))
+    .orderBy(asc(workspaceEditorialDraftTabs.tabOrder));
+  const tabs = [];
+  for (const tab of draftTabs) {
+    const paragraphs = await tx
+      .select({
+        paragraphOrder: workspaceEditorialDraftParagraphs.paragraphOrder,
+        text: workspaceEditorialDraftParagraphs.text,
+      })
+      .from(workspaceEditorialDraftParagraphs)
+      .where(eq(workspaceEditorialDraftParagraphs.draftTabId, tab.id))
+      .orderBy(asc(workspaceEditorialDraftParagraphs.paragraphOrder));
+    tabs.push({
+      sourceTabId: tab.sourceTabId,
+      tabOrder: tab.tabOrder,
+      title: tab.title,
+      chapterNumber: tab.chapterNumber,
+      chapterTitle: tab.chapterTitle,
+      paragraphs,
+    });
+  }
+
+  const batchPlan = analyzeEditorialEpisodeDraftBatch({
+    workItemType: workItem.workItemType,
+    episodeNumber: workItem.episodeNumber,
+    episodeTitle: workItem.episodeTitle,
+    tabs,
+  });
+  if (!batchPlan.ready) {
+    throw new IpeNovelWorkspacePublishProviderError(
+      "TARGET_CHANGED",
+      "Replacement Draft no longer resolves to a publishable Episode Pack."
+    );
+  }
+  const plan = buildEditorialEpisodePackPlan(batchPlan);
+  if (
+    plan.episodeNumber !== stage.episodeNumber ||
+    plan.title !== stage.episodeTitle ||
+    plan.contentSha256.toLowerCase() !== String(stage.contentSha256).toLowerCase()
+  ) {
+    throw new IpeNovelWorkspacePublishProviderError(
+      "TARGET_CHANGED",
+      "Replacement Draft no longer matches immutable stage evidence."
+    );
+  }
+  if (
+    (stage.saleMode !== "chapter" && stage.saleMode !== "package") ||
+    stage.price === null ||
+    typeof stage.isFree !== "boolean"
+  ) {
+    throw new IpeNovelWorkspacePublishProviderError(
+      "TARGET_CHANGED",
+      "Replacement stage sale metadata is incomplete."
+    );
+  }
+  return plan;
 }
 
 /**
@@ -180,9 +280,56 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
           }
         }
 
+        const editorialIdentity = parseEditorialStageItemKey(request.itemKey);
+        let replacementStage: any = null;
+        let replacementPlan: Awaited<ReturnType<typeof loadEditorialReplacementPlan>> | null = null;
+        if (editorialIdentity && editorialIdentity.episodeId === episode.id) {
+          const [stage] = await tx
+            .select()
+            .from(workspaceEditorialEpisodeStages)
+            .where(eq(workspaceEditorialEpisodeStages.id, editorialIdentity.stageId))
+            .limit(1);
+          if (stage?.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3) {
+            if (
+              stage.episodeId !== episode.id ||
+              stage.novelId !== request.targetId ||
+              String(stage.contentSha256).toLowerCase() !== request.sourceSha256.toLowerCase() ||
+              episode.isPublished !== true
+            ) {
+              throw new IpeNovelWorkspacePublishProviderError(
+                "TARGET_CHANGED",
+                "Published replacement target no longer matches its Editorial stage."
+              );
+            }
+            const targetStateSha256 = editorialEpisodeReplacementTargetStateSha256({
+              novelId: episode.novelId,
+              episodeNumber: episode.episodeNumber,
+              title: episode.title,
+              content: episode.content,
+              contentFormat: episode.contentFormat,
+              wordCount: episode.wordCount,
+              isPublished: episode.isPublished,
+              saleMode: episode.saleMode,
+              price: episode.price,
+              isFree: episode.isFree,
+              fileUrl: episode.fileUrl,
+              fileSize: episode.fileSize,
+              fileMimeType: episode.fileMimeType,
+            });
+            if (targetStateSha256 !== stage.episodeStateSha256) {
+              throw new IpeNovelWorkspacePublishProviderError(
+                "TARGET_CHANGED",
+                "Published replacement target changed after staging; re-run Stage before publishing."
+              );
+            }
+            replacementStage = stage;
+            replacementPlan = await loadEditorialReplacementPlan(tx, stage);
+          }
+        }
+
         const hygiene = buildNqaPrePublishHygieneGate({
-          content: episode.content,
-          contentFormat: episode.contentFormat,
+          content: replacementPlan?.content ?? episode.content,
+          contentFormat: replacementPlan?.contentFormat ?? episode.contentFormat,
         });
         if (hygiene.decision !== "READY_FOR_PUBLISH") {
           throw new IpeNovelWorkspacePublishProviderError(
@@ -191,18 +338,36 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
           );
         }
 
+        const episodeUpdate = replacementStage && replacementPlan
+          ? {
+              title: replacementPlan.title,
+              content: hygiene.sanitizedContent,
+              contentFormat: replacementPlan.contentFormat,
+              wordCount: wordCount(hygiene.sanitizedContent),
+              saleMode: replacementStage.saleMode,
+              price: replacementStage.price,
+              isFree: replacementStage.isFree,
+              fileUrl: null,
+              fileSize: null,
+              fileMimeType: null,
+              isPublished: true,
+              publishedAt: episode.publishedAt ?? new Date(),
+              updatedAt: new Date(),
+            }
+          : {
+              ...(hygiene.remediationApplied
+                ? {
+                    content: hygiene.sanitizedContent,
+                    wordCount: wordCount(hygiene.sanitizedContent),
+                  }
+                : {}),
+              isPublished: true,
+              publishedAt: episode.publishedAt ?? new Date(),
+            };
+
         await tx
           .update(episodes)
-          .set({
-            ...(hygiene.remediationApplied
-              ? {
-                  content: hygiene.sanitizedContent,
-                  wordCount: wordCount(hygiene.sanitizedContent),
-                }
-              : {}),
-            isPublished: true,
-            publishedAt: episode.publishedAt ?? new Date(),
-          })
+          .set(episodeUpdate)
           .where(
             and(
               eq(episodes.id, episode.id),
@@ -231,6 +396,15 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
             itemKey: request.itemKey,
             episodeId: episode.id,
             sourceSha256: request.sourceSha256.toLowerCase(),
+            editorialReplacement: replacementStage
+              ? {
+                  stageId: replacementStage.id,
+                  stageContract: replacementStage.stageContract,
+                  preservedEpisodeId: true,
+                  replacedPublishedEpisode: true,
+                  previousStateSha256: replacementStage.episodeStateSha256,
+                }
+              : null,
             nqaPrePublishHygiene: {
               version: hygiene.version,
               decision: hygiene.decision,
