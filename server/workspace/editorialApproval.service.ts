@@ -386,6 +386,7 @@ async function currentQcEvidence(
       anomalyKey: anomaly.anomalyKey,
       anomalyType: anomaly.anomalyType,
       severity: anomaly.severity,
+      sourceTabId: anomaly.sourceTabId ?? null,
       disposition,
       resolutionVersion: Number(confirmation?.version ?? 0),
     };
@@ -414,6 +415,17 @@ async function currentQcEvidence(
     anomalies: projectedAnomalies,
     findings: projected,
   };
+}
+
+function confirmedSourceNoteTabIds(qc: Awaited<ReturnType<typeof currentQcEvidence>>) {
+  return (qc.anomalies ?? [])
+    .filter(
+      (anomaly: any) =>
+        anomaly.anomalyType === "source_note_only" &&
+        anomaly.disposition === "confirmed_source_note" &&
+        anomaly.sourceTabId
+    )
+    .map((anomaly: any) => String(anomaly.sourceTabId));
 }
 
 function stagePlanItemSummary(plan: EditorialEpisodeDraftPlan) {
@@ -688,6 +700,7 @@ export async function getEditorialApprovalReadModel(input: {
     workItemType: context.workItem.workItemType,
     episodeNumber: context.workItem.episodeNumber,
     episodeTitle: context.workItem.episodeTitle,
+    confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc),
     tabs,
   });
   const stages = await stagesForApproval(
@@ -995,6 +1008,7 @@ export async function stageEditorialEpisodeDraft(input: {
       workItemType: context.workItem.workItemType,
       episodeNumber: context.workItem.episodeNumber,
       episodeTitle: context.workItem.episodeTitle,
+      confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc),
       tabs,
     });
     if (!batchPlan.ready) {

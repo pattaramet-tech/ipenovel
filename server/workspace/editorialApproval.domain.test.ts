@@ -368,6 +368,48 @@ describe("Editorial approval/staging domain", () => {
     expect(batch.blockers).toEqual([]);
   });
 
+  it("excludes an explicitly confirmed numbered source-note tab and removes its Episode number from the required range", () => {
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "136-138",
+      episodeTitle: null,
+      confirmedSourceNoteTabIds: ["confirmed-note-138"],
+      tabs: [
+        ...[136, 137].map((number, index) => ({
+          sourceTabId: `tab-${number}`,
+          tabOrder: index,
+          title: `แท็บ ${index + 1}`,
+          chapterNumber: String(number),
+          chapterTitle: `ชื่อบท ${number}`,
+          paragraphs: [
+            { paragraphOrder: 0, text: `บทที่ ${number} ชื่อบท ${number}` },
+            { paragraphOrder: 1, text: `เนื้อหา ${"ญ".repeat(500)}` },
+          ],
+        })),
+        {
+          sourceTabId: "confirmed-note-138",
+          tabOrder: 2,
+          title: "แท็บ 3",
+          chapterNumber: "138",
+          chapterTitle: "หมายเหตุจากต้นฉบับ",
+          paragraphs: [
+            { paragraphOrder: 0, text: "บทที่ 138 หมายเหตุจากต้นฉบับ" },
+          ],
+        },
+      ],
+    });
+    expect(batch.ready).toBe(true);
+    expect(batch.expectedEpisodeNumbers).toEqual(["136", "137"]);
+    expect(batch.items.map(item => item.episodeNumber)).toEqual(["136", "137"]);
+    expect(batch.excludedTabs).toEqual([
+      expect.objectContaining({
+        sourceTabId: "confirmed-note-138",
+        label: "หมายเหตุจากต้นฉบับ (ยืนยันแล้ว)",
+      }),
+    ]);
+    expect(batch.blockers).toEqual([]);
+  });
+
   it("does not silently exclude a genuine numbered Episode heading that contains a source-note phrase", () => {
     const batch = analyzeEditorialEpisodeDraftBatch({
       workItemType: "new_episode",

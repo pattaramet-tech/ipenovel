@@ -13,6 +13,8 @@ export type EditorialEpisodeDraftInput = {
   workItemType: "new_story" | "new_episode";
   episodeNumber: string | null;
   episodeTitle: string | null;
+  /** Explicitly confirmed structural source-note tabs to exclude from Episode staging. */
+  confirmedSourceNoteTabIds?: string[];
   tabs: Array<{
     sourceTabId: string;
     tabOrder: number;
@@ -371,8 +373,10 @@ export function analyzeEditorialEpisodeDraftBatch(
   const expected = range.episodeNumbers;
   const expectedSet = new Set(expected);
   const tabs = input.tabs.slice().sort((a, b) => a.tabOrder - b.tabOrder);
+  const confirmedSourceNoteTabIds = new Set(input.confirmedSourceNoteTabIds ?? []);
   const anomalies: EditorialEpisodeDraftBatchAnomaly[] = [];
   const excludedTabs: EditorialEpisodeDraftExcludedTab[] = [];
+  const confirmedExcludedEpisodeNumbers = new Set<string>();
   const detectedRows: Array<{
     tab: EditorialEpisodeDraftInput["tabs"][number];
     episodeNumber: string;
@@ -380,6 +384,23 @@ export function analyzeEditorialEpisodeDraftBatch(
 
   for (const tab of tabs) {
     const detected = tabDetectedEpisodeNumber(tab, range.width);
+    if (confirmedSourceNoteTabIds.has(tab.sourceTabId)) {
+      if (
+        !detected.conflict &&
+        detected.episodeNumber &&
+        expectedSet.has(detected.episodeNumber)
+      ) {
+        confirmedExcludedEpisodeNumbers.add(detected.episodeNumber);
+      }
+      excludedTabs.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        kind: "front_matter",
+        label: "หมายเหตุจากต้นฉบับ (ยืนยันแล้ว)",
+      });
+      continue;
+    }
     const currentSourceNote = detectedCurrentSourceNoteTab(tab);
     if (currentSourceNote) {
       excludedTabs.push(currentSourceNote);
@@ -438,15 +459,18 @@ export function analyzeEditorialEpisodeDraftBatch(
     detectedRows.push({ tab, episodeNumber: detected.episodeNumber });
   }
 
+  const effectiveExpected = expected.filter(
+    episodeNumber => !confirmedExcludedEpisodeNumbers.has(episodeNumber)
+  );
   const episodeTabCount = tabs.length - excludedTabs.length;
-  if (episodeTabCount !== expected.length) {
+  if (episodeTabCount !== effectiveExpected.length) {
     anomalies.push({
       code: "COUNT_MISMATCH",
       severity: "blocker",
       message:
         excludedTabs.length > 0
-          ? `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ Episode แต่ Draft มี ${tabs.length} แท็บ โดยไม่นับ front matter ${excludedTabs.length} แท็บ เหลือ ${episodeTabCount} แท็บ Episode`
-          : `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ แต่ Draft มี ${tabs.length} แท็บ`,
+          ? `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${effectiveExpected.length} แท็บ Episode หลังหักหมายเหตุที่ยืนยันแล้ว แต่ Draft มี ${tabs.length} แท็บ โดยไม่นับแท็บที่นำออก ${excludedTabs.length} แท็บ เหลือ ${episodeTabCount} แท็บ Episode`
+          : `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${effectiveExpected.length} แท็บ แต่ Draft มี ${tabs.length} แท็บ`,
     });
   }
 
@@ -464,7 +488,7 @@ export function analyzeEditorialEpisodeDraftBatch(
       });
     }
   }
-  for (const episodeNumber of expected) {
+  for (const episodeNumber of effectiveExpected) {
     if (!seen.has(episodeNumber)) {
       anomalies.push({
         code: "EXPECTED_EPISODE_MISSING",
@@ -477,9 +501,9 @@ export function analyzeEditorialEpisodeDraftBatch(
 
   const detectedOrder = detectedRows.map(row => row.episodeNumber);
   if (
-    detectedRows.length === expected.length &&
-    new Set(detectedOrder).size === expected.length &&
-    detectedOrder.some((value, index) => value !== expected[index])
+    detectedRows.length === effectiveExpected.length &&
+    new Set(detectedOrder).size === effectiveExpected.length &&
+    detectedOrder.some((value, index) => value !== effectiveExpected[index])
   ) {
     anomalies.push({
       code: "TAB_NUMBER_OUT_OF_ORDER",
@@ -541,7 +565,7 @@ export function analyzeEditorialEpisodeDraftBatch(
 
   const blockers = anomalies.filter(anomaly => anomaly.severity === "blocker");
   const expectedIndex = new Map(
-    expected.map((episodeNumber, index) => [episodeNumber, index] as const)
+    effectiveExpected.map((episodeNumber, index) => [episodeNumber, index] as const)
   );
   items.sort(
     (a, b) =>
@@ -550,13 +574,13 @@ export function analyzeEditorialEpisodeDraftBatch(
   );
   const ready =
     blockers.length === 0 &&
-    items.length === expected.length &&
-    items.every((item, index) => item.episodeNumber === expected[index]);
+    items.length === effectiveExpected.length &&
+    items.every((item, index) => item.episodeNumber === effectiveExpected[index]);
 
   return {
     mode: "range",
     requestedEpisodeNumber,
-    expectedEpisodeNumbers: expected,
+    expectedEpisodeNumbers: effectiveExpected,
     items,
     excludedTabs,
     anomalies,
