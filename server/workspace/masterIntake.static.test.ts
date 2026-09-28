@@ -72,6 +72,14 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(migration).toContain("NULL");
   });
 
+  it("restores a removed MATCH pack through the shared Episode intake path", () => {
+    const service = read("server/workspace/masterIntake.service.ts");
+    const board = read("server/workspace/editorialBoard.service.ts");
+    expect(service).toContain("createEditorialEpisodeWorkItem");
+    expect(board).toContain('existingCard.status === "archived"');
+    expect(board).toContain('reason: "editorial_episode_restore"');
+  });
+
   it("registers migration 0055 exactly once", () => {
     const journal = JSON.parse(read("drizzle/meta/_journal.json"));
     const entries = journal.entries.filter(
