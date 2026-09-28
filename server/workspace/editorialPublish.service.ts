@@ -753,9 +753,12 @@ export async function reconcileEditorialPublishRun(input: {
         "Published run references an Editorial Episode that no longer exists."
       );
     }
+    const publishedSaleMetadataMustMatch =
+      stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 ||
+      (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3 &&
+        item.status === "published");
     if (
-      (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 ||
-        stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3) &&
+      publishedSaleMetadataMustMatch &&
       (stage.saleMode !== episode.saleMode ||
         stage.price !== episode.price ||
         stage.isFree !== episode.isFree)
