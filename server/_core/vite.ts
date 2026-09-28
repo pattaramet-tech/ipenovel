@@ -72,7 +72,46 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  const assetPath = path.resolve(distPath, "assets");
+
+  // Vite emits content-hashed JS/CSS under /assets. These files are safe to
+  // cache for a year because a content change produces a new URL. Critically,
+  // a missing hashed asset must NEVER fall through to the SPA index.html:
+  // doing so returns HTML with HTTP 200 for a .js URL, and an intermediary
+  // cache (Cloudflare) can then pin that invalid response and blank the app.
+  app.use(
+    "/assets",
+    express.static(assetPath, {
+      index: false,
+      fallthrough: true,
+      immutable: true,
+      maxAge: "1y",
+      setHeaders(res) {
+        res.setHeader(
+          "Cache-Control",
+          "public, max-age=31536000, immutable"
+        );
+      },
+    })
+  );
+  app.use("/assets", (_req, res) => {
+    res
+      .status(404)
+      .set({
+        "Cache-Control": "no-store, max-age=0",
+        "Content-Type": "text/plain; charset=utf-8",
+      })
+      .send("Asset not found");
+  });
+
+  // Do not let express.static serve index.html directly. Every SPA HTML
+  // entry must pass through the catch-all below so it gets no-store headers
+  // and server-side SEO injection. Non-HTML public files may still be served.
+  app.use(
+    express.static(distPath, {
+      index: false,
+    })
+  );
 
   // fall through to index.html if the file doesn't exist - this is the SPA
   // route (/, /novels, /novels/:id, ...) response, so it's also where
@@ -89,9 +128,16 @@ export function serveStatic(app: Express) {
       // req.originalUrl, not req.path - see the matching note in setupVite
       // above (Express rebases req.path to "/" for a "*"-mounted handler).
       const html = await renderSeoHtml(cachedProductionTemplate, req.originalUrl);
-      res.status(200).set({ "Content-Type": "text/html" }).send(html);
+      res
+        .status(200)
+        .set({
+          "Content-Type": "text/html",
+          "Cache-Control": "no-store, max-age=0, must-revalidate",
+        })
+        .send(html);
     } catch (error) {
       console.error("[ServerSEO] Failed to render HTML, falling back to raw file:", error);
+      res.set("Cache-Control", "no-store, max-age=0, must-revalidate");
       res.sendFile(indexPath);
     }
   });
