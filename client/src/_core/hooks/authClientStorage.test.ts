@@ -139,6 +139,16 @@ describe("useAuth.ts source shape (static regression guard - no DOM harness in t
     expect(useAuthSource).toMatch(/user:\s*meQuery\.data/);
   });
 
+  it("self-recovers auth.me from transient infrastructure failures without persisting auth state", () => {
+    expect(useAuthSource).toMatch(/retry:\s*2/);
+    expect(useAuthSource).toMatch(/retryDelay:\s*attemptIndex\s*=>\s*Math\.min\(500 \* 2 \*\* attemptIndex, 2_000\)/);
+    expect(useAuthSource).not.toMatch(/staleTime\s*:/);
+    expect(useAuthSource).toMatch(/refetchOnWindowFocus:\s*true/);
+    expect(useAuthSource).toMatch(/refetchOnReconnect:\s*true/);
+    expect(useAuthSource).toMatch(/retryOnMount:\s*true/);
+    expect(useAuthSource).not.toMatch(/localStorage\.setItem/);
+  });
+
   it("exposes an isLoggingOut flag driven by the logout mutation's pending state", () => {
     expect(useAuthSource).toMatch(/isLoggingOut:\s*logoutMutation\.isPending/);
   });
