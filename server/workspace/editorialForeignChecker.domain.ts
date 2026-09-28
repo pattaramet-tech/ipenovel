@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v6" as const;
+  "workspace-editorial-foreign-checker-v7" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
@@ -338,11 +338,21 @@ export function evaluateEditorialForeignParagraph(
   );
 }
 
+const INLINE_PARENTHETICAL_AUTHOR_NOTE_RE =
+  /[（(][^()（）\n]*หมายเหตุ(?:จาก)?(?:ผู้สร้าง|ผู้เขียน|ผู้แปล)[^()（）\n]*[)）]/i;
+
+function isInlineParentheticalAuthorNote(text: string) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const match = value.match(INLINE_PARENTHETICAL_AUTHOR_NOTE_RE);
+  if (!match) return false;
+  return value.replace(match[0], "").trim().length > 0;
+}
+
 function hasSourceJunkAnchor(text: string) {
   const value = String(text || "").trim();
-  return Boolean(value) && SOURCE_JUNK_ANCHOR_PATTERNS.some(pattern =>
-    pattern.test(value)
-  );
+  if (!value || isInlineParentheticalAuthorNote(value)) return false;
+  return SOURCE_JUNK_ANCHOR_PATTERNS.some(pattern => pattern.test(value));
 }
 
 function evaluateEditorialSourceJunkTail(

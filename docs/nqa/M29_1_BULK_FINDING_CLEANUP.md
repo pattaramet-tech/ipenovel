@@ -29,6 +29,10 @@ finding itself is `source_junk`, its whole paragraph is removed.
 A separate action removes every current open `source_junk` paragraph in the
 selected Episode Packs. The action operates only on findings emitted by the
 current checker engine; it does not independently guess which text is junk.
+Checker v7 does not treat an inline parenthetical author note embedded in normal
+story prose (for example `(หมายเหตุผู้เขียน: ...)`) as the start of a
+`source_junk` tail; genuine standalone/trailing source-junk markers remain
+blocking.
 
 ## Safety contract
 
