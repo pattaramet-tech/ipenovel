@@ -86,9 +86,10 @@ describe("M12D.7 sale metadata contract", () => {
     expect(board).toContain("(workItem.saleMode ?? null) !== (sale?.saleMode ?? null)");
   });
 
-  it("propagates sale metadata from work item through Episode and stage", () => {
+  it("resolves effective sale metadata before propagating it through Episode and stage", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
-    expect(service).toContain("saleMode = context.workItem.saleMode");
+    expect(service).toContain("resolveEditorialEpisodePackSale(batchPlan");
+    expect(service).toContain("const { saleMode, price, isFree } = effectiveSale");
     expect(service).toContain("stageContract,");
     expect(service).toContain("EDITORIAL_EPISODE_STAGE_CONTRACT_V2");
     expect(service).toContain("EDITORIAL_EPISODE_STAGE_CONTRACT_V3");
@@ -117,11 +118,12 @@ describe("M12D.7 sale metadata contract", () => {
     expect(service).toContain("stage.isFree !== episode.isFree");
   });
 
-  it("keeps historical v1 stage verification compatible while new staging fails closed", () => {
+  it("keeps historical v1 stage verification compatible while default staging repairs pending sale metadata", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
     expect(service).toContain("existingStage.stageContract === null");
     expect(service).toContain("EDITORIAL_EPISODE_STAGE_CONTRACT");
-    expect(service).toContain("historical intake rows must be completed before staging");
+    expect(service).toContain("effectiveSale.usesDefault");
+    expect(service).toContain("workspaceEditorialWorkItems.version} + 1");
   });
 
   it("requires controlled publish to preserve staged sale metadata", () => {

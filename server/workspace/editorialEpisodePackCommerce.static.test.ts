@@ -10,10 +10,10 @@ describe("IPE-056-Q Episode Pack commerce + reader entitlement", () => {
     const router = source("server/workspace/router.ts");
     expect(service).toContain("buildEditorialEpisodePackPlan(batchPlan)");
     expect(service).toContain("for (const plan of [packPlan])");
-    expect(service).toContain("const saleMode = context.workItem.saleMode");
-    expect(service).toContain("const price = context.workItem.price");
-    expect(service).toContain("const isFree = context.workItem.isFree");
-    expect(service).toContain("price: sale?.price ?? pack.price");
+    expect(service).toContain("resolveEditorialEpisodePackSale(batchPlan");
+    expect(service).toContain("const { saleMode, price, isFree } = effectiveSale");
+    expect(service).toContain("effectiveSale.usesDefault");
+    expect(service).toContain("price: effectiveSale?.price ?? sale?.price ?? pack.price");
     expect(board).toContain("Workspace Episode Pack intake supports package commerce only.");
     expect(router).toContain('saleMode: z.literal("package").default("package")');
   });
