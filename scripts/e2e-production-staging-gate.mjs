@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { verifyFrontendAssetGraph } from "./lib/frontendAssetGraph.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -206,6 +207,14 @@ async function main() {
   );
 
   await waitForStableStaging();
+
+  const assetGraph = await verifyFrontendAssetGraph({
+    baseUrl,
+    label: "production-staging",
+  });
+  console.log(
+    `[production-staging-gate] asset graph routes=${assetGraph.routesChecked} assets=${assetGraph.assetsChecked} missing404=${assetGraph.missingAssetStatus}`
+  );
 
   runProject("public");
   runProject("auth");
