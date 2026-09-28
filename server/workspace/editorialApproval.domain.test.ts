@@ -368,7 +368,7 @@ describe("Editorial approval/staging domain", () => {
     expect(batch.blockers).toEqual([]);
   });
 
-  it("excludes an explicitly confirmed numbered source-note tab and removes its Episode number from the required range", () => {
+  it("keeps an explicitly confirmed numbered source note as a visible billable Episode", () => {
     const batch = analyzeEditorialEpisodeDraftBatch({
       workItemType: "new_episode",
       episodeNumber: "136-138",
@@ -399,15 +399,21 @@ describe("Editorial approval/staging domain", () => {
       ],
     });
     expect(batch.ready).toBe(true);
-    expect(batch.expectedEpisodeNumbers).toEqual(["136", "137"]);
-    expect(batch.items.map(item => item.episodeNumber)).toEqual(["136", "137"]);
-    expect(batch.excludedTabs).toEqual([
-      expect.objectContaining({
-        sourceTabId: "confirmed-note-138",
-        label: "หมายเหตุจากต้นฉบับ (ยืนยันแล้ว)",
-      }),
-    ]);
+    expect(batch.expectedEpisodeNumbers).toEqual(["136", "137", "138"]);
+    expect(batch.items.map(item => item.episodeNumber)).toEqual(["136", "137", "138"]);
+    expect(batch.excludedTabs).toEqual([]);
     expect(batch.blockers).toEqual([]);
+    const note = batch.items.find(item => item.episodeNumber === "138");
+    expect(note).toMatchObject({
+      sourceTabId: "confirmed-note-138",
+      sourceTitleLine: "บทที่ 138 หมายเหตุจากต้นฉบับ",
+      content: "",
+    });
+    const pack = buildEditorialEpisodePackPlan(batch);
+    expect(pack.billableTabCount).toBe(3);
+    expect(pack.memberEpisodeNumbers).toEqual(["136", "137", "138"]);
+    expect(pack.price).toBe("6.00");
+    expect(pack.content).toContain("บทที่ 138 หมายเหตุจากต้นฉบับ");
   });
 
   it("does not silently exclude a genuine numbered Episode heading that contains a source-note phrase", () => {

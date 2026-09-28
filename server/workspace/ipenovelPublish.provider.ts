@@ -134,6 +134,7 @@ async function loadEditorialReplacementPlan(tx: any, stage: any) {
       and(
         eq(workspaceEditorialStructuralConfirmations.workItemId, stage.workItemId),
         eq(workspaceEditorialStructuralConfirmations.draftId, stage.draftId),
+        eq(workspaceEditorialStructuralConfirmations.anomalyType, "source_note_only"),
         eq(workspaceEditorialStructuralConfirmations.status, "confirmed")
       )
     );

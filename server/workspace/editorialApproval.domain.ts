@@ -13,7 +13,7 @@ export type EditorialEpisodeDraftInput = {
   workItemType: "new_story" | "new_episode";
   episodeNumber: string | null;
   episodeTitle: string | null;
-  /** Explicitly confirmed structural source-note tabs to exclude from Episode staging. */
+  /** Explicitly confirmed structural source-note tabs that may stage as title-only Episodes. */
   confirmedSourceNoteTabIds?: string[];
   tabs: Array<{
     sourceTabId: string;
@@ -376,7 +376,6 @@ export function analyzeEditorialEpisodeDraftBatch(
   const confirmedSourceNoteTabIds = new Set(input.confirmedSourceNoteTabIds ?? []);
   const anomalies: EditorialEpisodeDraftBatchAnomaly[] = [];
   const excludedTabs: EditorialEpisodeDraftExcludedTab[] = [];
-  const confirmedExcludedEpisodeNumbers = new Set<string>();
   const detectedRows: Array<{
     tab: EditorialEpisodeDraftInput["tabs"][number];
     episodeNumber: string;
@@ -384,23 +383,6 @@ export function analyzeEditorialEpisodeDraftBatch(
 
   for (const tab of tabs) {
     const detected = tabDetectedEpisodeNumber(tab, range.width);
-    if (confirmedSourceNoteTabIds.has(tab.sourceTabId)) {
-      if (
-        !detected.conflict &&
-        detected.episodeNumber &&
-        expectedSet.has(detected.episodeNumber)
-      ) {
-        confirmedExcludedEpisodeNumbers.add(detected.episodeNumber);
-      }
-      excludedTabs.push({
-        sourceTabId: tab.sourceTabId,
-        sourceTabTitle: tab.title,
-        tabOrder: tab.tabOrder,
-        kind: "front_matter",
-        label: "หมายเหตุจากต้นฉบับ (ยืนยันแล้ว)",
-      });
-      continue;
-    }
     const currentSourceNote = detectedCurrentSourceNoteTab(tab);
     if (currentSourceNote) {
       excludedTabs.push(currentSourceNote);
@@ -459,18 +441,15 @@ export function analyzeEditorialEpisodeDraftBatch(
     detectedRows.push({ tab, episodeNumber: detected.episodeNumber });
   }
 
-  const effectiveExpected = expected.filter(
-    episodeNumber => !confirmedExcludedEpisodeNumbers.has(episodeNumber)
-  );
   const episodeTabCount = tabs.length - excludedTabs.length;
-  if (episodeTabCount !== effectiveExpected.length) {
+  if (episodeTabCount !== expected.length) {
     anomalies.push({
       code: "COUNT_MISMATCH",
       severity: "blocker",
       message:
         excludedTabs.length > 0
-          ? `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${effectiveExpected.length} แท็บ Episode หลังหักหมายเหตุที่ยืนยันแล้ว แต่ Draft มี ${tabs.length} แท็บ โดยไม่นับแท็บที่นำออก ${excludedTabs.length} แท็บ เหลือ ${episodeTabCount} แท็บ Episode`
-          : `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${effectiveExpected.length} แท็บ แต่ Draft มี ${tabs.length} แท็บ`,
+          ? `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ Episode แต่ Draft มี ${tabs.length} แท็บ โดยไม่นับ front matter ${excludedTabs.length} แท็บ เหลือ ${episodeTabCount} แท็บ Episode`
+          : `ช่วงตอน ${requestedEpisodeNumber} ต้องมี ${expected.length} แท็บ แต่ Draft มี ${tabs.length} แท็บ`,
     });
   }
 
@@ -488,7 +467,7 @@ export function analyzeEditorialEpisodeDraftBatch(
       });
     }
   }
-  for (const episodeNumber of effectiveExpected) {
+  for (const episodeNumber of expected) {
     if (!seen.has(episodeNumber)) {
       anomalies.push({
         code: "EXPECTED_EPISODE_MISSING",
@@ -501,9 +480,9 @@ export function analyzeEditorialEpisodeDraftBatch(
 
   const detectedOrder = detectedRows.map(row => row.episodeNumber);
   if (
-    detectedRows.length === effectiveExpected.length &&
-    new Set(detectedOrder).size === effectiveExpected.length &&
-    detectedOrder.some((value, index) => value !== effectiveExpected[index])
+    detectedRows.length === expected.length &&
+    new Set(detectedOrder).size === expected.length &&
+    detectedOrder.some((value, index) => value !== expected[index])
   ) {
     anomalies.push({
       code: "TAB_NUMBER_OUT_OF_ORDER",
@@ -526,6 +505,9 @@ export function analyzeEditorialEpisodeDraftBatch(
           workItemType: "new_episode",
           episodeNumber: row.episodeNumber,
           episodeTitle: null,
+          confirmedSourceNoteTabIds: confirmedSourceNoteTabIds.has(row.tab.sourceTabId)
+            ? [row.tab.sourceTabId]
+            : [],
           tabs: [row.tab],
         })
       );
@@ -551,7 +533,10 @@ export function analyzeEditorialEpisodeDraftBatch(
       ? Math.max(120, Math.floor(medianCharacters * 0.25))
       : 80;
   for (const item of items) {
-    if (item.content.length < shortThreshold) {
+    if (
+      !confirmedSourceNoteTabIds.has(item.sourceTabId) &&
+      item.content.length < shortThreshold
+    ) {
       anomalies.push({
         code: "TAB_CONTENT_SHORT",
         severity: "warning",
@@ -565,7 +550,7 @@ export function analyzeEditorialEpisodeDraftBatch(
 
   const blockers = anomalies.filter(anomaly => anomaly.severity === "blocker");
   const expectedIndex = new Map(
-    effectiveExpected.map((episodeNumber, index) => [episodeNumber, index] as const)
+    expected.map((episodeNumber, index) => [episodeNumber, index] as const)
   );
   items.sort(
     (a, b) =>
@@ -574,13 +559,13 @@ export function analyzeEditorialEpisodeDraftBatch(
   );
   const ready =
     blockers.length === 0 &&
-    items.length === effectiveExpected.length &&
-    items.every((item, index) => item.episodeNumber === effectiveExpected[index]);
+    items.length === expected.length &&
+    items.every((item, index) => item.episodeNumber === expected[index]);
 
   return {
     mode: "range",
     requestedEpisodeNumber,
-    expectedEpisodeNumbers: effectiveExpected,
+    expectedEpisodeNumbers: expected,
     items,
     excludedTabs,
     anomalies,
@@ -702,7 +687,10 @@ export function buildEditorialEpisodeDraftPlan(
     .map(row => String(row.text || "").trimEnd())
     .join("\n\n")
     .trim();
-  if (!content) {
+  const confirmedSourceNote = (input.confirmedSourceNoteTabIds ?? []).includes(
+    tab.sourceTabId
+  );
+  if (!content && !confirmedSourceNote) {
     throw new EditorialApprovalDomainError(
       "CONTENT_REQUIRED",
       "Episode staging requires content after the first non-empty title line."

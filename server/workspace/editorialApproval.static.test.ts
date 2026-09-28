@@ -105,7 +105,7 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(service).toContain('"CHECKER_STALE"');
   });
 
-  it("threads confirmed source-note exclusions through read/stage and publish reconstruction", () => {
+  it("threads confirmed source-note state through read/stage and publish reconstruction", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
     const provider = source("server/workspace/ipenovelPublish.provider.ts");
     expect(service).toContain("sourceTabId: anomaly.sourceTabId ?? null");
