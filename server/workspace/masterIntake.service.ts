@@ -283,27 +283,20 @@ export async function previewWorkspaceMasterIntake(input: {
     const rawTitle = String(cells[0] ?? "").trim();
     const translationDocUrl = String(cells[1] ?? "").trim();
     const webSourceRaw = String(cells[3] ?? "").trim();
-    const preparedSourceDocUrl = String(cells[13] ?? "").trim();
+    const preparedSourceRaw = String(cells[13] ?? "").trim();
     const parsed = parseMasterIntakeTitleRange(rawTitle);
     const translationDocumentId = googleDocumentIdFromUrlOrId(translationDocUrl);
-    const preparedSourceDocumentId = preparedSourceDocUrl
-      ? googleDocumentIdFromUrlOrId(preparedSourceDocUrl)
+    const preparedSourceDocumentId = preparedSourceRaw
+      ? googleDocumentIdFromUrlOrId(preparedSourceRaw)
       : null;
+    const preparedSourceDocUrl = preparedSourceDocumentId ? preparedSourceRaw : "";
     const webSourceUrl = normalizeOptionalHttpUrl(webSourceRaw);
     const blockers: string[] = [];
     if (!parsed) blockers.push("TITLE_RANGE_INVALID");
     if (!translationDocumentId) blockers.push("TRANSLATION_DOC_INVALID");
-    if (preparedSourceDocUrl && !preparedSourceDocumentId) {
-      blockers.push("PREPARED_SOURCE_DOC_INVALID");
-    }
     if (webSourceUrl === undefined) blockers.push("WEB_SOURCE_URL_INVALID");
 
-    if (
-      !parsed ||
-      !translationDocumentId ||
-      (preparedSourceDocUrl && !preparedSourceDocumentId) ||
-      webSourceUrl === undefined
-    ) {
+    if (!parsed || !translationDocumentId || webSourceUrl === undefined) {
       rows.push({
         rowNumber,
         status: "CONFLICT",
@@ -691,11 +684,11 @@ async function persistProvenance(input: {
   const preparedSourceDocumentId = input.row.preparedSourceDocUrl
     ? googleDocumentIdFromUrlOrId(input.row.preparedSourceDocUrl)
     : null;
-  if (
-    !translationDocumentId ||
-    (input.row.preparedSourceDocUrl && !preparedSourceDocumentId)
-  ) {
-    throw new Error("Master Intake Google document identity is invalid.");
+  const preparedSourceDocUrl = preparedSourceDocumentId
+    ? input.row.preparedSourceDocUrl
+    : null;
+  if (!translationDocumentId) {
+    throw new Error("Master Intake translation document identity is invalid.");
   }
 
   const values = {
@@ -712,7 +705,7 @@ async function persistProvenance(input: {
     translationDocUrl: input.row.translationDocUrl,
     translationDocumentId,
     webSourceUrl: input.row.webSourceUrl,
-    preparedSourceDocUrl: input.row.preparedSourceDocUrl,
+    preparedSourceDocUrl,
     preparedSourceDocumentId,
     rowFingerprint: input.row.rowFingerprint,
     lastSyncedByUserId: input.actorUserId,

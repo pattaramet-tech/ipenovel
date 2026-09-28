@@ -223,11 +223,17 @@ function tabDetectedEpisodeNumber(
   };
 }
 
+const SOURCE_NOTE_LABELS = [
+  ["หมายเหตุจากต้นฉบับ", "หมายเหตุจากต้นฉบับ"],
+  ["ประกาศจากต้นฉบับ", "ประกาศจากต้นฉบับ"],
+] as const;
+
 const FRONT_MATTER_LABELS = [
   ["บทนำ", "บทนำ"],
   ["คำนำ", "คำนำ"],
   ["prologue", "Prologue"],
   ["introduction", "Introduction"],
+  ...SOURCE_NOTE_LABELS,
 ] as const;
 
 function normalizedFrontMatterLabel(value: string) {
@@ -245,6 +251,35 @@ const NORMALIZED_FRONT_MATTER_LABELS = new Map(
     label,
   ])
 );
+
+const NORMALIZED_SOURCE_NOTE_LABELS = new Map(
+  SOURCE_NOTE_LABELS.map(([key, label]) => [
+    normalizedFrontMatterLabel(key),
+    label,
+  ])
+);
+
+function detectedCurrentSourceNoteTab(
+  tab: EditorialEpisodeDraftInput["tabs"][number]
+): EditorialEpisodeDraftExcludedTab | null {
+  const paragraphs = tab.paragraphs
+    .slice()
+    .sort((a, b) => a.paragraphOrder - b.paragraphOrder);
+  const firstLine = paragraphs.find(row => String(row.text || "").trim());
+  const normalized = normalizedFrontMatterLabel(
+    firstLine ? String(firstLine.text || "") : ""
+  );
+  const label = NORMALIZED_SOURCE_NOTE_LABELS.get(normalized);
+  return label
+    ? {
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        kind: "front_matter",
+        label,
+      }
+    : null;
+}
 
 function detectedFrontMatterTab(
   tab: EditorialEpisodeDraftInput["tabs"][number]
@@ -345,6 +380,11 @@ export function analyzeEditorialEpisodeDraftBatch(
 
   for (const tab of tabs) {
     const detected = tabDetectedEpisodeNumber(tab, range.width);
+    const currentSourceNote = detectedCurrentSourceNoteTab(tab);
+    if (currentSourceNote) {
+      excludedTabs.push(currentSourceNote);
+      continue;
+    }
     const frontMatter = detectedFrontMatterTab(tab);
     if (
       frontMatter &&

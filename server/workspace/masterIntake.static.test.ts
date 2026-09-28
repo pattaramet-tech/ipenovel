@@ -55,14 +55,14 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(service).toContain("bindPublicationNovel");
   });
 
-  it("reads prepared source from optional O, ignores K notes, and rejects malformed non-empty O", () => {
+  it("reads prepared source from optional O, ignores K notes, and ignores malformed/non-link O", () => {
     const service = read("server/workspace/masterIntake.service.ts");
     expect(service).toContain('\":O\" +');
     expect(service).toContain('String(cells[13] ?? "").trim()');
     expect(service).not.toContain('String(cells[9] ?? "").trim()');
-    expect(service).toContain("if (preparedSourceDocUrl && !preparedSourceDocumentId)");
+    expect(service).toContain("const preparedSourceDocUrl = preparedSourceDocumentId ? preparedSourceRaw : \"\"");
     expect(service).toContain("preparedSourceDocUrl: preparedSourceDocUrl || null");
-    expect(service).not.toContain('if (!preparedSourceDocumentId) blockers.push("PREPARED_SOURCE_DOC_INVALID")');
+    expect(service).not.toContain("PREPARED_SOURCE_DOC_INVALID");
     const page = read("client/src/pages/WorkspacePage.tsx");
     expect(page).toContain('href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">O</a>');
     expect(page).not.toContain('href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">K</a>');

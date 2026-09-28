@@ -104,6 +104,73 @@ describe("Editorial deterministic foreign-word checker", () => {
     ).toEqual([]);
   });
 
+  it("does not turn a DxD tab-50 inline parenthetical author note into a source-junk tail", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ทุกคนเหนี่ยวไกพร้อมกัน ลูกแก้วขนาดเล็กปรากฏเหนือสิ่งปลูกสร้างและขยายใหญ่ขึ้นเรื่อย ๆ จนกลืนพื้นที่ทั้งหมด ทำลายสิ่งปลูกสร้างเหล่านั้นจนสิ้นซาก (หมายเหตุผู้เขียน: ร่างแยกใช้แมททีเรียลเบิร์สต์)", {
+          sourceTabId: "tab-50",
+          tabTitle: "บทที่ 185 จุดจบของสภา",
+          paragraphKey: "tab50-note",
+          paragraphOrder: 1,
+        }),
+        paragraph("เหล่าปีศาจพูดไม่ออก เจ้าของดินแดนเหล่านั้นไม่อาจคิดอย่างมีเหตุผลและจ้องจออยู่นาน", {
+          sourceTabId: "tab-50",
+          tabTitle: "บทที่ 185 จุดจบของสภา",
+          paragraphKey: "tab50-story-2",
+          paragraphOrder: 2,
+        }),
+        paragraph("ทัตสึยะพยักหน้าและอธิบายว่าเป็นภาพสด", {
+          sourceTabId: "tab-50",
+          tabTitle: "บทที่ 185 จุดจบของสภา",
+          paragraphKey: "tab50-story-3",
+          paragraphOrder: 3,
+        }),
+        paragraph("จบตอน", {
+          sourceTabId: "tab-50",
+          tabTitle: "บทที่ 185 จุดจบของสภา",
+          paragraphKey: "tab50-end",
+          paragraphOrder: 4,
+        }),
+      ],
+    });
+    expect(
+      result.findings.filter(
+        finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+      )
+    ).toEqual([]);
+  });
+
+  it("still detects a genuine trailing author-note/source-junk section", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เนื้อเรื่องปกติ", {
+          sourceTabId: "tab-tail",
+          paragraphKey: "tail-story",
+          paragraphOrder: 1,
+        }),
+        paragraph("หมายเหตุผู้เขียน", {
+          sourceTabId: "tab-tail",
+          paragraphKey: "tail-note",
+          paragraphOrder: 2,
+        }),
+        paragraph("ขอบคุณสำหรับการติดตาม", {
+          sourceTabId: "tab-tail",
+          paragraphKey: "tail-message",
+          paragraphOrder: 3,
+        }),
+        paragraph("จบตอน", {
+          sourceTabId: "tab-tail",
+          paragraphKey: "tail-end",
+          paragraphOrder: 4,
+        }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3, 4]);
+  });
+
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
     const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
     expect(

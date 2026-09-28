@@ -28,6 +28,29 @@ describe("Workspace Master Intake domain", () => {
     });
   });
 
+  it("ignores supported trailing source/completion suffixes after the numeric range", () => {
+    expect(
+      parseMasterIntakeTitleRange(
+        "เกิดใหม่ในโลกสแลมดังก์ พร้อมระบบเทมเพลตมุราซากิบาระ 286 - 359 ต้นฉบับ"
+      )
+    ).toMatchObject({
+      novelTitle: "เกิดใหม่ในโลกสแลมดังก์ พร้อมระบบเทมเพลตมุราซากิบาระ",
+      episodeNumber: "286-359",
+      rangeStart: 286,
+      rangeEnd: 359,
+    });
+    expect(
+      parseMasterIntakeTitleRange(
+        "เกิดใหม่ในโลก DxD — ทัตสึยะ ผู้ยืนเหนือมังกรและเหล่าเทพ 236 - 293 จบ"
+      )
+    ).toMatchObject({
+      novelTitle: "เกิดใหม่ในโลก DxD - ทัตสึยะ ผู้ยืนเหนือมังกรและเหล่าเทพ",
+      episodeNumber: "236-293",
+      rangeStart: 236,
+      rangeEnd: 293,
+    });
+  });
+
   it("rejects missing, reversed, and title-less ranges", () => {
     expect(parseMasterIntakeTitleRange("ไม่มีช่วงตอน")).toBeNull();
     expect(parseMasterIntakeTitleRange("เรื่อง 050 - 001")).toBeNull();
