@@ -33,11 +33,20 @@ describe("resolveAdminAccessState", () => {
     expect(resolveAdminAccessState({ loading: false, user: { role: "admin" } })).toBe("allowed");
   });
 
-  it("authMeError (truthy) -> 'error', even for an admin user or no user at all", () => {
+  it("authMeError with no cached user -> 'error'", () => {
     const error = new Error("database unavailable");
     expect(resolveAdminAccessState({ loading: false, user: null, authMeError: error })).toBe("error");
-    expect(resolveAdminAccessState({ loading: false, user: { role: "admin" }, authMeError: error })).toBe("error");
-    expect(resolveAdminAccessState({ loading: false, user: { role: "user" }, authMeError: error })).toBe("error");
+    expect(resolveAdminAccessState({ loading: false, user: undefined, authMeError: error })).toBe("error");
+  });
+
+  it("a cached server-verified admin remains allowed during a transient auth.me refetch error", () => {
+    const error = new Error("database unavailable");
+    expect(resolveAdminAccessState({ loading: false, user: { role: "admin" }, authMeError: error })).toBe("allowed");
+  });
+
+  it("a cached non-admin remains forbidden during a transient auth.me refetch error", () => {
+    const error = new Error("database unavailable");
+    expect(resolveAdminAccessState({ loading: false, user: { role: "user" }, authMeError: error })).toBe("forbidden");
   });
 
   it("authMeError does not override 'loading' - loading takes priority", () => {

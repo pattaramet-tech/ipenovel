@@ -35,8 +35,17 @@ export function resolveAdminAccessState({
   authMeError,
 }: ResolveAdminAccessStateParams): AdminAccessState {
   if (loading) return "loading";
+
+  // React Query deliberately keeps the last successful auth.me data when a
+  // later background refetch fails. Prefer that already server-verified,
+  // in-memory identity over a transient refresh error: otherwise one brief
+  // network/DB hiccup blanks the entire Admin UI even though every admin API
+  // still independently enforces the current server-side session and role.
+  // A genuinely expired/invalid session is different - createContext resolves
+  // that as user=null (not as a query error), so it still becomes
+  // "unauthenticated" below and redirects normally.
+  if (user) return user.role === "admin" ? "allowed" : "forbidden";
+
   if (authMeError) return "error";
-  if (!user) return "unauthenticated";
-  if (user.role !== "admin") return "forbidden";
-  return "allowed";
+  return "unauthenticated";
 }

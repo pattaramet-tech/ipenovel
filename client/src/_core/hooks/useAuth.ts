@@ -14,8 +14,20 @@ export function useAuth(options?: UseAuthOptions) {
   const utils = trpc.useUtils();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
-    retry: false,
-    refetchOnWindowFocus: false,
+    // auth.me is a read-only identity probe. Expected anonymous/expired
+    // credentials resolve to null server-side, so a thrown query error here
+    // represents an infrastructure/transport failure rather than "not
+    // logged in". Retry a small, bounded number of times so a cold DB,
+    // deployment handoff, or brief network hiccup does not strand /admin on
+    // the session-error screen after a single failed request.
+    retry: 2,
+    retryDelay: attemptIndex => Math.min(500 * 2 ** attemptIndex, 2_000),
+    // If a terminal transient failure does occur, returning to the tab or
+    // regaining connectivity revalidates automatically; visiting Home first
+    // is no longer required to kick auth.me back into life.
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    retryOnMount: true,
   });
 
   const logoutMutation = trpc.auth.logout.useMutation({
