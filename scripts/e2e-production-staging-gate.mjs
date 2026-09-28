@@ -209,7 +209,7 @@ async function main() {
   await waitForStableStaging();
 
   const assetGraph = await verifyFrontendAssetGraph({
-    baseUrl,
+    baseUrl: baseURL,
     label: "production-staging",
   });
   console.log(
