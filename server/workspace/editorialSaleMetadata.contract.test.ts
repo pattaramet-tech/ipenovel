@@ -77,15 +77,18 @@ describe("M12D.7 sale metadata contract", () => {
   it("propagates sale metadata from work item through Episode and stage", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
     expect(service).toContain("saleMode = context.workItem.saleMode");
-    expect(service).toContain("stageContract: EDITORIAL_EPISODE_STAGE_CONTRACT_V2");
+    expect(service).toContain("stageContract,");
+    expect(service).toContain("EDITORIAL_EPISODE_STAGE_CONTRACT_V2");
+    expect(service).toContain("EDITORIAL_EPISODE_STAGE_CONTRACT_V3");
     expect(service).toMatch(/saleMode,\s*price,\s*isFree,\s*contentSha256/);
   });
 
-  it("replays an existing stage only against its own v1 or v2 contract", () => {
+  it("replays an existing stage only against its own v1, v2, or replacement v3 contract", () => {
     const service = source("server/workspace/editorialApproval.service.ts");
     expect(service).toContain("expectedPayloadSha256");
     expect(service).toContain("legacyPayloadSha256");
     expect(service).toContain("existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2");
+    expect(service).toContain("existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3");
   });
 
   it("restages only an owned unpublished Episode and writes current sale metadata", () => {

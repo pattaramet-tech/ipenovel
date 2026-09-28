@@ -4,8 +4,10 @@ import {
   buildEditorialEpisodeDraftPlan,
   buildEditorialEpisodePackPlan,
   editorialApprovalPayloadSha256,
+  editorialEpisodeReplacementTargetStateSha256,
   editorialEpisodeStagePayloadSha256,
   editorialEpisodeStagePayloadSha256V2,
+  editorialEpisodeStagePayloadSha256V3,
   editorialEpisodeStateSha256,
   editorialEpisodeStateSha256V2,
   editorialQcEvidenceSha256,
@@ -620,6 +622,20 @@ describe("Editorial approval/staging domain", () => {
     expect(editorialEpisodeStagePayloadSha256V2({ ...base, price: "11.00" })).not.toBe(hash);
     expect(editorialEpisodeStagePayloadSha256V2({ ...base, saleMode: "package" })).not.toBe(hash);
     expect(editorialEpisodeStagePayloadSha256V2({ ...base, isFree: true })).not.toBe(hash);
+  });
+
+  it("binds replacement target state to live content and legacy file pointers", () => {
+    const base = { novelId: 6, episodeNumber: "10", title: "Published", content: "old body", contentFormat: "plain_text", wordCount: 2, isPublished: true, saleMode: "package" as const, price: "10.00", isFree: false, fileUrl: "legacy://old", fileSize: 123, fileMimeType: "text/plain" };
+    const hash = editorialEpisodeReplacementTargetStateSha256(base);
+    expect(editorialEpisodeReplacementTargetStateSha256({ ...base, content: "changed" })).not.toBe(hash);
+    expect(editorialEpisodeReplacementTargetStateSha256({ ...base, fileUrl: "legacy://changed" })).not.toBe(hash);
+  });
+
+  it("binds v3 replacement stage payload to the exact pre-publish target state", () => {
+    const plan = buildEditorialEpisodeDraftPlan(input());
+    const base = { workItemId: 1, approvalId: 2, draftId: 3, draftSha256: "d".repeat(64), qcEvidenceSha256: "a".repeat(64), novelId: 4, plan, saleMode: "package" as const, price: "10.00", isFree: false, replacementTargetStateSha256: "b".repeat(64) };
+    const hash = editorialEpisodeStagePayloadSha256V3(base);
+    expect(editorialEpisodeStagePayloadSha256V3({ ...base, replacementTargetStateSha256: "c".repeat(64) })).not.toBe(hash);
   });
 });
 

@@ -28,8 +28,11 @@ import {
   EditorialApprovalDomainError,
   EDITORIAL_EPISODE_STAGE_CONTRACT,
   EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
+  EDITORIAL_EPISODE_STAGE_CONTRACT_V3,
+  editorialEpisodeReplacementTargetStateSha256,
   editorialEpisodeStagePayloadSha256,
   editorialEpisodeStagePayloadSha256V2,
+  editorialEpisodeStagePayloadSha256V3,
   editorialEpisodeStateSha256,
   editorialEpisodeStateSha256V2,
   editorialQcEvidenceSha256,
@@ -524,11 +527,18 @@ function currentStageBatchStatus(input: {
     if (!episode) {
       return { valid: false, reason: "EPISODE_MISSING" as const };
     }
-    if (episode.isPublished) {
-      return { valid: false, reason: "EPISODE_PUBLISHED" as const };
+    const replacementStage =
+      stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3;
+    if (replacementStage ? !episode.isPublished : episode.isPublished) {
+      return {
+        valid: false,
+        reason: replacementStage
+          ? ("EPISODE_DRIFTED" as const)
+          : ("EPISODE_PUBLISHED" as const),
+      };
     }
-    const currentState = stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
-      ? editorialEpisodeStateSha256V2({
+    const currentState = replacementStage
+      ? editorialEpisodeReplacementTargetStateSha256({
           novelId: episode.novelId,
           episodeNumber: episode.episodeNumber,
           title: episode.title,
@@ -539,16 +549,32 @@ function currentStageBatchStatus(input: {
           saleMode: episode.saleMode,
           price: episode.price,
           isFree: episode.isFree,
+          fileUrl: episode.fileUrl,
+          fileSize: episode.fileSize,
+          fileMimeType: episode.fileMimeType,
         })
-      : editorialEpisodeStateSha256({
-          novelId: episode.novelId,
-          episodeNumber: episode.episodeNumber,
-          title: episode.title,
-          content: episode.content,
-          contentFormat: episode.contentFormat,
-          wordCount: episode.wordCount,
-          isPublished: episode.isPublished,
-        });
+      : stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+        ? editorialEpisodeStateSha256V2({
+            novelId: episode.novelId,
+            episodeNumber: episode.episodeNumber,
+            title: episode.title,
+            content: episode.content,
+            contentFormat: episode.contentFormat,
+            wordCount: episode.wordCount,
+            isPublished: episode.isPublished,
+            saleMode: episode.saleMode,
+            price: episode.price,
+            isFree: episode.isFree,
+          })
+        : editorialEpisodeStateSha256({
+            novelId: episode.novelId,
+            episodeNumber: episode.episodeNumber,
+            title: episode.title,
+            content: episode.content,
+            contentFormat: episode.contentFormat,
+            wordCount: episode.wordCount,
+            isPublished: episode.isPublished,
+          });
     if (
       currentState !== stage.episodeStateSha256 ||
       stage.contentSha256 !== plan.contentSha256 ||
@@ -992,12 +1018,26 @@ export async function stageEditorialEpisodeDraft(input: {
 
       if (existingStage) {
         const expectedPayloadSha256 =
-          existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
-            ? payloadSha256
-            : existingStage.stageContract === null ||
-                existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT
-              ? legacyPayloadSha256
-              : null;
+          existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3
+            ? editorialEpisodeStagePayloadSha256V3({
+                workItemId: input.workItemId,
+                approvalId: approval.id,
+                draftId: draft.id,
+                draftSha256: draft.draftSha256,
+                qcEvidenceSha256: qc.qcEvidenceSha256,
+                novelId,
+                plan,
+                saleMode,
+                price,
+                isFree,
+                replacementTargetStateSha256: existingStage.episodeStateSha256,
+              })
+            : existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+              ? payloadSha256
+              : existingStage.stageContract === null ||
+                  existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT
+                ? legacyPayloadSha256
+                : null;
         if (
           expectedPayloadSha256 === null ||
           existingStage.payloadSha256 !== expectedPayloadSha256 ||
@@ -1022,8 +1062,10 @@ export async function stageEditorialEpisodeDraft(input: {
             `Previously staged Episode ${plan.episodeNumber} no longer exists.`
           );
         }
-        const currentState = existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
-          ? editorialEpisodeStateSha256V2({
+        const replacementStage =
+          existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3;
+        const currentState = replacementStage
+          ? editorialEpisodeReplacementTargetStateSha256({
               novelId: episode.novelId,
               episodeNumber: episode.episodeNumber,
               title: episode.title,
@@ -1034,23 +1076,39 @@ export async function stageEditorialEpisodeDraft(input: {
               saleMode: episode.saleMode,
               price: episode.price,
               isFree: episode.isFree,
+              fileUrl: episode.fileUrl,
+              fileSize: episode.fileSize,
+              fileMimeType: episode.fileMimeType,
             })
-          : editorialEpisodeStateSha256({
-              novelId: episode.novelId,
-              episodeNumber: episode.episodeNumber,
-              title: episode.title,
-              content: episode.content,
-              contentFormat: episode.contentFormat,
-              wordCount: episode.wordCount,
-              isPublished: episode.isPublished,
-            });
+          : existingStage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+            ? editorialEpisodeStateSha256V2({
+                novelId: episode.novelId,
+                episodeNumber: episode.episodeNumber,
+                title: episode.title,
+                content: episode.content,
+                contentFormat: episode.contentFormat,
+                wordCount: episode.wordCount,
+                isPublished: episode.isPublished,
+                saleMode: episode.saleMode,
+                price: episode.price,
+                isFree: episode.isFree,
+              })
+            : editorialEpisodeStateSha256({
+                novelId: episode.novelId,
+                episodeNumber: episode.episodeNumber,
+                title: episode.title,
+                content: episode.content,
+                contentFormat: episode.contentFormat,
+                wordCount: episode.wordCount,
+                isPublished: episode.isPublished,
+              });
         if (
-          episode.isPublished ||
+          (replacementStage ? !episode.isPublished : episode.isPublished) ||
           currentState !== existingStage.episodeStateSha256 ||
           existingStage.contentSha256 !== plan.contentSha256
         ) {
           throw new WorkspaceEditorialApprovalError(
-            episode.isPublished ? "EPISODE_PUBLISHED" : "EPISODE_CONFLICT",
+            "EPISODE_CONFLICT",
             `Previously staged Episode ${plan.episodeNumber} is no longer safe to replay.`
           );
         }
@@ -1071,6 +1129,9 @@ export async function stageEditorialEpisodeDraft(input: {
         .for("update");
 
       let episodeId: number;
+      let stageContract: string = EDITORIAL_EPISODE_STAGE_CONTRACT_V2;
+      let stagePayloadSha256 = payloadSha256;
+      let stagedEpisodeStateSha256: string | null = null;
       if (!existingEpisode) {
         try {
           episodeId = insertId(
@@ -1099,11 +1160,39 @@ export async function stageEditorialEpisodeDraft(input: {
         }
       } else {
         if (existingEpisode.isPublished) {
-          throw new WorkspaceEditorialApprovalError(
-            "EPISODE_PUBLISHED",
-            `Published Episode ${plan.episodeNumber} already exists.`
-          );
-        }
+          // Preserve the live Episode row and stable id until Controlled Publish.
+          episodeId = existingEpisode.id;
+          stageContract = EDITORIAL_EPISODE_STAGE_CONTRACT_V3;
+          stagedEpisodeStateSha256 =
+            editorialEpisodeReplacementTargetStateSha256({
+              novelId: existingEpisode.novelId,
+              episodeNumber: existingEpisode.episodeNumber,
+              title: existingEpisode.title,
+              content: existingEpisode.content,
+              contentFormat: existingEpisode.contentFormat,
+              wordCount: existingEpisode.wordCount,
+              isPublished: existingEpisode.isPublished,
+              saleMode: existingEpisode.saleMode,
+              price: existingEpisode.price,
+              isFree: existingEpisode.isFree,
+              fileUrl: existingEpisode.fileUrl,
+              fileSize: existingEpisode.fileSize,
+              fileMimeType: existingEpisode.fileMimeType,
+            });
+          stagePayloadSha256 = editorialEpisodeStagePayloadSha256V3({
+            workItemId: input.workItemId,
+            approvalId: approval.id,
+            draftId: draft.id,
+            draftSha256: draft.draftSha256,
+            qcEvidenceSha256: qc.qcEvidenceSha256,
+            novelId,
+            plan,
+            saleMode,
+            price,
+            isFree,
+            replacementTargetStateSha256: stagedEpisodeStateSha256,
+          });
+        } else {
         const [previousStage] = await tx
           .select()
           .from(workspaceEditorialEpisodeStages)
@@ -1180,6 +1269,7 @@ export async function stageEditorialEpisodeDraft(input: {
           );
         }
         episodeId = existingEpisode.id;
+        }
       }
 
       const [episode] = await tx
@@ -1187,24 +1277,34 @@ export async function stageEditorialEpisodeDraft(input: {
         .from(episodes)
         .where(eq(episodes.id, episodeId))
         .limit(1);
-      if (!episode || episode.novelId !== novelId || episode.isPublished) {
+      const replacementStage =
+        stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3;
+      if (
+        !episode ||
+        episode.novelId !== novelId ||
+        (replacementStage ? !episode.isPublished : episode.isPublished)
+      ) {
         throw new WorkspaceEditorialApprovalError(
           "EPISODE_CONFLICT",
-          `Staged Episode ${plan.episodeNumber} could not be verified as unpublished.`
+          replacementStage
+            ? `Replacement target Episode ${plan.episodeNumber} is no longer published/current.`
+            : `Staged Episode ${plan.episodeNumber} could not be verified as unpublished.`
         );
       }
-      const episodeStateSha256 = editorialEpisodeStateSha256V2({
-        novelId: episode.novelId,
-        episodeNumber: episode.episodeNumber,
-        title: episode.title,
-        content: episode.content,
-        contentFormat: episode.contentFormat,
-        wordCount: episode.wordCount,
-        isPublished: episode.isPublished,
-        saleMode: episode.saleMode,
-        price: episode.price,
-        isFree: episode.isFree,
-      });
+      if (!stagedEpisodeStateSha256) {
+        stagedEpisodeStateSha256 = editorialEpisodeStateSha256V2({
+          novelId: episode.novelId,
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          content: episode.content,
+          contentFormat: episode.contentFormat,
+          wordCount: episode.wordCount,
+          isPublished: episode.isPublished,
+          saleMode: episode.saleMode,
+          price: episode.price,
+          isFree: episode.isFree,
+        });
+      }
 
       const stageId = insertId(
         await tx.insert(workspaceEditorialEpisodeStages).values({
@@ -1217,13 +1317,13 @@ export async function stageEditorialEpisodeDraft(input: {
           novelId,
           episodeNumber: plan.episodeNumber,
           episodeTitle: plan.title,
-          stageContract: EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
+          stageContract,
           saleMode,
           price,
           isFree,
           contentSha256: plan.contentSha256,
-          episodeStateSha256,
-          payloadSha256,
+          episodeStateSha256: stagedEpisodeStateSha256,
+          payloadSha256: stagePayloadSha256,
           idempotencyKey: itemIdempotencyKey,
           stagedByUserId: input.actorUserId,
         })
