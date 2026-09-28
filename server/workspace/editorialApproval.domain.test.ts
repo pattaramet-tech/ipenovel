@@ -307,6 +307,97 @@ describe("Editorial approval/staging domain", () => {
     ]);
   });
 
+  it("excludes source-note tabs by their current first line even when stale chapter metadata still carries Episode numbers", () => {
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "246-247",
+      episodeTitle: null,
+      tabs: [
+        {
+          sourceTabId: "source-note-11",
+          tabOrder: 0,
+          title: "แท็บ 11",
+          chapterNumber: "246",
+          chapterTitle: "ประกาศจากต้นฉบับ",
+          paragraphs: [{ paragraphOrder: 0, text: "หมายเหตุจากต้นฉบับ" }],
+        },
+        {
+          sourceTabId: "tab-246",
+          tabOrder: 1,
+          title: "แท็บ 12",
+          chapterNumber: "246",
+          chapterTitle: "ชื่อบท 246",
+          paragraphs: [
+            { paragraphOrder: 0, text: "บทที่ 246 ชื่อบท 246" },
+            { paragraphOrder: 1, text: `เนื้อหา ${"ฉ".repeat(500)}` },
+          ],
+        },
+        {
+          sourceTabId: "source-note-42",
+          tabOrder: 2,
+          title: "แท็บ 42",
+          chapterNumber: "247",
+          chapterTitle: "ประกาศจากต้นฉบับ",
+          paragraphs: [{ paragraphOrder: 0, text: "ประกาศจากต้นฉบับ" }],
+        },
+        {
+          sourceTabId: "tab-247",
+          tabOrder: 3,
+          title: "แท็บ 43",
+          chapterNumber: "247",
+          chapterTitle: "ชื่อบท 247",
+          paragraphs: [
+            { paragraphOrder: 0, text: "บทที่ 247 ชื่อบท 247" },
+            { paragraphOrder: 1, text: `เนื้อหา ${"ช".repeat(500)}` },
+          ],
+        },
+      ],
+    });
+    expect(batch.ready).toBe(true);
+    expect(batch.items.map(item => item.episodeNumber)).toEqual(["246", "247"]);
+    expect(batch.excludedTabs).toEqual([
+      expect.objectContaining({
+        sourceTabId: "source-note-11",
+        label: "หมายเหตุจากต้นฉบับ",
+      }),
+      expect.objectContaining({
+        sourceTabId: "source-note-42",
+        label: "ประกาศจากต้นฉบับ",
+      }),
+    ]);
+    expect(batch.blockers).toEqual([]);
+  });
+
+  it("does not silently exclude a genuine numbered Episode heading that contains a source-note phrase", () => {
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "246-246",
+      episodeTitle: null,
+      tabs: [
+        {
+          sourceTabId: "numbered-announcement",
+          tabOrder: 0,
+          title: "แท็บ 11",
+          chapterNumber: "246",
+          chapterTitle: "ประกาศจากต้นฉบับ",
+          paragraphs: [
+            { paragraphOrder: 0, text: "บทที่ 246 ประกาศจากต้นฉบับ" },
+          ],
+        },
+      ],
+    });
+    expect(batch.ready).toBe(false);
+    expect(batch.excludedTabs).toEqual([]);
+    expect(batch.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "TAB_CONTENT_INVALID",
+          sourceTabId: "numbered-announcement",
+        }),
+      ])
+    );
+  });
+
   it("fails closed for an unknown unnumbered tab even when the Episode range itself is complete", () => {
     const batch = analyzeEditorialEpisodeDraftBatch({
       workItemType: "new_episode",
