@@ -1,8 +1,8 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
  getPaymentById: vi.fn(), getOrderById: vi.fn(), updatePayment: vi.fn(),
- getWalletTopupById: vi.fn(), updateWalletTopupProviderVerification: vi.fn(),
- getReceiverCondition: vi.fn(), resolveStoredFileValue: vi.fn(),
+ getWalletTopupById: vi.fn(), updateWalletTopupProviderVerification: vi.fn(), getUserById: vi.fn(),
+ getReceiverCondition: vi.fn(), resolveStoredFileValue: vi.fn(), sendSlipVerificationFailureNotification: vi.fn(),
 }));
 vi.mock("./db", () => mocks);
 // Transport contract suite isolates the separately tested approval transaction.
@@ -15,6 +15,9 @@ vi.mock("./payments/providerAutoApproval", () => ({
 }));
 vi.mock("./payments/receiverSettings", () => mocks);
 vi.mock("./services/r2PrivateStorage", () => mocks);
+vi.mock("./services/discordNotificationService", () => ({
+ sendSlipVerificationFailureNotification: mocks.sendSlipVerificationFailureNotification,
+}));
 import { verifyOrderPaymentWithProvider, verifyWalletTopupWithProvider, __test } from "./services/paymentProviderVerificationService";
 const raw = () => ({ code: "200200", data: { referenceId: "synthetic-provider-1", transRef: "synthetic-bank-1",
  amount: 100, dateTime: "2026-09-07T17:53:12+07:00", ref1: "KB000000000001",
@@ -24,8 +27,9 @@ beforeEach(() => {
  vi.resetAllMocks();
  vi.stubEnv("SLIP2GO_SECRET_KEY", "test-secret-only");
  mocks.getPaymentById.mockResolvedValue({ id: 1, orderId: 2, slipImageUrl: "stored-fixture" });
- mocks.getOrderById.mockResolvedValue({ id: 2, totalAmount: "100.00" });
- mocks.getWalletTopupById.mockResolvedValue({ id: 3, slipImageUrl: "stored-fixture", requestedAmount: "100.00" });
+ mocks.getOrderById.mockResolvedValue({ id: 2, userId: 42, totalAmount: "100.00" });
+ mocks.getWalletTopupById.mockResolvedValue({ id: 3, userId: 42, slipImageUrl: "stored-fixture", requestedAmount: "100.00" });
+ mocks.getUserById.mockResolvedValue({ id: 42, name: "Synthetic User", email: "synthetic@example.test" });
  mocks.resolveStoredFileValue.mockResolvedValue("https://example.test/slip.png");
  mocks.getReceiverCondition.mockResolvedValue({ accountType: "03000", accountNumber: "KB000000000001" });
  network = vi.fn().mockResolvedValueOnce(new Response(new Uint8Array([137,80,78,71,13,10,26,10])))
@@ -47,12 +51,26 @@ describe("KSHOP provider request and diagnostics", () => {
   expect(writes.mock.calls[0][1].extractedData).toContain('"httpStatus":200');
   expect(writes.mock.calls[0][1]).not.toHaveProperty("approvedAt");
   if (kind === "order") expect(writes.mock.calls[0][1].status).toBe("pending_review");
+  expect(mocks.sendSlipVerificationFailureNotification).not.toHaveBeenCalled();
  });
  it("keeps missing receiver review-required even for valid provider result", async () => {
   mocks.getReceiverCondition.mockResolvedValue(undefined);
   const r = await verifyOrderPaymentWithProvider(1);
   expect(r).toMatchObject({ outcome: "REVIEW_REQUIRED", recipientCheckApplied: false, reason: "RECEIVER_CHECK_NOT_APPLIED" });
   expect(JSON.parse(network.mock.calls[1][1].body.get("payload"))).not.toHaveProperty("checkReceiver");
+  expect(mocks.sendSlipVerificationFailureNotification).toHaveBeenCalledWith(expect.objectContaining({
+   type: "payment", id: 1, userId: 42, outcome: "REVIEW_REQUIRED", reason: "RECEIVER_CHECK_NOT_APPLIED", expectedAmount: 100,
+  }));
+ });
+ it("still sends the review alert when optional user enrichment fails", async () => {
+  mocks.getReceiverCondition.mockResolvedValue(undefined);
+  mocks.getUserById.mockRejectedValue(new Error("profile lookup unavailable"));
+  const r = await verifyOrderPaymentWithProvider(1);
+  expect(r).toMatchObject({ outcome: "REVIEW_REQUIRED", reason: "RECEIVER_CHECK_NOT_APPLIED" });
+  expect(mocks.sendSlipVerificationFailureNotification).toHaveBeenCalledWith(expect.objectContaining({
+   type: "payment", id: 1, userId: 42, userName: undefined, userEmail: undefined,
+   outcome: "REVIEW_REQUIRED", reason: "RECEIVER_CHECK_NOT_APPLIED", expectedAmount: 100,
+  }));
  });
  it("rejects invalid receiver configuration before the paid API call", async () => {
   mocks.getReceiverCondition.mockRejectedValue(Error("INVALID_PROVIDER_RECEIVER_SETTINGS"));
@@ -97,6 +115,9 @@ describe("KSHOP provider request and diagnostics", () => {
  it("records timeout without approving", async () => {
   network.mockReset().mockRejectedValue(new DOMException("private URL", "TimeoutError"));
   expect(await verifyWalletTopupWithProvider(3)).toMatchObject({ outcome: "ERROR", reason: "PROVIDER_TIMEOUT" });
+  expect(mocks.sendSlipVerificationFailureNotification).toHaveBeenCalledWith(expect.objectContaining({
+   type: "wallet_topup", id: 3, userId: 42, outcome: "ERROR", reason: "PROVIDER_TIMEOUT", expectedAmount: 100,
+  }));
  });
  it.each(["{}", "{bad", '{"code":"200200","data":{"amount":100,"dateTime":"invalid"}}'])("fails closed for malformed data %s", async text => {
   network.mockReset().mockResolvedValueOnce(new Response(new Uint8Array([137,80,78,71,13,10,26,10])))

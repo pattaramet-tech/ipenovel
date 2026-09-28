@@ -2,6 +2,7 @@ import * as db from "../db";
 import { persistAndAutoApprove } from "../payments/providerAutoApproval";
 import { getReceiverCondition } from "../payments/receiverSettings";
 import { resolveStoredFileValue } from "./r2PrivateStorage";
+import { sendSlipVerificationFailureNotification } from "./discordNotificationService";
 
 const SLIP2GO_ORIGIN = "https://connect.slip2go.com";
 const MAX_SLIP_BYTES = 10 * 1024 * 1024;
@@ -208,22 +209,96 @@ function diagnosticReason(error: unknown): string {
   return "PROVIDER_REQUEST_FAILED";
 }
 
+const NON_ACTIONABLE_PROVIDER_FAILURE_REASONS = new Set([
+  "ALREADY_PROCESSED",
+  "ORDER_ALREADY_PROCESSED",
+  "SUBMISSION_CHANGED",
+]);
+
+async function notifyProviderVerificationFailure(input: {
+  type: "payment" | "wallet_topup";
+  id: number;
+  userId?: number | null;
+  expectedAmount: string;
+  result: PaymentProviderVerificationResult;
+}): Promise<void> {
+  if (input.result.outcome === "VERIFIED") return;
+  if (input.result.approvalReason && NON_ACTIONABLE_PROVIDER_FAILURE_REASONS.has(input.result.approvalReason)) return;
+
+  // User identity is optional enrichment only. A failed profile lookup must
+  // never suppress the operational alert that tells admins a verification
+  // requires review or failed outright.
+  let user: Awaited<ReturnType<typeof db.getUserById>> | undefined;
+  if (input.userId) {
+    try {
+      user = await db.getUserById(input.userId);
+    } catch (error) {
+      console.warn("[Slip Verify] Discord user enrichment failed", {
+        type: input.type,
+        id: input.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  try {
+    await sendSlipVerificationFailureNotification({
+      type: input.type,
+      id: input.id,
+      userId: input.userId ?? undefined,
+      userName: user?.name || undefined,
+      userEmail: user?.email || undefined,
+      expectedAmount: Number(input.expectedAmount),
+      providerAmount: input.result.amount,
+      outcome: input.result.outcome,
+      reason: input.result.reason,
+      providerCode: input.result.code,
+      httpStatus: input.result.httpStatus,
+    });
+  } catch (error) {
+    // Alerting must never change verification or financial behavior.
+    console.warn("[Slip Verify] Discord notification failed", {
+      type: input.type,
+      id: input.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function verifyOrderPaymentWithProvider(paymentId: number): Promise<PaymentProviderVerificationResult> {
   const payment = await db.getPaymentById(paymentId);
   if (!payment) throw new Error("PAYMENT_NOT_FOUND");
   if (!payment.slipImageUrl) throw new Error("PAYMENT_SLIP_REQUIRED");
   const order = await db.getOrderById(payment.orderId);
   if (!order) throw new Error("ORDER_NOT_FOUND");
-  const result = await verifyStoredSlip(payment.slipImageUrl, String(order.totalAmount));
-  return persistAndAutoApprove("order", payment, result);
+  const expectedAmount = String(order.totalAmount);
+  const result = await verifyStoredSlip(payment.slipImageUrl, expectedAmount);
+  const persistedResult = await persistAndAutoApprove("order", payment, result);
+  await notifyProviderVerificationFailure({
+    type: "payment",
+    id: payment.id,
+    userId: order.userId,
+    expectedAmount,
+    result: persistedResult,
+  });
+  return persistedResult;
 }
 
 export async function verifyWalletTopupWithProvider(topupId: number): Promise<PaymentProviderVerificationResult> {
   const topup = await db.getWalletTopupById(topupId);
   if (!topup) throw new Error("TOPUP_NOT_FOUND");
   if (!topup.slipImageUrl) throw new Error("PAYMENT_SLIP_REQUIRED");
-  const result = await verifyStoredSlip(topup.slipImageUrl, String(topup.requestedAmount));
-  return persistAndAutoApprove("wallet", topup, result);
+  const expectedAmount = String(topup.requestedAmount);
+  const result = await verifyStoredSlip(topup.slipImageUrl, expectedAmount);
+  const persistedResult = await persistAndAutoApprove("wallet", topup, result);
+  await notifyProviderVerificationFailure({
+    type: "wallet_topup",
+    id: topup.id,
+    userId: topup.userId,
+    expectedAmount,
+    result: persistedResult,
+  });
+  return persistedResult;
 }
 
 export const __test = { normalizeMoney, normalizeSlip2GoResponse, detectImage };
