@@ -670,17 +670,95 @@ export async function createEditorialEpisodeWorkItem(input: {
       )
       .limit(1);
     if (existingWorkItem) {
+      const existingSalePending =
+        existingWorkItem.saleMode === null &&
+        existingWorkItem.price === null &&
+        existingWorkItem.isFree === null;
       if (
         (existingWorkItem.episodeTitle ?? null) !== episodeTitle ||
-        (existingWorkItem.saleMode ?? null) !== (sale?.saleMode ?? null) ||
-        (existingWorkItem.price ?? null) !== (sale?.price ?? null) ||
-        (existingWorkItem.isFree ?? null) !== (sale?.isFree ?? null) ||
+        (!existingSalePending &&
+          ((existingWorkItem.saleMode ?? null) !== (sale?.saleMode ?? null) ||
+            (existingWorkItem.price ?? null) !== (sale?.price ?? null) ||
+            (existingWorkItem.isFree ?? null) !== (sale?.isFree ?? null))) ||
         (existingWorkItem.assigneeUserId ?? null) !==
           (input.assigneeUserId ?? null)
       ) {
         throw new WorkspaceEditorialBoardError(
           "EDITORIAL_WORK_ITEM_CONFLICT",
           "This episode identity already exists with different intake metadata."
+        );
+      }
+      if (existingSalePending && sale) {
+        await tx
+          .update(workspaceEditorialWorkItems)
+          .set({
+            saleMode: sale.saleMode,
+            price: sale.price,
+            isFree: sale.isFree,
+            version: sql`${workspaceEditorialWorkItems.version} + 1`,
+          })
+          .where(eq(workspaceEditorialWorkItems.id, existingWorkItem.id));
+      }
+      const [existingCard] = await tx
+        .select()
+        .from(workspaceKanbanCards)
+        .where(eq(workspaceKanbanCards.id, existingWorkItem.cardId))
+        .limit(1);
+      if (!existingCard) {
+        throw new WorkspaceEditorialBoardError(
+          "EDITORIAL_BOARD_CONFLICT",
+          "Existing Episode Pack card could not be resolved."
+        );
+      }
+      if (existingCard.status === "archived") {
+        if (existingCard.columnId !== newColumn.id) {
+          throw new WorkspaceEditorialBoardError(
+            "EDITORIAL_WORK_ITEM_CONFLICT",
+            "Archived Episode Pack can only be restored from the New column."
+          );
+        }
+        const [source] = await tx
+          .select({ id: workspaceEditorialSources.id })
+          .from(workspaceEditorialSources)
+          .where(
+            and(
+              eq(workspaceEditorialSources.workItemId, existingWorkItem.id),
+              eq(workspaceEditorialSources.status, "active")
+            )
+          )
+          .limit(1);
+        if (source) {
+          throw new WorkspaceEditorialBoardError(
+            "EDITORIAL_WORK_ITEM_CONFLICT",
+            "Archived Episode Pack already has source evidence and cannot be restored by intake."
+          );
+        }
+        await tx
+          .update(workspaceKanbanCards)
+          .set({
+            status: "active",
+            columnId: newColumn.id,
+            version: sql`${workspaceKanbanCards.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(workspaceKanbanCards.id, existingCard.id));
+        await tx
+          .insert(workspaceKanbanTransitions)
+          .values({
+            cardId: existingCard.id,
+            fromColumnId: existingCard.columnId,
+            toColumnId: newColumn.id,
+            actorUserId: input.actorUserId,
+            reason: "editorial_episode_restore",
+            idempotencyKey: `editorial-restore-${existingCard.version}`,
+          })
+          .onDuplicateKeyUpdate({
+            set: { id: sql`LAST_INSERT_ID(${workspaceKanbanTransitions.id})` },
+          });
+      } else if (existingCard.status !== "active") {
+        throw new WorkspaceEditorialBoardError(
+          "EDITORIAL_WORK_ITEM_CONFLICT",
+          "Existing Episode Pack is not restorable from its current state."
         );
       }
       return;

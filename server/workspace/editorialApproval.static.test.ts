@@ -105,6 +105,15 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(service).toContain('"CHECKER_STALE"');
   });
 
+  it("threads confirmed source-note state through read/stage and publish reconstruction", () => {
+    const service = source("server/workspace/editorialApproval.service.ts");
+    const provider = source("server/workspace/ipenovelPublish.provider.ts");
+    expect(service).toContain("sourceTabId: anomaly.sourceTabId ?? null");
+    expect(service).toContain("confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc)");
+    expect(provider).toContain("workspaceEditorialStructuralConfirmations");
+    expect(provider).toContain("confirmedSourceNoteTabIds: confirmedSourceNotes");
+  });
+
   it("stages only a NEW_EPISODE and never makes it reader-visible", () => {
     const domain = source("server/workspace/editorialApproval.domain.ts");
     const service = source("server/workspace/editorialApproval.service.ts");

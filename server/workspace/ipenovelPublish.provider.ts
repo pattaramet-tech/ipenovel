@@ -6,6 +6,7 @@ import {
   workspaceEditorialDraftParagraphs,
   workspaceEditorialDraftTabs,
   workspaceEditorialEpisodeStages,
+  workspaceEditorialStructuralConfirmations,
   workspaceEditorialWorkItems,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -126,10 +127,24 @@ async function loadEditorialReplacementPlan(tx: any, stage: any) {
     });
   }
 
+  const confirmedSourceNotes = await tx
+    .select({ sourceTabId: workspaceEditorialStructuralConfirmations.sourceTabId })
+    .from(workspaceEditorialStructuralConfirmations)
+    .where(
+      and(
+        eq(workspaceEditorialStructuralConfirmations.workItemId, stage.workItemId),
+        eq(workspaceEditorialStructuralConfirmations.draftId, stage.draftId),
+        eq(workspaceEditorialStructuralConfirmations.anomalyType, "source_note_only"),
+        eq(workspaceEditorialStructuralConfirmations.status, "confirmed")
+      )
+    );
   const batchPlan = analyzeEditorialEpisodeDraftBatch({
     workItemType: workItem.workItemType,
     episodeNumber: workItem.episodeNumber,
     episodeTitle: workItem.episodeTitle,
+    confirmedSourceNoteTabIds: confirmedSourceNotes
+      .map((row: any) => row.sourceTabId)
+      .filter((value: any): value is string => Boolean(value)),
     tabs,
   });
   if (!batchPlan.ready) {

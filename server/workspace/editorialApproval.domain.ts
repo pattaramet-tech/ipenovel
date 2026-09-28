@@ -13,6 +13,8 @@ export type EditorialEpisodeDraftInput = {
   workItemType: "new_story" | "new_episode";
   episodeNumber: string | null;
   episodeTitle: string | null;
+  /** Explicitly confirmed structural source-note tabs that may stage as title-only Episodes. */
+  confirmedSourceNoteTabIds?: string[];
   tabs: Array<{
     sourceTabId: string;
     tabOrder: number;
@@ -43,6 +45,7 @@ export type EditorialEpisodePackPlan = EditorialEpisodeDraftPlan & {
   billableTabCount: number;
   excludedTabCount: number;
   price: string;
+  isFree: boolean;
   memberEpisodeNumbers: string[];
 };
 
@@ -156,6 +159,7 @@ export type EditorialEpisodeDraftBatchPlan = {
   mode: "single" | "range";
   requestedEpisodeNumber: string;
   expectedEpisodeNumbers: string[];
+  nonBillableSourceTabIds: string[];
   items: EditorialEpisodeDraftPlan[];
   excludedTabs: EditorialEpisodeDraftExcludedTab[];
   anomalies: EditorialEpisodeDraftBatchAnomaly[];
@@ -184,6 +188,31 @@ export function parseEditorialEpisodeRange(value: string) {
     (_, index) => String(start + index).padStart(width, "0")
   );
   return { start, end, width, episodeNumbers };
+}
+
+export function defaultEditorialEpisodePackSale(
+  episodeNumber: string,
+  billableTabCount: number
+) {
+  const normalized = normalizeEditorialEpisodeNumber(episodeNumber);
+  const range = parseEditorialEpisodeRange(normalized);
+  const firstEpisodeNumber = range?.episodeNumbers[0] ?? normalized;
+  const count = Math.max(0, Math.floor(billableTabCount));
+  const isFree = firstEpisodeNumber === "001" || count === 0;
+  return {
+    saleMode: "package" as const,
+    price: isFree
+      ? "0.00"
+      : (count * EDITORIAL_EPISODE_PACK_PRICE_PER_TAB_BAHT).toFixed(2),
+    isFree,
+  };
+}
+
+export function defaultEditorialEpisodePackSaleFromRange(episodeNumber: string) {
+  const normalized = normalizeEditorialEpisodeNumber(episodeNumber);
+  const range = parseEditorialEpisodeRange(normalized);
+  const count = range?.episodeNumbers.length ?? (normalized ? 1 : 0);
+  return defaultEditorialEpisodePackSale(normalized, count);
 }
 
 function canonicalRangeEpisodeNumber(value: string | null | undefined, width: number) {
@@ -332,6 +361,9 @@ export function analyzeEditorialEpisodeDraftBatch(
         mode: "single",
         requestedEpisodeNumber,
         expectedEpisodeNumbers: [plan.episodeNumber],
+        nonBillableSourceTabIds: (input.confirmedSourceNoteTabIds ?? []).includes(plan.sourceTabId)
+          ? [plan.sourceTabId]
+          : [],
         items: [plan],
         excludedTabs: [],
         anomalies: [],
@@ -359,6 +391,7 @@ export function analyzeEditorialEpisodeDraftBatch(
         expectedEpisodeNumbers: requestedEpisodeNumber
           ? [requestedEpisodeNumber]
           : [],
+        nonBillableSourceTabIds: [],
         items: [],
         excludedTabs: [],
         anomalies: [anomaly],
@@ -371,6 +404,7 @@ export function analyzeEditorialEpisodeDraftBatch(
   const expected = range.episodeNumbers;
   const expectedSet = new Set(expected);
   const tabs = input.tabs.slice().sort((a, b) => a.tabOrder - b.tabOrder);
+  const confirmedSourceNoteTabIds = new Set(input.confirmedSourceNoteTabIds ?? []);
   const anomalies: EditorialEpisodeDraftBatchAnomaly[] = [];
   const excludedTabs: EditorialEpisodeDraftExcludedTab[] = [];
   const detectedRows: Array<{
@@ -502,6 +536,9 @@ export function analyzeEditorialEpisodeDraftBatch(
           workItemType: "new_episode",
           episodeNumber: row.episodeNumber,
           episodeTitle: null,
+          confirmedSourceNoteTabIds: confirmedSourceNoteTabIds.has(row.tab.sourceTabId)
+            ? [row.tab.sourceTabId]
+            : [],
           tabs: [row.tab],
         })
       );
@@ -527,7 +564,10 @@ export function analyzeEditorialEpisodeDraftBatch(
       ? Math.max(120, Math.floor(medianCharacters * 0.25))
       : 80;
   for (const item of items) {
-    if (item.content.length < shortThreshold) {
+    if (
+      !confirmedSourceNoteTabIds.has(item.sourceTabId) &&
+      item.content.length < shortThreshold
+    ) {
       anomalies.push({
         code: "TAB_CONTENT_SHORT",
         severity: "warning",
@@ -557,6 +597,9 @@ export function analyzeEditorialEpisodeDraftBatch(
     mode: "range",
     requestedEpisodeNumber,
     expectedEpisodeNumbers: expected,
+    nonBillableSourceTabIds: items
+      .filter(item => confirmedSourceNoteTabIds.has(item.sourceTabId))
+      .map(item => item.sourceTabId),
     items,
     excludedTabs,
     anomalies,
@@ -585,7 +628,12 @@ export function buildEditorialEpisodePackPlan(
   const content = items
     .map(item => `${item.sourceTitleLine}\n\n${item.content}`.trim())
     .join("\n\n");
-  const billableTabCount = items.length;
+  const nonBillable = new Set(batch.nonBillableSourceTabIds);
+  const billableTabCount = items.filter(item => !nonBillable.has(item.sourceTabId)).length;
+  const defaultSale = defaultEditorialEpisodePackSale(
+    batch.requestedEpisodeNumber,
+    billableTabCount
+  );
   return {
     episodeNumber,
     title: items.length === 1
@@ -598,10 +646,11 @@ export function buildEditorialEpisodePackPlan(
     sourceTabTitle: first.sourceTabTitle,
     sourceTitleLine: first.sourceTitleLine,
     contentSha256: sha256(content),
-    saleMode: "package",
+    saleMode: defaultSale.saleMode,
     billableTabCount,
     excludedTabCount: batch.excludedTabs.length,
-    price: (billableTabCount * EDITORIAL_EPISODE_PACK_PRICE_PER_TAB_BAHT).toFixed(2),
+    price: defaultSale.price,
+    isFree: defaultSale.isFree,
     memberEpisodeNumbers: items.map(item => item.episodeNumber),
   };
 }
@@ -678,7 +727,10 @@ export function buildEditorialEpisodeDraftPlan(
     .map(row => String(row.text || "").trimEnd())
     .join("\n\n")
     .trim();
-  if (!content) {
+  const confirmedSourceNote = (input.confirmedSourceNoteTabIds ?? []).includes(
+    tab.sourceTabId
+  );
+  if (!content && !confirmedSourceNote) {
     throw new EditorialApprovalDomainError(
       "CONTENT_REQUIRED",
       "Episode staging requires content after the first non-empty title line."

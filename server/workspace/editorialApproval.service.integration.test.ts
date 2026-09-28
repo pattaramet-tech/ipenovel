@@ -4,6 +4,7 @@ import {
   episodes,
   novels,
   users,
+  workspaceEditorialWorkItems,
   workspaceKanbanCards,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
@@ -25,7 +26,10 @@ import {
   importEditorialSource,
 } from "./editorialDraft.service";
 import { applyEditorialEditorEdit } from "./editorialEditor.service";
-import { runEditorialForeignChecker } from "./editorialForeignChecker.service";
+import {
+  runEditorialForeignChecker,
+  setEditorialStructuralConfirmation,
+} from "./editorialForeignChecker.service";
 import { bindPublicationNovel, createWorkspace } from "./service";
 import type { EditorialSourcePayload } from "./editorialDraft.domain";
 
@@ -72,6 +76,42 @@ function rangeSource(
         ],
       };
     }),
+  };
+}
+
+function rangeSourceWithConfirmedNote(): EditorialSourcePayload {
+  return {
+    sourceKind: "uploaded_file",
+    sourceKey: "uploaded-file:approval-range-note-fixture",
+    mimeType: "text/plain",
+    title: "episodes-136-138-note.txt",
+    revisionKey: "range-note-r1",
+    tabs: [
+      {
+        sourceTabId: "range-note-136",
+        tabOrder: 0,
+        title: "แท็บ 1",
+        paragraphs: [
+          "บทที่ 136 ชื่อบท 136",
+          `เนื้อหาตอน 136 ${"ก".repeat(500)}`,
+        ],
+      },
+      {
+        sourceTabId: "range-note-137",
+        tabOrder: 1,
+        title: "แท็บ 2",
+        paragraphs: [
+          "บทที่ 137 ชื่อบท 137",
+          `เนื้อหาตอน 137 ${"ข".repeat(500)}`,
+        ],
+      },
+      {
+        sourceTabId: "range-note-138",
+        tabOrder: 2,
+        title: "แท็บ 3",
+        paragraphs: ["บทที่ 138 หมายเหตุจากต้นฉบับ"],
+      },
+    ],
   };
 }
 
@@ -399,6 +439,10 @@ describe.sequential(
         });
         expect(ready.stagePlan?.items?.[0]?.episodeNumber).toBe("036");
         expect(ready.stagePlan?.items?.[49]?.episodeNumber).toBe("085");
+        expect(ready.stagePlan?.commerce).toMatchObject({
+          price: "99.00",
+          isFree: false,
+        });
 
         const approved = await approveEditorialDraft({
           actorUserId: owner.id,
@@ -427,6 +471,8 @@ describe.sequential(
         expect(staged.episode.episodeNumber).toBe("036 - 085");
         expect(staged.episode.content).toContain("บทที่ 36");
         expect(staged.episode.content).toContain("บทที่ 85");
+        expect(staged.episode.price).toBe("99.00");
+        expect(staged.episode.isFree).toBe(false);
         expect(staged.episodes.every((episode: any) => !episode.isPublished)).toBe(true);
         expect(staged.readModel.readyToPublish).toBe(true);
         expect(staged.readModel.stages).toHaveLength(1);
@@ -521,6 +567,132 @@ describe.sequential(
           .where(eq(episodes.novelId, novel.id));
         expect(stored).toHaveLength(1);
         expect(stored[0]?.episodeNumber).toBe("036 - 085");
+      } finally {
+        if (boardId) {
+          await db
+            .delete(workspaceKanbanCards)
+            .where(eq(workspaceKanbanCards.boardId, boardId));
+        }
+        await db
+          .delete(workspaceWorkspaces)
+          .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+        await db.delete(episodes).where(eq(episodes.novelId, novel.id));
+        await db.delete(novels).where(eq(novels.id, novel.id));
+        await db.delete(users).where(eq(users.id, owner.id));
+      }
+    });
+
+    it("applies the default note discount at Stage without dropping the note Episode", async () => {
+      if (!process.env.TEST_DATABASE_URL) return;
+      assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+      const db = getTestDb();
+      const owner = await createTestUser({ role: "admin" });
+      const novel = await createTestNovel();
+      const workspace = await createWorkspace(owner.id, "Editorial default pricing");
+      let boardId: number | null = null;
+
+      try {
+        const workspaceNovel = await bindPublicationNovel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          novelId: novel.id,
+        });
+        const board = await ensureEditorialBoard({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+        });
+        boardId = board?.board.id ?? null;
+
+        const created = await createEditorialEpisodeWorkItem({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workspaceNovelId: workspaceNovel.workspaceNovelId,
+          episodeNumber: "136 - 138",
+          saleMode: "package",
+          price: "6.00",
+          isFree: false,
+        });
+        const card = created.board?.columns
+          .flatMap(column => column.cards)
+          .find(item => item.workItemType === "NEW_EPISODE" && item.episodeNumber === "136 - 138");
+        expect(card?.workItemId).toBeTruthy();
+        const workItemId = card!.workItemId!;
+
+        const imported = await importEditorialSource({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          payload: rangeSourceWithConfirmedNote(),
+        });
+        const checker = await runEditorialForeignChecker({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: imported.latestDraftId!,
+        });
+        const sourceNote = checker.anomalies.find(
+          (row: any) => row.anomalyType === "source_note_only" && row.sourceTabId === "range-note-138"
+        );
+        expect(sourceNote).toBeTruthy();
+        await setEditorialStructuralConfirmation({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          anomalyId: sourceNote.id,
+          confirmed: true,
+          expectedVersion: sourceNote.confirmationVersion ?? 0,
+        });
+
+        const ready = await getEditorialApprovalReadModel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+        });
+        expect(ready.qc.ready).toBe(true);
+        expect(ready.stagePlan).toMatchObject({
+          expectedCount: 3,
+          itemCount: 3,
+          commerce: {
+            billableTabCount: 2,
+            price: "4.00",
+            isFree: false,
+          },
+        });
+
+        const approved = await approveEditorialDraft({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: ready.latestDraft!.id,
+          expectedDraftVersion: ready.latestDraft!.version,
+          expectedDraftSha256: ready.latestDraft!.draftSha256,
+          expectedCheckerRunId: ready.qc.checkerRunId!,
+          expectedQcEvidenceSha256: ready.qc.qcEvidenceSha256!,
+          idempotencyKey: "default-pricing-approve",
+        });
+        const staged = await stageEditorialEpisodeDraft({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          approvalId: approved.approval.id,
+          expectedDraftId: ready.latestDraft!.id,
+          expectedDraftVersion: ready.latestDraft!.version,
+          expectedDraftSha256: ready.latestDraft!.draftSha256,
+          idempotencyKey: "default-pricing-stage",
+        });
+        expect(staged.episode.episodeNumber).toBe("136 - 138");
+        expect(staged.episode.price).toBe("4.00");
+        expect(staged.episode.isFree).toBe(false);
+        expect(staged.episode.content).toContain("บทที่ 138 หมายเหตุจากต้นฉบับ");
+
+        const [workItem] = await db
+          .select()
+          .from(workspaceEditorialWorkItems)
+          .where(eq(workspaceEditorialWorkItems.id, workItemId))
+          .limit(1);
+        expect(workItem?.price).toBe("4.00");
+        expect(workItem?.isFree).toBe(false);
       } finally {
         if (boardId) {
           await db

@@ -4,6 +4,7 @@ import {
   episodes,
   novels,
   users,
+  workspaceEditorialWorkItems,
   workspaceKanbanCards,
   workspaceWorkspaces,
 } from "../../drizzle/schema";
@@ -16,6 +17,7 @@ import {
   ensureEditorialBoard,
   getEditorialBoard,
   listEditorialAssignees,
+  removeEditorialEpisodeWorkItem,
   updateEditorialWorkItemNote,
 } from "./editorialBoard.service";
 import { transitionKanbanCard } from "./checkerKanban.service";
@@ -138,6 +140,118 @@ describe.sequential("Workspace Editorial Kanban B1/B2 integration", () => {
         .delete(workspaceWorkspaces)
         .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
       await db.delete(novels).where(eq(novels.id, novel.id));
+      await db.delete(users).where(eq(users.id, owner.id));
+    }
+  });
+
+  it("restores an archived NEW EPISODE card idempotently for Master Intake resync", async () => {
+    if (!process.env.TEST_DATABASE_URL) return;
+    assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+    const db = getTestDb();
+    const owner = await createTestUser({ role: "admin" });
+    const workspace = await createWorkspace(owner.id, "Editorial restore");
+    let novelId: number | undefined;
+    let boardId: number | null = null;
+
+    try {
+      const createdNovel = await createWorkspacePublicationNovel({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        title: "เรื่องสำหรับ restore",
+      });
+      novelId = createdNovel.novelId;
+      const board = await ensureEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      boardId = board?.board.id ?? null;
+
+      const first = await createEditorialEpisodeWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: createdNovel.workspaceNovelId,
+        episodeNumber: "136-185",
+        saleMode: "package",
+        price: "100.00",
+        isFree: false,
+        assigneeUserId: null,
+      });
+      const firstCard = first.board?.columns
+        .flatMap(column => column.cards)
+        .find(card => card.workItemType === "NEW_EPISODE");
+      expect(first.created).toBe(true);
+      expect(firstCard?.workItemId).toBeTruthy();
+
+      await removeEditorialEpisodeWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workItemId: firstCard!.workItemId,
+      });
+      const afterRemove = await getEditorialBoard({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+      });
+      expect(
+        afterRemove?.columns
+          .flatMap(column => column.cards)
+          .some(card => card.workItemId === firstCard!.workItemId)
+      ).toBe(false);
+
+      await expect(
+        createEditorialEpisodeWorkItem({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workspaceNovelId: createdNovel.workspaceNovelId,
+          episodeNumber: "136-185",
+          saleMode: "package",
+          price: "101.00",
+          isFree: false,
+          assigneeUserId: null,
+        })
+      ).rejects.toMatchObject({ code: "EDITORIAL_WORK_ITEM_CONFLICT" });
+
+      const restored = await createEditorialEpisodeWorkItem({
+        actorUserId: owner.id,
+        workspaceId: workspace.workspaceId,
+        workspaceNovelId: createdNovel.workspaceNovelId,
+        episodeNumber: "136-185",
+        saleMode: "package",
+        price: "100.00",
+        isFree: false,
+        assigneeUserId: null,
+      });
+      expect(restored.created).toBe(false);
+      const restoredCard = restored.board?.columns
+        .flatMap(column => column.cards)
+        .find(card => card.workItemType === "NEW_EPISODE");
+      expect(restoredCard?.id).toBe(firstCard?.id);
+      expect(restoredCard?.workItemId).toBe(firstCard?.workItemId);
+      expect(
+        restored.board?.columns.find(column =>
+          column.cards.some(card => card.workItemId === firstCard!.workItemId)
+        )?.key
+      ).toBe("new");
+
+      const workItems = await db
+        .select()
+        .from(workspaceEditorialWorkItems)
+        .where(eq(workspaceEditorialWorkItems.workspaceNovelId, createdNovel.workspaceNovelId));
+      expect(
+        workItems.filter(row => row.workItemType === "new_episode")
+      ).toHaveLength(1);
+    } finally {
+      if (boardId) {
+        await db
+          .delete(workspaceKanbanCards)
+          .where(eq(workspaceKanbanCards.boardId, boardId));
+      }
+      await db
+        .delete(workspaceWorkspaces)
+        .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+      if (novelId) {
+        await db.delete(novels).where(eq(novels.id, novelId));
+      }
       await db.delete(users).where(eq(users.id, owner.id));
     }
   });
