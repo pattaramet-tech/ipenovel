@@ -14,7 +14,11 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(schema).toContain("webSourceUrl");
     expect(schema).toContain("preparedSourceDocUrl");
     expect(service).toContain("workspace_master_intake_sync_v1");
-    expect(service).toContain("allowPendingSaleMetadata: true");
+    expect(service).toContain("defaultEditorialEpisodePackSaleFromRange");
+    expect(service).toContain("saleMode: defaultSale.saleMode");
+    expect(service).toContain("price: defaultSale.price");
+    expect(service).toContain("isFree: defaultSale.isFree");
+    expect(service).not.toContain("allowPendingSaleMetadata: true");
     expect(service).not.toMatch(/requestEditorialPublish|requestPublishExecution|confirmNqaAdminWriteback|writeRange|batchUpdateValues/);
   });
 
@@ -70,6 +74,14 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(migration).toContain("preparedSourceDocUrl");
     expect(migration).toContain("preparedSourceDocumentId");
     expect(migration).toContain("NULL");
+  });
+
+  it("applies the same default pricing contract during Master Intake and Stage", () => {
+    const intake = read("server/workspace/masterIntake.service.ts");
+    const approval = read("server/workspace/editorialApproval.service.ts");
+    expect(intake).toContain("defaultEditorialEpisodePackSaleFromRange");
+    expect(approval).toContain("resolveEditorialEpisodePackSale");
+    expect(approval).toContain("effectiveSale.usesDefault");
   });
 
   it("restores a removed MATCH pack through the shared Episode intake path", () => {

@@ -15,6 +15,7 @@ import {
 import { getDb } from "../db";
 import { GoogleRestReadOnlyTransport } from "../nqa/google/transport";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { defaultEditorialEpisodePackSaleFromRange } from "./editorialApproval.domain";
 import {
   createEditorialEpisodeWorkItem,
 } from "./editorialBoard.service";
@@ -641,12 +642,17 @@ async function resolveWorkItemForSync(input: {
   if (input.previewRow.workItemId) {
     return { workItemId: input.previewRow.workItemId, created: false };
   }
+  const defaultSale = defaultEditorialEpisodePackSaleFromRange(
+    input.previewRow.episodeNumber!
+  );
   const created = await createEditorialEpisodeWorkItem({
     actorUserId: input.actorUserId,
     workspaceId: input.workspaceId,
     workspaceNovelId: input.workspaceNovelId,
     episodeNumber: input.previewRow.episodeNumber!,
-    allowPendingSaleMetadata: true,
+    saleMode: defaultSale.saleMode,
+    price: defaultSale.price,
+    isFree: defaultSale.isFree,
   });
   const card = (created.board?.columns ?? [])
     .flatMap((column: any) => column.cards ?? [])

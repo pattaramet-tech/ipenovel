@@ -670,11 +670,16 @@ export async function createEditorialEpisodeWorkItem(input: {
       )
       .limit(1);
     if (existingWorkItem) {
+      const existingSalePending =
+        existingWorkItem.saleMode === null &&
+        existingWorkItem.price === null &&
+        existingWorkItem.isFree === null;
       if (
         (existingWorkItem.episodeTitle ?? null) !== episodeTitle ||
-        (existingWorkItem.saleMode ?? null) !== (sale?.saleMode ?? null) ||
-        (existingWorkItem.price ?? null) !== (sale?.price ?? null) ||
-        (existingWorkItem.isFree ?? null) !== (sale?.isFree ?? null) ||
+        (!existingSalePending &&
+          ((existingWorkItem.saleMode ?? null) !== (sale?.saleMode ?? null) ||
+            (existingWorkItem.price ?? null) !== (sale?.price ?? null) ||
+            (existingWorkItem.isFree ?? null) !== (sale?.isFree ?? null))) ||
         (existingWorkItem.assigneeUserId ?? null) !==
           (input.assigneeUserId ?? null)
       ) {
@@ -682,6 +687,17 @@ export async function createEditorialEpisodeWorkItem(input: {
           "EDITORIAL_WORK_ITEM_CONFLICT",
           "This episode identity already exists with different intake metadata."
         );
+      }
+      if (existingSalePending && sale) {
+        await tx
+          .update(workspaceEditorialWorkItems)
+          .set({
+            saleMode: sale.saleMode,
+            price: sale.price,
+            isFree: sale.isFree,
+            version: sql`${workspaceEditorialWorkItems.version} + 1`,
+          })
+          .where(eq(workspaceEditorialWorkItems.id, existingWorkItem.id));
       }
       const [existingCard] = await tx
         .select()

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   episodes,
   workspaceEditorialCheckerAllowWords,
@@ -26,6 +26,7 @@ import {
   analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
   buildEditorialEpisodePackPlan,
+  defaultEditorialEpisodePackSaleFromRange,
   editorialApprovalPayloadSha256,
   EditorialApprovalDomainError,
   EDITORIAL_EPISODE_STAGE_CONTRACT,
@@ -428,6 +429,50 @@ function confirmedSourceNoteTabIds(qc: Awaited<ReturnType<typeof currentQcEviden
     .map((anomaly: any) => String(anomaly.sourceTabId));
 }
 
+function resolveEditorialEpisodePackSale(
+  plan: EditorialEpisodeDraftBatchPlan,
+  sale?: {
+    saleMode: "chapter" | "package" | null;
+    price: string | null;
+    isFree: boolean | null;
+  }
+) {
+  if (!plan.ready || plan.items.length === 0) return null;
+  const pack = buildEditorialEpisodePackPlan(plan);
+  const baseDefault = defaultEditorialEpisodePackSaleFromRange(
+    plan.requestedEpisodeNumber
+  );
+  const pending =
+    (sale?.saleMode ?? null) === null &&
+    (sale?.price ?? null) === null &&
+    (sale?.isFree ?? null) === null;
+  const matchesBaseDefault =
+    sale?.saleMode === baseDefault.saleMode &&
+    sale?.price === baseDefault.price &&
+    sale?.isFree === baseDefault.isFree;
+  if (pending || matchesBaseDefault) {
+    return {
+      saleMode: pack.saleMode,
+      price: pack.price,
+      isFree: pack.isFree,
+      usesDefault: true,
+    } as const;
+  }
+  if (
+    (sale?.saleMode !== "chapter" && sale?.saleMode !== "package") ||
+    sale.price === null ||
+    typeof sale.isFree !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    saleMode: sale.saleMode,
+    price: sale.price,
+    isFree: sale.isFree,
+    usesDefault: false,
+  } as const;
+}
+
 function stagePlanItemSummary(plan: EditorialEpisodeDraftPlan) {
   return {
     episodeNumber: plan.episodeNumber,
@@ -450,6 +495,9 @@ function stagePlanSummary(
   const pack = plan.ready && plan.items.length > 0
     ? buildEditorialEpisodePackPlan(plan)
     : null;
+  const effectiveSale = pack
+    ? resolveEditorialEpisodePackSale(plan, sale)
+    : null;
   return {
     mode: plan.mode,
     requestedEpisodeNumber: plan.requestedEpisodeNumber,
@@ -461,13 +509,13 @@ function stagePlanSummary(
     excludedCount: plan.excludedTabs.length,
     draftTabCount: plan.items.length + plan.excludedTabs.length,
     commerce: pack ? {
-      saleMode: sale?.saleMode ?? pack.saleMode,
+      saleMode: effectiveSale?.saleMode ?? sale?.saleMode ?? pack.saleMode,
       episodeNumber: pack.episodeNumber,
       title: pack.title,
       billableTabCount: pack.billableTabCount,
       excludedTabCount: pack.excludedTabCount,
-      price: sale?.price ?? pack.price,
-      isFree: sale?.isFree ?? null,
+      price: effectiveSale?.price ?? sale?.price ?? pack.price,
+      isFree: effectiveSale?.isFree ?? sale?.isFree ?? pack.isFree,
     } : null,
     anomalies: plan.anomalies,
     blockers: plan.blockers,
@@ -1020,28 +1068,49 @@ export async function stageEditorialEpisodeDraft(input: {
     }
 
     const novelId = context.workspaceNovel.novelId;
-    const saleMode = context.workItem.saleMode;
-    const price = context.workItem.price;
-    const isFree = context.workItem.isFree;
-    const numericPrice = price === null ? Number.NaN : Number(price);
+    const packPlan = buildEditorialEpisodePackPlan(batchPlan);
+    const effectiveSale = resolveEditorialEpisodePackSale(batchPlan, {
+      saleMode: context.workItem.saleMode,
+      price: context.workItem.price,
+      isFree: context.workItem.isFree,
+    });
+    if (!effectiveSale) {
+      throw new WorkspaceEditorialApprovalError(
+        "STAGE_INVALID",
+        "Episode sale metadata is incomplete or invalid."
+      );
+    }
+    const { saleMode, price, isFree } = effectiveSale;
+    const numericPrice = Number(price);
     if (
-      (saleMode !== "chapter" && saleMode !== "package") ||
-      price === null ||
-      typeof isFree !== "boolean" ||
       !Number.isFinite(numericPrice) ||
       (isFree ? price !== "0.00" : numericPrice <= 0)
     ) {
       throw new WorkspaceEditorialApprovalError(
         "STAGE_INVALID",
-        "Episode sale metadata is missing or invalid; historical intake rows must be completed before staging."
+        "Episode sale metadata is invalid."
       );
+    }
+    if (
+      effectiveSale.usesDefault &&
+      (context.workItem.saleMode !== saleMode ||
+        context.workItem.price !== price ||
+        context.workItem.isFree !== isFree)
+    ) {
+      await tx
+        .update(workspaceEditorialWorkItems)
+        .set({
+          saleMode,
+          price,
+          isFree,
+          version: sql`${workspaceEditorialWorkItems.version} + 1`,
+        })
+        .where(eq(workspaceEditorialWorkItems.id, input.workItemId));
     }
     const staged: Array<{ stage: any; episode: any; replayed: boolean }> = [];
     // A Workspace Google Docs work item is one commercial Episode Pack. Tabs
-    // are chapters inside that package, not independently purchasable rows.
-    // Front-matter exclusions are already absent from batchPlan.items, so the
-    // pack price is derived only from billable content tabs.
-    const packPlan = buildEditorialEpisodePackPlan(batchPlan);
+    // are chapters inside that package. Confirmed source-note Episodes remain
+    // visible but are excluded from the default billable tab count.
 
     for (const plan of [packPlan]) {
       const legacyPayloadSha256 = editorialEpisodeStagePayloadSha256({

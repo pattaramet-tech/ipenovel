@@ -3,6 +3,7 @@ import {
   analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
   buildEditorialEpisodePackPlan,
+  defaultEditorialEpisodePackSaleFromRange,
   editorialApprovalPayloadSha256,
   editorialEpisodeReplacementTargetStateSha256,
   editorialEpisodeStagePayloadSha256,
@@ -410,9 +411,10 @@ describe("Editorial approval/staging domain", () => {
       content: "",
     });
     const pack = buildEditorialEpisodePackPlan(batch);
-    expect(pack.billableTabCount).toBe(3);
+    expect(pack.billableTabCount).toBe(2);
     expect(pack.memberEpisodeNumbers).toEqual(["136", "137", "138"]);
-    expect(pack.price).toBe("6.00");
+    expect(pack.price).toBe("4.00");
+    expect(pack.isFree).toBe(false);
     expect(pack.content).toContain("บทที่ 138 หมายเหตุจากต้นฉบับ");
   });
 
@@ -779,6 +781,19 @@ describe("Editorial approval/staging domain", () => {
 });
 
 describe("Episode Pack commerce plan", () => {
+  it("derives Master Intake defaults from the pack range", () => {
+    expect(defaultEditorialEpisodePackSaleFromRange("001 - 035")).toEqual({
+      saleMode: "package",
+      price: "0.00",
+      isFree: true,
+    });
+    expect(defaultEditorialEpisodePackSaleFromRange("036 - 085")).toEqual({
+      saleMode: "package",
+      price: "100.00",
+      isFree: false,
+    });
+  });
+
   it("turns one Docs range into one priced package with an internal chapter TOC", () => {
     const tabs = Array.from({ length: 50 }, (_, index) => {
       const number = 36 + index;
@@ -802,7 +817,7 @@ describe("Episode Pack commerce plan", () => {
     expect(pack.content).toContain("Chapter 85 Title 85");
   });
 
-  it("prices only billable content tabs", () => {
+  it("defaults any pack starting at 001 to free", () => {
     const batch = analyzeEditorialEpisodeDraftBatch({
       workItemType: "new_episode", episodeNumber: "001 - 049", episodeTitle: null,
       tabs: Array.from({ length: 49 }, (_, index) => {
@@ -810,12 +825,48 @@ describe("Episode Pack commerce plan", () => {
         return { sourceTabId: `tab-${number}`, tabOrder: index, title: `Chapter ${number}`, chapterNumber: String(number), chapterTitle: null, paragraphs: [{ paragraphOrder: 0, text: `Chapter ${number} Title` }, { paragraphOrder: 1, text: `Content ${"y".repeat(100)}` }] };
       }),
     });
-    // Exclusions are metadata about source tabs that were deliberately left
-    // out of batch.items; they must never increase the commercial price.
-    batch.excludedTabs.push({ sourceTabId: "note", sourceTabTitle: "note", tabOrder: 49, kind: "front_matter", label: "front matter" });
     const pack = buildEditorialEpisodePackPlan(batch);
     expect(pack.billableTabCount).toBe(49);
-    expect(pack.excludedTabCount).toBe(1);
-    expect(pack.price).toBe("98.00");
+    expect(pack.price).toBe("0.00");
+    expect(pack.isFree).toBe(true);
+  });
+
+  it("charges ฿2 per non-note tab while keeping confirmed note Episodes visible", () => {
+    const confirmedSourceNoteTabIds = ["tab-138", "tab-153"];
+    const batch = analyzeEditorialEpisodeDraftBatch({
+      workItemType: "new_episode",
+      episodeNumber: "136 - 185",
+      episodeTitle: null,
+      confirmedSourceNoteTabIds,
+      tabs: Array.from({ length: 50 }, (_, index) => {
+        const number = 136 + index;
+        const sourceTabId = `tab-${number}`;
+        const isNote = confirmedSourceNoteTabIds.includes(sourceTabId);
+        return {
+          sourceTabId,
+          tabOrder: index,
+          title: `Chapter ${number}`,
+          chapterNumber: String(number),
+          chapterTitle: isNote ? "หมายเหตุจากต้นฉบับ" : `Chapter ${number}`,
+          paragraphs: isNote
+            ? [{ paragraphOrder: 0, text: `บทที่ ${number} หมายเหตุจากต้นฉบับ` }]
+            : [
+                { paragraphOrder: 0, text: `Chapter ${number} Title ${number}` },
+                { paragraphOrder: 1, text: `Content ${number} ${"z".repeat(100)}` },
+              ],
+        };
+      }),
+    });
+    expect(batch.ready).toBe(true);
+    expect(batch.items).toHaveLength(50);
+    const pack = buildEditorialEpisodePackPlan(batch);
+    expect(pack.memberEpisodeNumbers).toHaveLength(50);
+    expect(pack.memberEpisodeNumbers).toContain("138");
+    expect(pack.memberEpisodeNumbers).toContain("153");
+    expect(pack.billableTabCount).toBe(48);
+    expect(pack.price).toBe("96.00");
+    expect(pack.isFree).toBe(false);
+    expect(pack.content).toContain("บทที่ 138 หมายเหตุจากต้นฉบับ");
+    expect(pack.content).toContain("บทที่ 153 หมายเหตุจากต้นฉบับ");
   });
 });
