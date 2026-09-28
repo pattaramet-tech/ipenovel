@@ -1,4 +1,5 @@
 import process from "node:process";
+import { verifyFrontendAssetGraph } from "./lib/frontendAssetGraph.mjs";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const AUTH_CONTEXT = "production/promotion-authorization";
@@ -107,19 +108,16 @@ async function main() {
     );
   }
 
-  const home = await fetch(new URL("/", base), {
-    redirect: "manual",
-    signal: AbortSignal.timeout(10_000),
+  const assetGraph = await verifyFrontendAssetGraph({
+    baseUrl: base,
+    label: "production",
   });
-  if (home.status !== 200)
-    fail(`Production root smoke returned HTTP ${home.status}.`);
-  const contentType = home.headers.get("content-type") || "";
-  if (!contentType.toLowerCase().includes("text/html")) {
-    fail("Production root smoke did not return HTML.");
-  }
+  console.log(
+    `[production-verify] asset graph routes=${assetGraph.routesChecked} assets=${assetGraph.assetsChecked} missing404=${assetGraph.missingAssetStatus}`
+  );
 
   console.log(
-    "[production-verify] PASS: exact authorized Production revision is healthy and serving HTML."
+    "[production-verify] PASS: exact authorized Production revision is healthy and its HTML-to-asset graph is valid."
   );
 }
 
