@@ -35,6 +35,20 @@ export interface OCRReviewNotificationPayload {
   slipImageUrl?: string;
 }
 
+export interface SlipVerificationFailureNotificationPayload {
+  type: "payment" | "wallet_topup";
+  id: number;
+  userId?: number;
+  userName?: string;
+  userEmail?: string;
+  expectedAmount: number;
+  providerAmount?: string;
+  outcome: "REVIEW_REQUIRED" | "ERROR";
+  reason?: string;
+  providerCode?: string;
+  httpStatus?: number;
+}
+
 /**
  * Build Discord embed for OCR review notification
  */
@@ -213,5 +227,79 @@ export async function sendOCRReviewNotification(payload: OCRReviewNotificationPa
       error: error instanceof Error ? error.message : String(error),
     });
     // Intentionally NOT throwing - payment/topup flow must not be affected
+  }
+}
+
+/**
+ * Send a Discord alert when the external slip-verification provider cannot
+ * verify a submitted payment/top-up. Uses the existing OCR-review webhook so
+ * deployments do not need a second Discord secret just for Slip2Go failures.
+ */
+export async function sendSlipVerificationFailureNotification(
+  payload: SlipVerificationFailureNotificationPayload
+): Promise<void> {
+  const webhookUrl = process.env.DISCORD_OCR_REVIEW_WEBHOOK_URL;
+  if (!webhookUrl) {
+    console.warn("[Discord Slip Verify] DISCORD_OCR_REVIEW_WEBHOOK_URL not configured, skipping notification");
+    return;
+  }
+
+  const isWalletTopup = payload.type === "wallet_topup";
+  const typeLabel = isWalletTopup ? "Wallet Top-up" : "Order Payment";
+  const maskedEmail = payload.userEmail
+    ? payload.userEmail.replace(/(.{2})(.*)(@.*)/, "$1***$3")
+    : undefined;
+  const reasonLabel = payload.reason
+    ? payload.reason.split("_").map(word => word.charAt(0) + word.slice(1).toLowerCase()).join(" ")
+    : "Unknown";
+
+  const fields: any[] = [
+    { name: "Type", value: typeLabel, inline: true },
+    { name: "ID", value: `#${payload.id}`, inline: true },
+    { name: "Verify Outcome", value: payload.outcome, inline: true },
+    { name: "Expected Amount", value: `฿${payload.expectedAmount.toFixed(2)}`, inline: true },
+    { name: "Reason", value: reasonLabel, inline: false },
+  ];
+
+  if (payload.providerAmount) fields.push({ name: "Provider Amount", value: `฿${payload.providerAmount}`, inline: true });
+  if (payload.providerCode) fields.push({ name: "Provider Code", value: payload.providerCode, inline: true });
+  if (payload.httpStatus !== undefined) fields.push({ name: "HTTP Status", value: String(payload.httpStatus), inline: true });
+  if (payload.userName || maskedEmail) fields.push({ name: "User", value: payload.userName || maskedEmail || "Unknown", inline: true });
+  if (maskedEmail) fields.push({ name: "Email", value: maskedEmail, inline: true });
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: "IPE Slip Verify Bot",
+        avatar_url: "https://emoji.gg/assets/emoji/9286_Trophy.png",
+        embeds: [{
+          title: `❌ Slip Verify Failed: ${typeLabel} #${payload.id}`,
+          color: 0xFF0000,
+          fields,
+          timestamp: new Date().toISOString(),
+        }],
+      }),
+      signal: AbortSignal.timeout(5_000),
+    });
+
+    if (!response.ok) {
+      console.warn("[Discord Slip Verify] failed to send notification", {
+        type: payload.type,
+        id: payload.id,
+        status: response.status,
+        statusText: response.statusText,
+      });
+      return;
+    }
+
+    console.info("[Discord Slip Verify] notification sent", { type: payload.type, id: payload.id });
+  } catch (error) {
+    console.warn("[Discord Slip Verify] failed to send notification", {
+      type: payload.type,
+      id: payload.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
