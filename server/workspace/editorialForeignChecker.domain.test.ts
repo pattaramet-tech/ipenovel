@@ -128,6 +128,21 @@ describe("Editorial deterministic foreign-word checker", () => {
     ]);
   });
 
+  it("keeps reader-directed note prose after an inline note anchor but stops when narrative resumes", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงช้า", { paragraphKey: "inline-prose-anchor", paragraphOrder: 1 }),
+        paragraph("หวังว่าทุกคนจะชอบและสนุกกับตอนนี้", { paragraphKey: "inline-prose-body", paragraphOrder: 2 }),
+        paragraph("คาซึยะเปิดประตูแล้วเดินกลับเข้าไปในห้องอย่างเงียบงัน", { paragraphKey: "inline-prose-story", paragraphOrder: 3 }),
+        paragraph("จบตอน", { paragraphKey: "inline-prose-end", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2]);
+  });
+
   it("can detect another source-junk block after narrative resumes without contaminating the story between blocks", () => {
     const result = evaluateEditorialForeignDraft({
       paragraphs: [

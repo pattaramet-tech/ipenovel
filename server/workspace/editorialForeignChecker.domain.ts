@@ -614,17 +614,12 @@ function evaluateEditorialSourceJunkBlocks(
         const isAnchor = cursor === index || hasSourceJunkAnchor(token);
         // A supporter-list signal (Supporters / ผู้สนับสนุน / Power Stones /
         // top-10) must open supporter context BEFORE boundary evaluation so
-        // the signal line itself and the plain handles that follow it (e.g.
-        // Unown, Oboro) stay inside the junk block in supporter-list context.
+        // the signal line itself and the handles that follow it stay inside
+        // the junk block only in explicit supporter-list context.
         if (isSourceJunkSupporterSignal(token)) supporterListContext = true;
-        const isSupporterListEntry =
-          supporterListContext &&
-          (isPlainSupporterHandle(token) || isNumberedSupporterHandle(token));
         if (
           !isAnchor &&
-          !isSourceJunkContinuation(token) &&
-          !isSupporterListEntry &&
-          !isSupporterListHeadingLine(token)
+          !isTrailingSectionContent(token, supporterListContext)
         ) {
           // A normal narrative paragraph is an explicit block boundary. Do not
           // inherit source_junk into the rest of the chapter merely because an
