@@ -192,6 +192,30 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
   });
 
+  it("does not treat narrative thank-you or illness movement prose as author-note content", () => {
+    const thankYou = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงช้า", { paragraphKey: "thanks-story-anchor", paragraphOrder: 1 }),
+        paragraph("เขาขอบคุณทุกคนก่อนจะเดินออกจากห้อง", { paragraphKey: "thanks-story", paragraphOrder: 2 }),
+        paragraph("ประตูปิดลงตามหลังเขา", { paragraphKey: "thanks-story-2", paragraphOrder: 3 }),
+      ],
+    });
+    expect(
+      thankYou.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
+    ).toEqual([1]);
+
+    const illness = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงช้า", { paragraphKey: "illness-story-anchor", paragraphOrder: 1 }),
+        paragraph("เขาป่วยจนทรุดลงกับพื้น", { paragraphKey: "illness-story", paragraphOrder: 2 }),
+        paragraph("เพื่อนของเขารีบเข้ามาช่วยทันที", { paragraphKey: "illness-story-2", paragraphOrder: 3 }),
+      ],
+    });
+    expect(
+      illness.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
+    ).toEqual([1]);
+  });
+
   it("can detect another source-junk block after narrative resumes without contaminating the story between blocks", () => {
     const result = evaluateEditorialForeignDraft({
       paragraphs: [
