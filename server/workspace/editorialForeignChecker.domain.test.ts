@@ -266,6 +266,29 @@ describe("Editorial deterministic foreign-word checker", () => {
     ).toEqual([]);
   });
 
+  it("treats punctuation-only text outside a standalone parenthetical author note as junk, not narrative", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("(หมายเหตุผู้เขียน: วันนี้ลงช้า).", {
+          paragraphKey: "paren-note-anchor",
+          paragraphOrder: 1,
+        }),
+        paragraph("หวังว่าทุกคนจะชอบและสนุกกับตอนนี้", {
+          paragraphKey: "paren-note-body",
+          paragraphOrder: 2,
+        }),
+        paragraph("คาซึยะเปิดประตูแล้วเดินกลับเข้าไปในห้องอย่างเงียบงัน", {
+          paragraphKey: "paren-note-story",
+          paragraphOrder: 3,
+        }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2]);
+  });
+
   it("still detects a genuine trailing author-note/source-junk section", () => {
     const result = evaluateEditorialForeignDraft({
       paragraphs: [
