@@ -214,7 +214,7 @@ describe("Editorial deterministic foreign-word checker", () => {
           paragraphKey: "tail-note",
           paragraphOrder: 2,
         }),
-        paragraph("ฉันตั้งใจเขียนฉากนี้มานานแล้ว และหวังว่าทุกคนจะชอบจังหวะของตอนนี้", {
+        paragraph("ฉันตั้งใจเขียนฉากนี้มานานแล้ว", {
           sourceTabId: "tab-tail",
           paragraphKey: "tail-message",
           paragraphOrder: 3,
@@ -335,6 +335,21 @@ describe("Editorial deterministic foreign-word checker", () => {
         paragraph("Unown", { paragraphKey: "plain-token", paragraphOrder: 2 }),
         paragraph("เขากล่าวตอบด้วยน้ำเสียงสุภาพครับ", { paragraphKey: "plain-story", paragraphOrder: 3 }),
         paragraph("จบตอน", { paragraphKey: "plain-end", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
+  it("does not let generic audience words extend a note block into resumed narrative", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "aud-heading", paragraphOrder: 1 }),
+        paragraph("ทุกคนหันไปมองประตูเมื่อได้ยินเสียงดัง", { paragraphKey: "aud-story-1", paragraphOrder: 2 }),
+        paragraph("เขาชักดาบออกมาทันทีและยืนขวางทางเข้า", { paragraphKey: "aud-story-2", paragraphOrder: 3 }),
+        paragraph("จบตอน", { paragraphKey: "aud-end", paragraphOrder: 4 }),
       ],
     });
     const junk = result.findings.filter(

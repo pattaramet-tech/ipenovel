@@ -370,30 +370,14 @@ const SOURCE_JUNK_SUPPORTER_SIGNAL_RE =
 // Note-content prose markers: reader-directed wording that keeps a trailing
 // author-note/junk section open. Anything without these (or other junk signals)
 // is treated as resumed narrative and closes the section immediately.
-const SOURCE_JUNK_NOTE_PROSE_RE = new RegExp(
-  [
-    "หวังว่า",
-    "ขอบคุณ",
-    "ฝาก(?:ติดตาม|กด|เมล์|เมล)",
-    "กด(?:ติดตาม|ไลก์|ถูกใจ)",
-    "ติดตาม(?:ได้|ต่อ|กัน|อ่าน|ผม|เรา|เว็บ|ช่อง|ที่)",
-    "ทุกคน",
-    "ทุกท่าน",
-    "สนับสนุน(?:ผม|เรา|ผู้เขียน|กัน|ได้ที่)",
-    "พาวเวอร์สโตน",
-    "power\\s*stones?",
-    "สิบอันดับแรก",
-    "top\\s*10",
-    "ตอน(?:หน้า|ถัดไป)",
-    "ลง(?:ตอน|เรื่อง|สอง|ให้ใหม่)",
-    "อัปเดต|อัพเดต|อัพเดท|อัปเดท",
-    "ขอ(?:โทษ|อภัย)",
-    "พบกัน(?:ใหม่|ตอนหน้า)",
-    "เจอกัน(?:ตอน)?หน้า",
-    "(?:ป่วย|ไม่สบาย)(?:หนัก|อยู่|ช่วงนี้|สัปดาห์ที่แล้ว|เมื่อวาน)",
-  ].join("|"),
-  "i"
-);
+const SOURCE_JUNK_NOTE_PROSE_PATTERNS = [
+  /^(?:ฉัน|ผม|เรา|ผู้เขียน|คนเขียน)[^\n]{0,100}(?:เขียน|แต่ง|แปล)[^\n]{0,80}(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?/i,
+  /(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?[^\n]{0,80}(?:เขียน|แต่ง|แปล)[^\n]{0,60}(?:ยาก|นาน|เสร็จ|ช้า)/i,
+  /หวังว่า[^\n]{0,100}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน)[^\n]{0,100}(?:ชอบ|สนุก|ติดตาม|อ่าน)/i,
+  /(?:ขอบคุณ|ขอบใจ|ฝาก|ขอ(?:โทษ|อภัย))[^\n]{0,120}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน|ติดตาม|สนับสนุน|อ่าน|ลงช้า)/i,
+  /(?:พบกันใหม่|เจอกัน(?:ตอน)?หน้า)/i,
+  /(?:ป่วย|ไม่สบาย)[^\n]{0,100}(?:ลง|ตอน|อัปเดต|อัพเดต|อัพเดท|ขออภัย|ขอโทษ)/i,
+] as const;
 
 function isQuoteWrappedNarrativeLine(text: string) {
   const value = String(text || "").trim();
@@ -458,7 +442,7 @@ function isTrailingSectionContent(
     isSourceJunkContinuation(value) ||
     isSupporterListHeadingLine(value) ||
     (supporterListContext && isPlainSupporterHandle(value)) ||
-    SOURCE_JUNK_NOTE_PROSE_RE.test(value)
+    SOURCE_JUNK_NOTE_PROSE_PATTERNS.some(pattern => pattern.test(value))
   );
 }
 
