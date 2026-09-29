@@ -429,8 +429,8 @@ function isSourceJunkNarrativeResume(
  * mentions these words leaves a long remainder and is not a list heading.
  */
 const SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS = [
-  /^รายชื่อ\s*ผู้สนับสนุน(?:\s*ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)?\s*.*)?$/i,
-  /^(?:ผู้สนับสนุน|supporters?)(?:\s*[:：-]?\s*(?:ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)?|for\b|of\b|this\b|month\b|week\b).*)?$/i,
+  /^รายชื่อ\s*ผู้สนับสนุน(?:\s*(?:[:：-]\s*[^.!?]{1,80}|ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)\s*[^.!?]{1,60}))?$/i,
+  /^(?:ผู้สนับสนุน|supporters?)(?:\s*(?:[:：-]\s*[^.!?]{1,80}|ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)\s*[^.!?]{1,60}|(?:for|this)\s+(?:month|week|chapter|episode)\b[^.!?]{0,40}))?$/i,
 ] as const;
 
 function isSupporterListHeadingLine(text: string) {

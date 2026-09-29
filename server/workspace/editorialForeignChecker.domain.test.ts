@@ -313,6 +313,30 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3, 4, 5]);
   });
 
+  it("does not treat narrative sentences beginning with supporter wording as supporter-list headings", () => {
+    const thai = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "sup-neg-anchor-th", paragraphOrder: 1 }),
+        paragraph("ผู้สนับสนุนประจำตระกูลเดินเข้ามาในห้อง", { paragraphKey: "sup-neg-story-th", paragraphOrder: 2 }),
+        paragraph("เขาหันไปมองประตูทันที", { paragraphKey: "sup-neg-story-th-2", paragraphOrder: 3 }),
+      ],
+    });
+    expect(
+      thai.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
+    ).toEqual([1]);
+
+    const english = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "sup-neg-anchor-en", paragraphOrder: 1 }),
+        paragraph("Supporters of the king entered the hall", { paragraphKey: "sup-neg-story-en", paragraphOrder: 2 }),
+        paragraph("เขาเดินตามหลังพวกเขาเข้าไป", { paragraphKey: "sup-neg-story-en-2", paragraphOrder: 3 }),
+      ],
+    });
+    expect(
+      english.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
+    ).toEqual([1]);
+  });
+
   it("keeps plain handles out of the junk block when no supporter-list context is open", () => {
     const result = evaluateEditorialForeignDraft({
       paragraphs: [
