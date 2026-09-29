@@ -327,7 +327,7 @@ describe("Editorial deterministic foreign-word checker", () => {
       paragraphs: [
         paragraph("เขาลุกขึ้นยืนช้า ๆ แล้วมองไปรอบห้อง", { paragraphKey: "close-story-1", paragraphOrder: 1 }),
         paragraph("ความคิดของผู้สร้าง", { paragraphKey: "close-heading", paragraphOrder: 2 }),
-        paragraph("ตอนนี้เขียนยากมาก และหวังว่าจะได้รับกำลังใจจากทุกคน", { paragraphKey: "close-note", paragraphOrder: 3 }),
+        paragraph("ตอนนี้เขียนฉากนี้ยากมาก และหวังว่าจะได้รับกำลังใจจากทุกคน", { paragraphKey: "close-note", paragraphOrder: 3 }),
         paragraph("เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร", { paragraphKey: "close-story-2", paragraphOrder: 4 }),
         paragraph("จบตอน", { paragraphKey: "close-end", paragraphOrder: 5 }),
       ],
