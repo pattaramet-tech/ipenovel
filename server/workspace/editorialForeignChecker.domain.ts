@@ -372,7 +372,7 @@ const SOURCE_JUNK_SUPPORTER_SIGNAL_RE =
 // is treated as resumed narrative and closes the section immediately.
 const SOURCE_JUNK_NOTE_PROSE_PATTERNS = [
   /^(?:ฉัน|ผม|เรา|ผู้เขียน|คนเขียน)[^\n]{0,100}(?:เขียน|แต่ง|แปล)[^\n]{0,80}(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?/i,
-  /^ตอนนี้\s*(?:เขียน|แต่ง|แปล)(?:\s*(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?)?[^\n]{0,80}(?:ยาก|นาน|เสร็จ|ช้า)/i,
+  /^ตอนนี้\s*(?:เขียน|แต่ง|แปล)\s*(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?[^\n]{0,80}(?:ยาก|นาน|เสร็จ|ช้า)/i,
   /หวังว่า[^\n]{0,100}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน)[^\n]{0,100}(?:ชอบ|สนุก|ติดตาม|อ่าน)/i,
   /(?:ขอบคุณ|ขอบใจ|ฝาก|ขอ(?:โทษ|อภัย))[^\n]{0,120}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน|ติดตาม|สนับสนุน|อ่าน|ลงช้า)/i,
   /(?:ป่วย|ไม่สบาย)[^\n]{0,100}(?:ลง|ตอน|อัปเดต|อัพเดต|อัพเดท|ขออภัย|ขอโทษ)/i,
@@ -630,7 +630,10 @@ function evaluateEditorialSourceJunkBlocks(
           index = cursor - 1;
           break;
         }
-        if (!token) continue;
+        if (!token) {
+          if (cursor === ordered.length - 1) index = cursor;
+          continue;
+        }
         const startOffset = paragraph.text.indexOf(token);
         findings.push(
           buildFinding(
