@@ -93,6 +93,19 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(page).toContain('row.status === "CONFLICT" || row.status === "UNCHANGED"');
   });
 
+  it("rebinds pure Sheet row drift only when canonical provenance identity is unique and complete", () => {
+    const domain = read("server/workspace/masterIntake.domain.ts");
+    const service = read("server/workspace/masterIntake.service.ts");
+    expect(domain).toContain("masterIntakeRowIdentityFingerprint");
+    expect(service).toContain("provenanceIdentityFingerprint(candidate) === identityFingerprint");
+    expect(service).toContain("AMBIGUOUS_PROVENANCE_REBIND");
+    expect(service).toContain("PROVENANCE_REBIND_BATCH_INCOMPLETE");
+    expect(service).toContain("Master Intake source identity changed before row rebind.");
+    expect(service).toContain(".set({ rowNumber: -Number(move.provenanceId) })");
+    expect(service).toContain(".set({ rowNumber: move.rowNumber })");
+    expect(service).toContain("await rebindMovedMasterIntakeProvenance(preview)");
+  });
+
   it("restores a removed MATCH pack through the shared Episode intake path", () => {
     const service = read("server/workspace/masterIntake.service.ts");
     const board = read("server/workspace/editorialBoard.service.ts");
