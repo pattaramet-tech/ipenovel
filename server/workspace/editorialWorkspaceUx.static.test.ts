@@ -104,6 +104,24 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("bg-blue-50");
   });
 
+  it("refreshes server board truth and prunes ghost selections after concurrent removal", () => {
+    const source = page();
+    expect(source).toContain('refetchOnMount: "always"');
+    expect(source).toContain('refetchOnWindowFocus: "always"');
+    expect(source).toContain("refetchInterval: 30_000");
+    expect(source).toContain("editorialBoardWorkItemIdKey");
+    expect(source).toContain("activeWorkItemIds.has(workItemId)");
+    expect(source).toContain("!activeWorkItemIds.has(selectedSourceWorkItemId)");
+  });
+
+  it("surfaces allow-list checker staleness instead of a misleading current pass", () => {
+    const source = page();
+    expect(source).toContain("editorialCheckerStaleReason");
+    expect(source).toContain("currentAllowListSha256");
+    expect(source).toContain('editorialCheckerStaleReason === "ALLOW_LIST_CHANGED"');
+    expect(source).toContain("Allow List เปลี่ยน");
+  });
+
   it("applies Preview feedback for compact Workspace, container-only novel intake and guarded ownership prep", () => {
     const source = page();
     expect(source).toContain('aria-label="Workspace"');

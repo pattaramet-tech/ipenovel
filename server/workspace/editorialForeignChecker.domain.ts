@@ -425,3 +425,28 @@ export function editorialAllowListSha256(words: readonly string[]) {
   ).sort();
   return sha256(normalized.join("\n"));
 }
+
+export type EditorialCheckerStaleReason =
+  | "DRAFT_CHANGED"
+  | "ENGINE_CHANGED"
+  | "ALLOW_LIST_CHANGED";
+
+export function getEditorialCheckerStaleReason(input: {
+  currentDraftId: number | null | undefined;
+  runDraftId: number;
+  runEngineVersion: string;
+  currentEngineVersion: string;
+  runAllowListSha256: string;
+  currentAllowListSha256: string;
+}): EditorialCheckerStaleReason | null {
+  if (!input.currentDraftId || input.runDraftId !== input.currentDraftId) {
+    return "DRAFT_CHANGED";
+  }
+  if (input.runEngineVersion !== input.currentEngineVersion) {
+    return "ENGINE_CHANGED";
+  }
+  if (input.runAllowListSha256 !== input.currentAllowListSha256) {
+    return "ALLOW_LIST_CHANGED";
+  }
+  return null;
+}
