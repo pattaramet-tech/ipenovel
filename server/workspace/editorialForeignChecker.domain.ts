@@ -357,7 +357,7 @@ function hasSourceJunkAnchor(text: string) {
 }
 
 const SOURCE_JUNK_END_MARKER_RE =
-  /^(?:จบตอน|จบบท|จบตอนที่\s*\d+|end(?:\s+of)?\s+(?:chapter|part))\s*[.!…]*$/i;
+  /^(?:จบตอน|จบบท|จบตอนที่\s*\d+|end(?:\s+of)?\s+(?:chapter|part))\s*[.!…。！？．｡]*$/i;
 
 const SOURCE_JUNK_SECTION_HEADING_PATTERNS = [
   /^(?:ความคิด|ความคิดเห็น)ของ(?:ผู้สร้าง|ผู้เขียน)\s*[:：-]?\s*$/i,
