@@ -488,7 +488,7 @@ function sourceJunkTrailingSectionEndIndex(
       sectionEnd = index;
       break;
     }
-    if (isSupporterListHeadingLine(text)) supporterListContext = true;
+    if (isSourceJunkSupporterSignal(text)) supporterListContext = true;
     if (isSourceJunkNarrativeResume(text, supporterListContext)) break;
     sectionEnd = index;
   }
