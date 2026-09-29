@@ -358,6 +358,37 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
   });
 
+  it("does not classify numbered resumed narrative as junk without supporter-list context", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงสองตอน", { paragraphKey: "num-note", paragraphOrder: 1 }),
+        paragraph("...", { paragraphKey: "num-gap", paragraphOrder: 2 }),
+        paragraph("1. เขาเดินกลับเข้าไปในห้องแล้วปิดประตู", { paragraphKey: "num-story", paragraphOrder: 3 }),
+        paragraph("เขาวางดาบลงบนโต๊ะอย่างระมัดระวัง", { paragraphKey: "num-story-2", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2]);
+  });
+
+  it("keeps numbered entries inside an explicit supporter list", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด", { paragraphKey: "num-sup-anchor", paragraphOrder: 1 }),
+        paragraph("ผู้สนับสนุน", { paragraphKey: "num-sup-heading", paragraphOrder: 2 }),
+        paragraph("1. Unown", { paragraphKey: "num-sup-1", paragraphOrder: 3 }),
+        paragraph("2. Oboro21", { paragraphKey: "num-sup-2", paragraphOrder: 4 }),
+        paragraph("เขาเดินออกจากห้องไปอย่างเงียบ ๆ", { paragraphKey: "num-sup-story", paragraphOrder: 5 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3, 4]);
+  });
+
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
     const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
     expect(

@@ -391,10 +391,12 @@ function isQuoteWrappedNarrativeLine(text: string) {
 const SOURCE_JUNK_CONTINUATION_PATTERNS = [
   /^(?:\.{2,}|…+)$/,
   /^[\s\-_=—–*#~·•]{3,}$/,
-  /^\d{1,3}\s*[.)\]:-]\s*\S.{0,100}$/,
   /^(?:โดยเฉพาะ)?(?:สิบอันดับแรก|top\s*10)[^\n]*(?:พาวเวอร์สโตน|power\s*stones?)/i,
   /^ขอบคุณ(?:มาก)?(?:ทุกคน)?(?:สำหรับ|ที่)(?:การ)?(?:ติดตาม|อ่าน|สนับสนุน)/i,
 ] as const;
+
+const SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE =
+  /^\d{1,3}\s*[.)\]:-]\s*\S.{0,100}$/;
 
 function isSourceJunkEndMarker(text: string) {
   return SOURCE_JUNK_END_MARKER_RE.test(String(text || "").trim());
@@ -441,7 +443,9 @@ function isTrailingSectionContent(
     isSourceJunkEndMarker(value) ||
     isSourceJunkContinuation(value) ||
     isSupporterListHeadingLine(value) ||
-    (supporterListContext && isPlainSupporterHandle(value)) ||
+    (supporterListContext &&
+      (isPlainSupporterHandle(value) ||
+        SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE.test(value))) ||
     SOURCE_JUNK_NOTE_PROSE_PATTERNS.some(pattern => pattern.test(value))
   );
 }
@@ -601,12 +605,14 @@ function evaluateEditorialSourceJunkBlocks(
         // the signal line itself and the plain handles that follow it (e.g.
         // Unown, Oboro) stay inside the junk block in supporter-list context.
         if (isSourceJunkSupporterSignal(token)) supporterListContext = true;
-        const isSupporterHandle =
-          supporterListContext && isPlainSupporterHandle(token);
+        const isSupporterListEntry =
+          supporterListContext &&
+          (isPlainSupporterHandle(token) ||
+            SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE.test(token));
         if (
           !isAnchor &&
           !isSourceJunkContinuation(token) &&
-          !isSupporterHandle &&
+          !isSupporterListEntry &&
           !isSupporterListHeadingLine(token)
         ) {
           // A normal narrative paragraph is an explicit block boundary. Do not
