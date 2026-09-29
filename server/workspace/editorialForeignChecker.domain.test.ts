@@ -214,7 +214,7 @@ describe("Editorial deterministic foreign-word checker", () => {
           paragraphKey: "tail-note",
           paragraphOrder: 2,
         }),
-        paragraph("ขอบคุณสำหรับการติดตาม", {
+        paragraph("ฉันตั้งใจเขียนฉากนี้มานานแล้ว และหวังว่าทุกคนจะชอบจังหวะของตอนนี้", {
           sourceTabId: "tab-tail",
           paragraphKey: "tail-message",
           paragraphOrder: 3,

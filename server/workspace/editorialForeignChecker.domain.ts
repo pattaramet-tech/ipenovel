@@ -355,19 +355,53 @@ function hasSourceJunkAnchor(text: string) {
   return SOURCE_JUNK_ANCHOR_PATTERNS.some(pattern => pattern.test(value));
 }
 
+const SOURCE_JUNK_END_MARKER_RE =
+  /^(?:จบตอน|จบบท|จบตอนที่\s*\d+|end(?:\s+of)?\s+(?:chapter|part))\s*[.!…]*$/i;
+
+const SOURCE_JUNK_SECTION_HEADING_PATTERNS = [
+  /^(?:ความคิด|ความคิดเห็น)ของ(?:ผู้สร้าง|ผู้เขียน)\s*[:：-]?\s*$/i,
+  /^หมายเหตุ(?:จาก)?(?:ผู้สร้าง|ผู้เขียน|ผู้แปล)\s*[:：-]?\s*$/i,
+  /^(?:author(?:'s)?\s*(?:thoughts?|notes?)|creator(?:'s)?\s*(?:thoughts?|notes?))\s*[:：-]?\s*$/i,
+] as const;
+
 const SOURCE_JUNK_CONTINUATION_PATTERNS = [
   /^(?:\.{2,}|…+)$/,
   /^[\s\-_=—–*#~·•]{3,}$/,
-  /^(?:จบตอน|จบบท|จบตอนที่\s*\d+|end(?:\s+of)?\s+(?:chapter|part))\s*[.!…]*$/i,
   /^\d{1,3}\s*[.)\]:-]\s*\S.{0,100}$/,
   /^(?:โดยเฉพาะ)?(?:สิบอันดับแรก|top\s*10)[^\n]*(?:พาวเวอร์สโตน|power\s*stones?)/i,
   /^ขอบคุณ(?:มาก)?(?:ทุกคน)?(?:สำหรับ|ที่)(?:การ)?(?:ติดตาม|อ่าน|สนับสนุน)/i,
 ] as const;
 
+function isSourceJunkEndMarker(text: string) {
+  return SOURCE_JUNK_END_MARKER_RE.test(String(text || "").trim());
+}
+
+function isSourceJunkSectionHeading(text: string) {
+  const value = String(text || "").trim();
+  return SOURCE_JUNK_SECTION_HEADING_PATTERNS.some(pattern => pattern.test(value));
+}
+
+function sourceJunkTrailingSectionEndIndex(
+  ordered: readonly EditorialCheckerParagraphInput[],
+  anchorIndex: number
+) {
+  if (!isSourceJunkSectionHeading(ordered[anchorIndex]?.text || "")) return null;
+
+  const nonEmptyAfter: Array<{ index: number; text: string }> = [];
+  for (let index = anchorIndex + 1; index < ordered.length; index++) {
+    const text = String(ordered[index].text || "").trim();
+    if (text) nonEmptyAfter.push({ index, text });
+  }
+  if (!nonEmptyAfter.length || nonEmptyAfter.length > 6) return null;
+
+  const final = nonEmptyAfter[nonEmptyAfter.length - 1];
+  return isSourceJunkEndMarker(final.text) ? final.index : null;
+}
+
 function isSourceJunkContinuation(text: string) {
   const value = String(text || "").trim();
   if (!value) return true;
-  if (hasSourceJunkAnchor(value)) return true;
+  if (hasSourceJunkAnchor(value) || isSourceJunkEndMarker(value)) return true;
   if (SOURCE_JUNK_CONTINUATION_PATTERNS.some(pattern => pattern.test(value))) {
     return true;
   }
@@ -406,9 +440,64 @@ function evaluateEditorialSourceJunkBlocks(
     for (let index = 0; index < ordered.length; index++) {
       if (!hasSourceJunkAnchor(ordered[index].text)) continue;
 
+      const trailingSectionEnd = sourceJunkTrailingSectionEndIndex(
+        ordered,
+        index
+      );
+      if (trailingSectionEnd !== null) {
+        for (let cursor = index; cursor <= trailingSectionEnd; cursor++) {
+          const paragraph = ordered[cursor];
+          const token = String(paragraph.text || "").trim();
+          if (!token) continue;
+          const startOffset = paragraph.text.indexOf(token);
+          findings.push(
+            buildFinding(
+              paragraph,
+              EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
+              Math.max(0, startOffset),
+              Math.max(0, startOffset) + token.length,
+              token
+            )
+          );
+        }
+        index = trailingSectionEnd;
+        continue;
+      }
+
       for (let cursor = index; cursor < ordered.length; cursor++) {
         const paragraph = ordered[cursor];
         const token = String(paragraph.text || "").trim();
+
+        if (cursor > index) {
+          const nestedTrailingSectionEnd = sourceJunkTrailingSectionEndIndex(
+            ordered,
+            cursor
+          );
+          if (nestedTrailingSectionEnd !== null) {
+            for (
+              let tailCursor = cursor;
+              tailCursor <= nestedTrailingSectionEnd;
+              tailCursor++
+            ) {
+              const tailParagraph = ordered[tailCursor];
+              const tailToken = String(tailParagraph.text || "").trim();
+              if (!tailToken) continue;
+              const tailStartOffset = tailParagraph.text.indexOf(tailToken);
+              findings.push(
+                buildFinding(
+                  tailParagraph,
+                  EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
+                  Math.max(0, tailStartOffset),
+                  Math.max(0, tailStartOffset) + tailToken.length,
+                  tailToken
+                )
+              );
+            }
+            index = nestedTrailingSectionEnd;
+            break;
+          }
+        }
+
         const isAnchor = cursor === index || hasSourceJunkAnchor(token);
         if (!isAnchor && !isSourceJunkContinuation(token)) {
           // A normal narrative paragraph is an explicit block boundary. Do not
