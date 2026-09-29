@@ -364,6 +364,9 @@ const SOURCE_JUNK_SECTION_HEADING_PATTERNS = [
   /^(?:author(?:'s)?\s*(?:thoughts?|notes?)|creator(?:'s)?\s*(?:thoughts?|notes?))\s*[:：-]?\s*$/i,
 ] as const;
 
+const SOURCE_JUNK_SUPPORTER_SIGNAL_RE =
+  /(?:พาวเวอร์สโตน|power\s*stones?|สิบอันดับแรก|top\s*10|ผู้สนับสนุน|supporters?)/i;
+
 const SOURCE_JUNK_CONTINUATION_PATTERNS = [
   /^(?:\.{2,}|…+)$/,
   /^[\s\-_=—–*#~·•]{3,}$/,
@@ -398,6 +401,19 @@ function sourceJunkTrailingSectionEndIndex(
   return isSourceJunkEndMarker(final.text) ? final.index : null;
 }
 
+function isSourceJunkSupporterSignal(text: string) {
+  return SOURCE_JUNK_SUPPORTER_SIGNAL_RE.test(String(text || "").trim());
+}
+
+function isPlainSupporterHandle(text: string) {
+  const value = String(text || "").trim();
+  return (
+    value.length >= 2 &&
+    value.length <= 40 &&
+    /^[A-Za-z][A-Za-z0-9_.-]*$/.test(value)
+  );
+}
+
 function isSourceJunkContinuation(text: string) {
   const value = String(text || "").trim();
   if (!value) return true;
@@ -407,9 +423,9 @@ function isSourceJunkContinuation(text: string) {
   }
   if (new RegExp(LINK_OR_EMAIL_RE.source, "i").test(value)) return true;
 
-  // Supporter/account lists are common immediately after author-note anchors.
-  // Keep this intentionally narrow so normal short English dialogue cannot
-  // silently extend a junk block into resumed story content.
+  // Repeated or digit-bearing account-like tokens are strong enough to be
+  // continuation evidence on their own. Plain alphabetic handles are only
+  // accepted while an explicit supporter-list signal is active in the block.
   if (/^([A-Za-z0-9_.-]{2,})(?:\s+\1)+$/i.test(value)) return true;
   if (
     value.length <= 80 &&
@@ -464,6 +480,9 @@ function evaluateEditorialSourceJunkBlocks(
         continue;
       }
 
+      let supporterListContext = isSourceJunkSupporterSignal(
+        ordered[index].text
+      );
       for (let cursor = index; cursor < ordered.length; cursor++) {
         const paragraph = ordered[cursor];
         const token = String(paragraph.text || "").trim();
@@ -499,13 +518,16 @@ function evaluateEditorialSourceJunkBlocks(
         }
 
         const isAnchor = cursor === index || hasSourceJunkAnchor(token);
-        if (!isAnchor && !isSourceJunkContinuation(token)) {
+        const isSupporterHandle =
+          supporterListContext && isPlainSupporterHandle(token);
+        if (!isAnchor && !isSourceJunkContinuation(token) && !isSupporterHandle) {
           // A normal narrative paragraph is an explicit block boundary. Do not
           // inherit source_junk into the rest of the chapter merely because an
           // author note appeared earlier in the tab.
           index = cursor - 1;
           break;
         }
+        if (isSourceJunkSupporterSignal(token)) supporterListContext = true;
         if (!token) continue;
         const startOffset = paragraph.text.indexOf(token);
         findings.push(
