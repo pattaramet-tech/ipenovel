@@ -346,7 +346,8 @@ function isInlineParentheticalAuthorNote(text: string) {
   if (!value) return false;
   const match = value.match(INLINE_PARENTHETICAL_AUTHOR_NOTE_RE);
   if (!match) return false;
-  return value.replace(match[0], "").trim().length > 0;
+  const outside = value.replace(match[0], "").trim();
+  return outside.replace(/[\s.,!?…:;'"“”‘’\-—–]+/g, "").length > 0;
 }
 
 function hasSourceJunkAnchor(text: string) {
