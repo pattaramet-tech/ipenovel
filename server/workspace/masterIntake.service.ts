@@ -117,6 +117,10 @@ function rawFingerprint(input: {
     .digest("hex");
 }
 
+function affectedRows(result: any) {
+  return Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0);
+}
+
 function provenanceIdentityFingerprint(row: any) {
   return masterIntakeRowIdentityFingerprint({
     spreadsheetId: String(row.spreadsheetId),
@@ -222,6 +226,79 @@ async function readSheetRows(input: {
   };
 }
 
+async function readSpecificSheetRows(input: {
+  actorUserId: number;
+  googleConnectionId: number;
+  rowNumbers: number[];
+}) {
+  const uniqueRows = Array.from(new Set(input.rowNumbers)).sort((a, b) => a - b);
+  const valuesByRow = new Map<number, unknown[]>();
+  if (uniqueRows.length === 0) return valuesByRow;
+  const transport = new GoogleRestReadOnlyTransport({
+    accessTokenProvider: () =>
+      refreshWorkspaceGoogleNqaReadAccessToken({
+        actorUserId: input.actorUserId,
+        connectionId: input.googleConnectionId,
+      }),
+  });
+  const ranges = uniqueRows.map(
+    rowNumber =>
+      quoteSheetName(NQA_AUTOLINK_LIVE_TARGET.sheetName) +
+      "!B" +
+      rowNumber +
+      ":O" +
+      rowNumber
+  );
+  let batches;
+  try {
+    batches = await transport.batchGetValues({
+      spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+      ranges,
+    });
+  } catch {
+    throw new WorkspaceMasterIntakeError(
+      "GOOGLE_READ_FAILED",
+      "Google Sheets provenance rows could not be verified."
+    );
+  }
+  uniqueRows.forEach((rowNumber, index) => {
+    valuesByRow.set(rowNumber, batches[index]?.values?.[0] ?? []);
+  });
+  return valuesByRow;
+}
+
+function sheetRowIdentityFingerprint(input: {
+  rowNumber: number;
+  cells: unknown[];
+  sheetId: number;
+}) {
+  const rawTitle = String(input.cells[0] ?? "").trim();
+  const translationDocUrl = String(input.cells[1] ?? "").trim();
+  const webSourceRaw = String(input.cells[3] ?? "").trim();
+  const preparedSourceRaw = String(input.cells[13] ?? "").trim();
+  const parsed = parseMasterIntakeTitleRange(rawTitle);
+  const translationDocumentId = googleDocumentIdFromUrlOrId(translationDocUrl);
+  const preparedSourceDocumentId = preparedSourceRaw
+    ? googleDocumentIdFromUrlOrId(preparedSourceRaw)
+    : null;
+  const webSourceUrl = normalizeOptionalHttpUrl(webSourceRaw);
+  if (!parsed || !translationDocumentId || webSourceUrl === undefined) return null;
+  return masterIntakeRowIdentityFingerprint({
+    spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+    sheetId: input.sheetId,
+    sheetName: NQA_AUTOLINK_LIVE_TARGET.sheetName,
+    rowNumber: input.rowNumber,
+    novelTitle: parsed.novelTitle,
+    normalizedTitle: parsed.normalizedTitle,
+    episodeNumber: parsed.episodeNumber,
+    translationDocUrl,
+    translationDocumentId,
+    webSourceUrl,
+    preparedSourceDocUrl: preparedSourceDocumentId ? preparedSourceRaw : null,
+    preparedSourceDocumentId,
+  });
+}
+
 async function requireWorkspace(db: any, actorUserId: number, workspaceId: number) {
   await requireWorkspacePlatformAdmin(db, actorUserId);
   const [workspace] = await db
@@ -280,6 +357,38 @@ export async function previewWorkspaceMasterIntake(input: {
       .from(workspaceMasterIntakeRows)
       .where(eq(workspaceMasterIntakeRows.workspaceId, input.workspaceId)),
   ]);
+
+  const currentSheetIdentityByRow = new Map<number, string | null>();
+  const selectedIdentityFingerprints = new Set<string>();
+  for (let rowNumber = input.startRow; rowNumber <= input.endRow; rowNumber += 1) {
+    const identity = sheetRowIdentityFingerprint({
+      rowNumber,
+      cells: sheetRead.values[rowNumber - input.startRow] ?? [],
+      sheetId: sheetRead.sheetId,
+    });
+    currentSheetIdentityByRow.set(rowNumber, identity);
+    if (identity) selectedIdentityFingerprints.add(identity);
+  }
+  const provenanceRowsToVerify = provenanceRows
+    .filter(
+      (row: any) =>
+        row.spreadsheetId === NQA_AUTOLINK_LIVE_TARGET.spreadsheetId &&
+        Number(row.sheetId) === Number(sheetRead.sheetId) &&
+        selectedIdentityFingerprints.has(provenanceIdentityFingerprint(row)) &&
+        (Number(row.rowNumber) < input.startRow || Number(row.rowNumber) > input.endRow)
+    )
+    .map((row: any) => Number(row.rowNumber));
+  const externalIdentityRows = await readSpecificSheetRows({
+    actorUserId: input.actorUserId,
+    googleConnectionId: input.googleConnectionId,
+    rowNumbers: provenanceRowsToVerify,
+  });
+  externalIdentityRows.forEach((cells, rowNumber) => {
+    currentSheetIdentityByRow.set(
+      rowNumber,
+      sheetRowIdentityFingerprint({ rowNumber, cells, sheetId: sheetRead.sheetId })
+    );
+  });
 
   const titles = new Map<string, Array<{ id: number; title: string }>>();
   for (const novel of publicationNovels) {
@@ -372,6 +481,15 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceIdentityFingerprint(candidate) === identityFingerprint
     );
     if (identityMatches.length > 1) blockers.push("AMBIGUOUS_PROVENANCE_REBIND");
+    const uniqueIdentityMatch = identityMatches.length === 1 ? identityMatches[0] : null;
+    if (uniqueIdentityMatch && Number(uniqueIdentityMatch.rowNumber) !== rowNumber) {
+      const oldRowIdentity = currentSheetIdentityByRow.get(Number(uniqueIdentityMatch.rowNumber));
+      if (oldRowIdentity === undefined) {
+        blockers.push("PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+      } else if (oldRowIdentity === identityFingerprint) {
+        blockers.push("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
+      }
+    }
     const provenance =
       provenanceAtRow && provenanceIdentityFingerprint(provenanceAtRow) === identityFingerprint
         ? provenanceAtRow
@@ -854,7 +972,8 @@ async function rebindMovedMasterIntakeProvenance(preview: PreviewResult) {
       if (
         !record ||
         Number(record.workItemId) !== Number(move.workItemId) ||
-        Number(record.workspaceNovelId) !== Number(move.workspaceNovelId)
+        Number(record.workspaceNovelId) !== Number(move.workspaceNovelId) ||
+        Number(record.rowNumber) !== Number(move.provenanceRowNumber)
       ) {
         throw new Error("Master Intake provenance changed before row rebind.");
       }
@@ -901,16 +1020,34 @@ async function rebindMovedMasterIntakeProvenance(preview: PreviewResult) {
     }
 
     for (const move of moves) {
-      await tx
+      const temporaryRow = -Number(move.provenanceId);
+      const update = await tx
         .update(workspaceMasterIntakeRows)
-        .set({ rowNumber: -Number(move.provenanceId) })
-        .where(eq(workspaceMasterIntakeRows.id, Number(move.provenanceId)));
+        .set({ rowNumber: temporaryRow })
+        .where(
+          and(
+            eq(workspaceMasterIntakeRows.id, Number(move.provenanceId)),
+            eq(workspaceMasterIntakeRows.rowNumber, Number(move.provenanceRowNumber))
+          )
+        );
+      if (affectedRows(update) !== 1) {
+        throw new Error("Master Intake provenance changed during row rebind.");
+      }
     }
     for (const move of moves) {
-      await tx
+      const temporaryRow = -Number(move.provenanceId);
+      const update = await tx
         .update(workspaceMasterIntakeRows)
         .set({ rowNumber: move.rowNumber })
-        .where(eq(workspaceMasterIntakeRows.id, Number(move.provenanceId)));
+        .where(
+          and(
+            eq(workspaceMasterIntakeRows.id, Number(move.provenanceId)),
+            eq(workspaceMasterIntakeRows.rowNumber, temporaryRow)
+          )
+        );
+      if (affectedRows(update) !== 1) {
+        throw new Error("Master Intake provenance rebind could not be finalized.");
+      }
     }
   });
 }
