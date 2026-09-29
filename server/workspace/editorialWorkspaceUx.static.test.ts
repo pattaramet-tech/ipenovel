@@ -111,6 +111,11 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("refetchInterval: 30_000");
     expect(source).toContain("editorialBoardWorkItemIdKey");
     expect(source).toContain("activeWorkItemIds.has(workItemId)");
+    expect(source).toContain("setBulkCheckerSummary((current)");
+    expect(source).toContain("setBulkCleanupPreviewResult((current: any)");
+    expect(source).toContain("bulkCheckerSummary,");
+    expect(source).toContain("bulkCleanupPreviewResult,");
+    expect(source).toContain("!activeWorkItemIds.has(bulkEditorTarget.workItemId)");
     expect(source).toContain("!activeWorkItemIds.has(selectedSourceWorkItemId)");
   });
 
