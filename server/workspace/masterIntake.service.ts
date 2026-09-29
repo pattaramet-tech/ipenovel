@@ -697,6 +697,35 @@ export async function previewWorkspaceMasterIntake(input: {
     });
   }
 
+  for (let leftIndex = 0; leftIndex < rows.length; leftIndex += 1) {
+    const left = rows[leftIndex]!;
+    const leftParsed = parseMasterIntakeTitleRange(left.rawTitle);
+    if (!leftParsed) continue;
+    for (let rightIndex = leftIndex + 1; rightIndex < rows.length; rightIndex += 1) {
+      const right = rows[rightIndex]!;
+      const rightParsed = parseMasterIntakeTitleRange(right.rawTitle);
+      if (!rightParsed || leftParsed.normalizedTitle !== rightParsed.normalizedTitle) continue;
+      if (
+        !spansOverlap(
+          { start: leftParsed.rangeStart, end: leftParsed.rangeEnd },
+          { start: rightParsed.rangeStart, end: rightParsed.rangeEnd }
+        )
+      ) {
+        continue;
+      }
+      const exact =
+        leftParsed.rangeStart === rightParsed.rangeStart &&
+        leftParsed.rangeEnd === rightParsed.rangeEnd;
+      const blocker = exact
+        ? "DUPLICATE_BATCH_EPISODE_IDENTITY"
+        : "BATCH_EPISODE_RANGE_OVERLAP";
+      if (!left.blockers.includes(blocker)) left.blockers.push(blocker);
+      if (!right.blockers.includes(blocker)) right.blockers.push(blocker);
+      left.status = "CONFLICT";
+      right.status = "CONFLICT";
+    }
+  }
+
   const provenanceRebindRows = rows.filter(
     row =>
       row.provenanceId !== null &&
@@ -726,35 +755,6 @@ export async function previewWorkspaceMasterIntake(input: {
         }
         row.status = "CONFLICT";
       }
-    }
-  }
-
-  for (let leftIndex = 0; leftIndex < rows.length; leftIndex += 1) {
-    const left = rows[leftIndex]!;
-    const leftParsed = parseMasterIntakeTitleRange(left.rawTitle);
-    if (!leftParsed) continue;
-    for (let rightIndex = leftIndex + 1; rightIndex < rows.length; rightIndex += 1) {
-      const right = rows[rightIndex]!;
-      const rightParsed = parseMasterIntakeTitleRange(right.rawTitle);
-      if (!rightParsed || leftParsed.normalizedTitle !== rightParsed.normalizedTitle) continue;
-      if (
-        !spansOverlap(
-          { start: leftParsed.rangeStart, end: leftParsed.rangeEnd },
-          { start: rightParsed.rangeStart, end: rightParsed.rangeEnd }
-        )
-      ) {
-        continue;
-      }
-      const exact =
-        leftParsed.rangeStart === rightParsed.rangeStart &&
-        leftParsed.rangeEnd === rightParsed.rangeEnd;
-      const blocker = exact
-        ? "DUPLICATE_BATCH_EPISODE_IDENTITY"
-        : "BATCH_EPISODE_RANGE_OVERLAP";
-      if (!left.blockers.includes(blocker)) left.blockers.push(blocker);
-      if (!right.blockers.includes(blocker)) right.blockers.push(blocker);
-      left.status = "CONFLICT";
-      right.status = "CONFLICT";
     }
   }
 

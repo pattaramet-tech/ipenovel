@@ -109,6 +109,9 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(service).toContain("eq(workspaceMasterIntakeRows.rowNumber, Number(move.provenanceRowNumber))");
     expect(service).toContain("eq(workspaceMasterIntakeRows.rowNumber, temporaryRow)");
     expect(service).toContain("affectedRows(update) !== 1");
+    expect(service.indexOf('BATCH_EPISODE_RANGE_OVERLAP')).toBeLessThan(
+      service.indexOf('const provenanceRebindRows = rows.filter')
+    );
     expect(service).toContain(".set({ rowNumber: move.rowNumber })");
     expect(service).toContain("await rebindMovedMasterIntakeProvenance(preview)");
   });
