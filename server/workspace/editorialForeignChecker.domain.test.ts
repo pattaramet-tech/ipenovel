@@ -424,6 +424,22 @@ describe("Editorial deterministic foreign-word checker", () => {
     ]);
   });
 
+  it("activates supporter context from a trailing supporter signal before plain handles", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "tail-signal-heading", paragraphOrder: 1 }),
+        paragraph("ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด", { paragraphKey: "tail-signal-thanks", paragraphOrder: 2 }),
+        paragraph("Unown", { paragraphKey: "tail-signal-handle-1", paragraphOrder: 3 }),
+        paragraph("@Oboro21", { paragraphKey: "tail-signal-handle-2", paragraphOrder: 4 }),
+        paragraph("เขาปิดหนังสือแล้วเดินออกจากห้อง", { paragraphKey: "tail-signal-story", paragraphOrder: 5 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3, 4]);
+  });
+
   it("recognizes full-width punctuation on source-junk chapter-end markers", () => {
     for (const marker of ["จบตอน。", "จบตอน！", "จบตอน？"]) {
       const result = evaluateEditorialForeignDraft({
