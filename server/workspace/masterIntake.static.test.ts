@@ -84,6 +84,15 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(approval).toContain("effectiveSale.usesDefault");
   });
 
+  it("makes an unlinked-but-otherwise-unchanged intake row actionable for rebind", () => {
+    const service = read("server/workspace/masterIntake.service.ts");
+    const page = read("client/src/pages/WorkspacePage.tsx");
+    expect(service).toContain("masterIntakeProvenancePreviewStatus");
+    expect(service).toContain('workspaceNovelActive: provenanceWorkspaceNovel?.status === "active"');
+    expect(service).toContain("bindPublicationNovel");
+    expect(page).toContain('row.status === "CONFLICT" || row.status === "UNCHANGED"');
+  });
+
   it("restores a removed MATCH pack through the shared Episode intake path", () => {
     const service = read("server/workspace/masterIntake.service.ts");
     const board = read("server/workspace/editorialBoard.service.ts");
