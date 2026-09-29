@@ -470,6 +470,20 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3, 4, 5]);
   });
 
+  it("does not keep a note block open for a bare meeting verb without farewell context", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "meet-heading", paragraphOrder: 1 }),
+        paragraph("พบกัน", { paragraphKey: "meet-story", paragraphOrder: 2 }),
+        paragraph("เขาเดินต่อไปตามทางเดิม", { paragraphKey: "meet-story-2", paragraphOrder: 3 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
     const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
     expect(

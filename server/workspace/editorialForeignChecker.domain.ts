@@ -380,7 +380,7 @@ const SOURCE_JUNK_NOTE_PROSE_PATTERNS = [
   // "เจอกันตอนหน้า". The line must be the bare farewell formula: no leading
   // subject/time phrase and no trailing location, so narrative such as
   // "หลายปีต่อมา ทั้งสองพบกันใหม่ที่หน้าประตู" stays narrative.
-  /^(?:แล้ว)?\s*(?:ก็)?\s*(?:พบ|เจอ)กัน(?:ใหม่)?(?:\s*(?:ใน)?\s*(?:ตอน|บท)(?:หน้า|ถัดไป))?(?:\s*(?:นะ(?:ครับ|คะ)?|ครับ|ค่ะ|คะ))?[.!…]*$/i,
+  /^(?:แล้ว)?\s*(?:ก็)?\s*(?:พบ|เจอ)กัน(?:ใหม่(?:\s*(?:ใน)?\s*(?:ตอน|บท)(?:หน้า|ถัดไป))?|\s*(?:ใน)?\s*(?:ตอน|บท)(?:หน้า|ถัดไป))(?:\s*(?:นะ(?:ครับ|คะ)?|ครับ|ค่ะ|คะ))?[.!…]*$/i,
 ] as const;
 
 function isQuoteWrappedNarrativeLine(text: string) {
