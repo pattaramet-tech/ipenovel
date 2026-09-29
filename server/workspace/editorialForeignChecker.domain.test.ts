@@ -335,6 +335,17 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(
       english.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
     ).toEqual([1]);
+
+    const shortNarrative = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "sup-neg-short-anchor", paragraphOrder: 1 }),
+        paragraph("Supporters cheered", { paragraphKey: "sup-neg-short-en", paragraphOrder: 2 }),
+        paragraph("เขาคือผู้สนับสนุน", { paragraphKey: "sup-neg-short-th", paragraphOrder: 3 }),
+      ],
+    });
+    expect(
+      shortNarrative.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
+    ).toEqual([1]);
   });
 
   it("keeps plain handles out of the junk block when no supporter-list context is open", () => {

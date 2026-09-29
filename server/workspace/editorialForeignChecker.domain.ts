@@ -431,19 +431,14 @@ function isSourceJunkNarrativeResume(
 const SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS = [
   /^รายชื่อ\s*ผู้สนับสนุน(?:\s*(?:[:：-]\s*[^.!?]{1,80}|ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)\s*[^.!?]{1,60}))?$/i,
   /^(?:ผู้สนับสนุน|supporters?)(?:\s*(?:[:：-]\s*[^.!?]{1,80}|ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)\s*[^.!?]{1,60}|(?:for|this)\s+(?:month|week|chapter|episode)\b[^.!?]{0,40}))?$/i,
+  /^(?:พาวเวอร์สโตน|power\s*stones?)(?:\s*(?:[:：-]\s*[^.!?]{1,80}|(?:สิบอันดับแรก|top\s*10)(?:\s*[:：-]\s*[^.!?]{1,60})?))?$/i,
+  /^(?:สิบอันดับแรก|top\s*10)(?:\s*(?:ของ)?\s*(?:พาวเวอร์สโตน|power\s*stones?))?(?:\s*[:：-]\s*[^.!?]{1,60})?$/i,
 ] as const;
 
 function isSupporterListHeadingLine(text: string) {
   const value = String(text || "").trim();
   if (!value || value.length > 120) return false;
-  if (SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS.some(pattern => pattern.test(value))) {
-    return true;
-  }
-  if (!isSourceJunkSupporterSignal(value) || value.length > 60) return false;
-  const remainder = value
-    .replace(new RegExp(SOURCE_JUNK_SUPPORTER_SIGNAL_RE.source, "gi"), "")
-    .replace(/[\s:：\-–—•·|,.]+/g, "");
-  return remainder.length <= 8;
+  return SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS.some(pattern => pattern.test(value));
 }
 
 function isTrailingSectionContent(
