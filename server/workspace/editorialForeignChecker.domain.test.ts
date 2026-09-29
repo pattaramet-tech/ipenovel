@@ -302,7 +302,7 @@ describe("Editorial deterministic foreign-word checker", () => {
         paragraph("เนื้อเรื่องปกติ", { paragraphKey: "sup-story", paragraphOrder: 1 }),
         paragraph("https://www.patreon.com/author", { paragraphKey: "sup-patreon", paragraphOrder: 2 }),
         paragraph("รายชื่อผู้สนับสนุนประจำเดือนกันยายน", { paragraphKey: "sup-heading", paragraphOrder: 3 }),
-        paragraph("Unown", { paragraphKey: "sup-handle-1", paragraphOrder: 4 }),
+        paragraph("@Unown", { paragraphKey: "sup-handle-1", paragraphOrder: 4 }),
         paragraph("Oboro", { paragraphKey: "sup-handle-2", paragraphOrder: 5 }),
         paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "sup-story-2", paragraphOrder: 6 }),
       ],
@@ -358,6 +358,21 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
   });
 
+  it("does not treat narrative uses of farewell wording as author-note prose", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "farewell-heading", paragraphOrder: 1 }),
+        paragraph("หลายปีต่อมา ทั้งสองพบกันใหม่ที่หน้าประตู", { paragraphKey: "farewell-story-1", paragraphOrder: 2 }),
+        paragraph("เขายกมือทักทายก่อนจะเดินเข้าไปด้านใน", { paragraphKey: "farewell-story-2", paragraphOrder: 3 }),
+        paragraph("จบตอน", { paragraphKey: "farewell-end", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
   it("does not classify numbered resumed narrative as junk without supporter-list context", () => {
     const result = evaluateEditorialForeignDraft({
       paragraphs: [
@@ -379,7 +394,7 @@ describe("Editorial deterministic foreign-word checker", () => {
         paragraph("ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด", { paragraphKey: "num-sup-anchor", paragraphOrder: 1 }),
         paragraph("ผู้สนับสนุน", { paragraphKey: "num-sup-heading", paragraphOrder: 2 }),
         paragraph("1. Unown", { paragraphKey: "num-sup-1", paragraphOrder: 3 }),
-        paragraph("2. Oboro21", { paragraphKey: "num-sup-2", paragraphOrder: 4 }),
+        paragraph("2. @Oboro21", { paragraphKey: "num-sup-2", paragraphOrder: 4 }),
         paragraph("1. เขาเดินกลับเข้าไปในห้อง", { paragraphKey: "num-sup-story", paragraphOrder: 5 }),
         paragraph("เขานั่งลงข้างหน้าต่างอย่างเงียบ ๆ", { paragraphKey: "num-sup-story-2", paragraphOrder: 6 }),
       ],
@@ -388,6 +403,71 @@ describe("Editorial deterministic foreign-word checker", () => {
       finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
     );
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("keeps @-prefixed handles in the junk block only when a supporter-list signal opened context", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "at-sup-patreon", paragraphOrder: 1 }),
+        paragraph("Supporters", { paragraphKey: "at-sup-heading", paragraphOrder: 2 }),
+        paragraph("@Unown", { paragraphKey: "at-sup-handle-1", paragraphOrder: 3 }),
+        paragraph("@Oboro21", { paragraphKey: "at-sup-handle-2", paragraphOrder: 4 }),
+        paragraph("@user_name", { paragraphKey: "at-sup-handle-3", paragraphOrder: 5 }),
+        paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "at-sup-story", paragraphOrder: 6 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("does not let an @-prefixed handle extend a junk block without supporter-list context", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "at-no-sup-patreon", paragraphOrder: 1 }),
+        paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "at-no-sup-story", paragraphOrder: 2 }),
+        paragraph("@Unown", { paragraphKey: "at-no-sup-handle", paragraphOrder: 3 }),
+        paragraph("เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร", { paragraphKey: "at-no-sup-story-2", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
+  it("keeps numbered @-prefixed handles inside an explicit supporter list but stops at numbered narrative", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "at-num-patreon", paragraphOrder: 1 }),
+        paragraph("ผู้สนับสนุน", { paragraphKey: "at-num-heading", paragraphOrder: 2 }),
+        paragraph("1. @Unown", { paragraphKey: "at-num-handle-1", paragraphOrder: 3 }),
+        paragraph("2. @Oboro21", { paragraphKey: "at-num-handle-2", paragraphOrder: 4 }),
+        paragraph("1. เขาเดินกลับเข้าไปในห้อง", { paragraphKey: "at-num-story", paragraphOrder: 5 }),
+        paragraph("เขานั่งลงข้างหน้าต่างอย่างเงียบ ๆ", { paragraphKey: "at-num-story-2", paragraphOrder: 6 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("still flags genuine reader-directed farewell lines as author-note junk", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "bye-heading", paragraphOrder: 1 }),
+        paragraph("แล้วพบกันใหม่ตอนหน้า", { paragraphKey: "bye-1", paragraphOrder: 2 }),
+        paragraph("เจอกันตอนหน้า", { paragraphKey: "bye-2", paragraphOrder: 3 }),
+        paragraph("แล้วเจอกันใหม่ในตอนถัดไป ครับ", { paragraphKey: "bye-3", paragraphOrder: 4 }),
+        paragraph("จบตอน", { paragraphKey: "bye-end", paragraphOrder: 5 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {

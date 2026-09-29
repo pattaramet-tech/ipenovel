@@ -375,8 +375,12 @@ const SOURCE_JUNK_NOTE_PROSE_PATTERNS = [
   /(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?[^\n]{0,80}(?:เขียน|แต่ง|แปล)[^\n]{0,60}(?:ยาก|นาน|เสร็จ|ช้า)/i,
   /หวังว่า[^\n]{0,100}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน)[^\n]{0,100}(?:ชอบ|สนุก|ติดตาม|อ่าน)/i,
   /(?:ขอบคุณ|ขอบใจ|ฝาก|ขอ(?:โทษ|อภัย))[^\n]{0,120}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน|ติดตาม|สนับสนุน|อ่าน|ลงช้า)/i,
-  /(?:พบกันใหม่|เจอกัน(?:ตอน)?หน้า)/i,
   /(?:ป่วย|ไม่สบาย)[^\n]{0,100}(?:ลง|ตอน|อัปเดต|อัพเดต|อัพเดท|ขออภัย|ขอโทษ)/i,
+  // Reader-directed author farewell, e.g. "แล้วพบกันใหม่ตอนหน้า" or
+  // "เจอกันตอนหน้า". The line must be the bare farewell formula: no leading
+  // subject/time phrase and no trailing location, so narrative such as
+  // "หลายปีต่อมา ทั้งสองพบกันใหม่ที่หน้าประตู" stays narrative.
+  /^(?:แล้ว)?\s*(?:ก็)?\s*(?:พบ|เจอ)กัน(?:ใหม่)?(?:\s*(?:ใน)?\s*(?:ตอน|บท)(?:หน้า|ถัดไป))?(?:\s*(?:นะ(?:ครับ|คะ)?|ครับ|ค่ะ|คะ))?[.!…]*$/i,
 ] as const;
 
 function isQuoteWrappedNarrativeLine(text: string) {
@@ -499,7 +503,7 @@ function isPlainSupporterHandle(text: string) {
   return (
     value.length >= 2 &&
     value.length <= 40 &&
-    /^[A-Za-z][A-Za-z0-9_.-]*$/.test(value)
+    /^@?[A-Za-z][A-Za-z0-9_.-]*$/.test(value)
   );
 }
 
