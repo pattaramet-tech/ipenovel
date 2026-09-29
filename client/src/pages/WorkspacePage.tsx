@@ -1473,10 +1473,36 @@ export default function WorkspacePage() {
       const next = current.filter((workItemId) => activeWorkItemIds.has(workItemId));
       return next.length === current.length ? current : next;
     });
+    setBulkCheckerSummary((current) => {
+      const next = current.filter((result: any) => {
+        const workItemId = Number(result?.workItemId);
+        return !Number.isInteger(workItemId) || activeWorkItemIds.has(workItemId);
+      });
+      return next.length === current.length ? current : next;
+    });
+    setBulkCleanupPreviewResult((current: any) => {
+      if (!current) return current;
+      const workItemIds = Array.isArray(current.workItemIds)
+        ? current.workItemIds.map(Number).filter(Number.isInteger)
+        : [];
+      return workItemIds.every((workItemId: number) => activeWorkItemIds.has(workItemId))
+        ? current
+        : undefined;
+    });
+    if (bulkEditorTarget && !activeWorkItemIds.has(bulkEditorTarget.workItemId)) {
+      setBulkEditorTarget(undefined);
+      setBulkEditorText("");
+    }
     if (selectedSourceWorkItemId && !activeWorkItemIds.has(selectedSourceWorkItemId)) {
       setSelectedSourceWorkItemId(undefined);
     }
-  }, [editorialBoard.isSuccess, editorialBoardWorkItemIdKey, selectedSourceWorkItemId, selectedWorkspaceId]);
+  }, [
+    editorialBoard.isSuccess,
+    editorialBoardWorkItemIdKey,
+    bulkEditorTarget,
+    selectedSourceWorkItemId,
+    selectedWorkspaceId,
+  ]);
   const selectedEditorialSet = new Set(selectedEditorialWorkItemIds);
   const allEditorialSelected = selectableEditorialWorkItemIds.length > 0 && selectableEditorialWorkItemIds.every((id) => selectedEditorialSet.has(id));
   const toggleEditorialSelection = (workItemId: number) => setSelectedEditorialWorkItemIds((current) => current.includes(workItemId) ? current.filter((id) => id !== workItemId) : [...current, workItemId]);
