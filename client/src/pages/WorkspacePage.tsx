@@ -1499,6 +1499,8 @@ export default function WorkspacePage() {
   }, [
     editorialBoard.isSuccess,
     editorialBoardWorkItemIdKey,
+    bulkCheckerSummary,
+    bulkCleanupPreviewResult,
     bulkEditorTarget,
     selectedSourceWorkItemId,
     selectedWorkspaceId,
