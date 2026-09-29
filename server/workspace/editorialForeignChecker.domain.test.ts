@@ -368,7 +368,7 @@ describe("Editorial deterministic foreign-word checker", () => {
         paragraph("...", { paragraphKey: "two-ellipsis", paragraphOrder: 3 }),
         paragraph("รุ่งเช้าเขาตื่นมาพร้อมแสงแดดที่ส่องเข้ามาในห้อง", { paragraphKey: "two-story-2", paragraphOrder: 4 }),
         paragraph("ความคิดของผู้สร้าง", { paragraphKey: "two-heading", paragraphOrder: 5 }),
-        paragraph("ตอนนี้เขียนยากมาก และหวังว่าทุกคนจะชอบ", { paragraphKey: "two-note-2", paragraphOrder: 6 }),
+        paragraph("ตอนนี้เขียนฉากนี้ยากมาก และหวังว่าทุกคนจะชอบ", { paragraphKey: "two-note-2", paragraphOrder: 6 }),
         paragraph("https://www.patreon.com/author", { paragraphKey: "two-link", paragraphOrder: 7 }),
         paragraph("ขอบคุณทุกคนที่ติดตามกันมาตลอด แล้วเจอกันตอนหน้า ครับ", { paragraphKey: "two-note-3", paragraphOrder: 8 }),
         paragraph("จบตอน", { paragraphKey: "two-end", paragraphOrder: 9 }),
@@ -406,7 +406,7 @@ describe("Editorial deterministic foreign-word checker", () => {
       paragraphs: [
         paragraph("เนื้อเรื่องปกติ", { paragraphKey: "long-story", paragraphOrder: 1 }),
         paragraph("ความคิดของผู้สร้าง", { paragraphKey: "long-heading", paragraphOrder: 2 }),
-        paragraph("ตอนนี้ยาวมาก และหวังว่าทุกคนจะชอบจังหวะของมัน", { paragraphKey: "long-note-1", paragraphOrder: 3 }),
+        paragraph("ฉันเขียนตอนนี้ยาวมาก และหวังว่าทุกคนจะชอบจังหวะของมัน", { paragraphKey: "long-note-1", paragraphOrder: 3 }),
         paragraph("ช่วงนี้ไม่สบายอยู่ ขออภัยที่ลงช้า ครับ", { paragraphKey: "long-note-2", paragraphOrder: 4 }),
         paragraph("https://www.patreon.com/author", { paragraphKey: "long-link", paragraphOrder: 5 }),
         paragraph("รายชื่อผู้สนับสนุน", { paragraphKey: "long-supporters", paragraphOrder: 6 }),
@@ -422,6 +422,22 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([
       2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
+  });
+
+  it("recognizes full-width punctuation on source-junk chapter-end markers", () => {
+    for (const marker of ["จบตอน。", "จบตอน！", "จบตอน？"]) {
+      const result = evaluateEditorialForeignDraft({
+        paragraphs: [
+          paragraph("ความคิดของผู้สร้าง", { paragraphKey: `full-end-heading-${marker}`, paragraphOrder: 1 }),
+          paragraph("ฉันเขียนตอนนี้ยาวมาก และหวังว่าทุกคนจะชอบตอนนี้", { paragraphKey: `full-end-note-${marker}`, paragraphOrder: 2 }),
+          paragraph(marker, { paragraphKey: `full-end-marker-${marker}`, paragraphOrder: 3 }),
+        ],
+      });
+      const junk = result.findings.filter(
+        finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+      );
+      expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 3]);
+    }
   });
 
   it("lets a supporter-list signal open context before boundary evaluation so plain handles stay in the junk block", () => {
