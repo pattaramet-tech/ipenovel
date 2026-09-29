@@ -396,7 +396,7 @@ const SOURCE_JUNK_CONTINUATION_PATTERNS = [
 ] as const;
 
 const SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE =
-  /^\d{1,3}\s*[.)\]:-]\s*\S.{0,100}$/;
+  /^\d{1,3}\s*[.)\]:-]\s*(\S.{0,100})$/;
 
 function isSourceJunkEndMarker(text: string) {
   return SOURCE_JUNK_END_MARKER_RE.test(String(text || "").trim());
@@ -424,10 +424,18 @@ function isSourceJunkNarrativeResume(
  * ผู้สนับสนุน / Power Stones / top-10) is a list heading. Narrative that merely
  * mentions these words leaves a long remainder and is not a list heading.
  */
+const SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS = [
+  /^รายชื่อ\s*ผู้สนับสนุน(?:\s*ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)?\s*.*)?$/i,
+  /^(?:ผู้สนับสนุน|supporters?)(?:\s*[:：-]?\s*(?:ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)?|for\b|of\b|this\b|month\b|week\b).*)?$/i,
+] as const;
+
 function isSupporterListHeadingLine(text: string) {
   const value = String(text || "").trim();
-  if (!value || value.length > 60) return false;
-  if (!isSourceJunkSupporterSignal(value)) return false;
+  if (!value || value.length > 120) return false;
+  if (SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS.some(pattern => pattern.test(value))) {
+    return true;
+  }
+  if (!isSourceJunkSupporterSignal(value) || value.length > 60) return false;
   const remainder = value
     .replace(new RegExp(SOURCE_JUNK_SUPPORTER_SIGNAL_RE.source, "gi"), "")
     .replace(/[\s:：\-–—•·|,.]+/g, "");
@@ -444,8 +452,7 @@ function isTrailingSectionContent(
     isSourceJunkContinuation(value) ||
     isSupporterListHeadingLine(value) ||
     (supporterListContext &&
-      (isPlainSupporterHandle(value) ||
-        SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE.test(value))) ||
+      (isPlainSupporterHandle(value) || isNumberedSupporterHandle(value))) ||
     SOURCE_JUNK_NOTE_PROSE_PATTERNS.some(pattern => pattern.test(value))
   );
 }
@@ -494,6 +501,12 @@ function isPlainSupporterHandle(text: string) {
     value.length <= 40 &&
     /^[A-Za-z][A-Za-z0-9_.-]*$/.test(value)
   );
+}
+
+function isNumberedSupporterHandle(text: string) {
+  const value = String(text || "").trim();
+  const match = value.match(SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE);
+  return !!match && isPlainSupporterHandle(match[1]);
 }
 
 function isSourceJunkContinuation(text: string) {
@@ -607,8 +620,7 @@ function evaluateEditorialSourceJunkBlocks(
         if (isSourceJunkSupporterSignal(token)) supporterListContext = true;
         const isSupporterListEntry =
           supporterListContext &&
-          (isPlainSupporterHandle(token) ||
-            SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE.test(token));
+          (isPlainSupporterHandle(token) || isNumberedSupporterHandle(token));
         if (
           !isAnchor &&
           !isSourceJunkContinuation(token) &&

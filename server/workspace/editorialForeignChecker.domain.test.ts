@@ -301,7 +301,7 @@ describe("Editorial deterministic foreign-word checker", () => {
       paragraphs: [
         paragraph("เนื้อเรื่องปกติ", { paragraphKey: "sup-story", paragraphOrder: 1 }),
         paragraph("https://www.patreon.com/author", { paragraphKey: "sup-patreon", paragraphOrder: 2 }),
-        paragraph("ผู้สนับสนุน", { paragraphKey: "sup-heading", paragraphOrder: 3 }),
+        paragraph("รายชื่อผู้สนับสนุนประจำเดือนกันยายน", { paragraphKey: "sup-heading", paragraphOrder: 3 }),
         paragraph("Unown", { paragraphKey: "sup-handle-1", paragraphOrder: 4 }),
         paragraph("Oboro", { paragraphKey: "sup-handle-2", paragraphOrder: 5 }),
         paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "sup-story-2", paragraphOrder: 6 }),
@@ -380,7 +380,8 @@ describe("Editorial deterministic foreign-word checker", () => {
         paragraph("ผู้สนับสนุน", { paragraphKey: "num-sup-heading", paragraphOrder: 2 }),
         paragraph("1. Unown", { paragraphKey: "num-sup-1", paragraphOrder: 3 }),
         paragraph("2. Oboro21", { paragraphKey: "num-sup-2", paragraphOrder: 4 }),
-        paragraph("เขาเดินออกจากห้องไปอย่างเงียบ ๆ", { paragraphKey: "num-sup-story", paragraphOrder: 5 }),
+        paragraph("1. เขาเดินกลับเข้าไปในห้อง", { paragraphKey: "num-sup-story", paragraphOrder: 5 }),
+        paragraph("เขานั่งลงข้างหน้าต่างอย่างเงียบ ๆ", { paragraphKey: "num-sup-story-2", paragraphOrder: 6 }),
       ],
     });
     const junk = result.findings.filter(
