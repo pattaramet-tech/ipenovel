@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v7" as const;
+  "workspace-editorial-foreign-checker-v8" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
@@ -346,7 +346,8 @@ function isInlineParentheticalAuthorNote(text: string) {
   if (!value) return false;
   const match = value.match(INLINE_PARENTHETICAL_AUTHOR_NOTE_RE);
   if (!match) return false;
-  return value.replace(match[0], "").trim().length > 0;
+  const outside = value.replace(match[0], "").trim();
+  return outside.replace(/[\s.,!?…:;'"“”‘’\-—–。！？：；，、．｡＂＇－]+/g, "").length > 0;
 }
 
 function hasSourceJunkAnchor(text: string) {
@@ -355,7 +356,202 @@ function hasSourceJunkAnchor(text: string) {
   return SOURCE_JUNK_ANCHOR_PATTERNS.some(pattern => pattern.test(value));
 }
 
-function evaluateEditorialSourceJunkTail(
+const SOURCE_JUNK_END_MARKER_RE =
+  /^(?:จบตอน|จบบท|จบตอนที่\s*\d+|end(?:\s+of)?\s+(?:chapter|part))\s*[.!…。！？．｡]*$/i;
+
+const SOURCE_JUNK_SECTION_HEADING_PATTERNS = [
+  /^(?:ความคิด|ความคิดเห็น)ของ(?:ผู้สร้าง|ผู้เขียน)\s*[:：-]?\s*$/i,
+  /^หมายเหตุ(?:จาก)?(?:ผู้สร้าง|ผู้เขียน|ผู้แปล)\s*[:：-]?\s*$/i,
+  /^(?:author(?:'s)?\s*(?:thoughts?|notes?)|creator(?:'s)?\s*(?:thoughts?|notes?))\s*[:：-]?\s*$/i,
+] as const;
+
+const SOURCE_JUNK_SUPPORTER_SIGNAL_RE =
+  /(?:พาวเวอร์สโตน|power\s*stones?|สิบอันดับแรก|top\s*10|ผู้สนับสนุน|supporters?)/i;
+
+// Note-content prose markers: reader-directed wording that keeps a trailing
+// author-note/junk section open. Anything without these (or other junk signals)
+// is treated as resumed narrative and closes the section immediately.
+const SOURCE_JUNK_NOTE_PROSE_PATTERNS = [
+  /^(?:ฉัน|ผม|เรา|ผู้เขียน|คนเขียน)[^\n]{0,100}(?:เขียน|แต่ง|แปล)[^\n]{0,80}(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?/i,
+  /^ตอนนี้\s*(?:เขียน|แต่ง|แปล)\s*(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?[^\n]{0,80}(?:ยาก|นาน|เสร็จ|ช้า)/i,
+  /^(?:(?:ฉัน|ผม|เรา|ผู้เขียน|คนเขียน)\s*)?หวังว่า[^\n]{0,100}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน)[^\n]{0,100}(?:ชอบ|สนุก|ติดตาม|อ่าน)[^\n]{0,80}(?:ตอน|บท|เรื่อง|นิยาย|งานเขียน|เนื้อหา)(?:นี้|หน้า|ถัดไป)?/i,
+  /^(?:ขอบคุณ|ขอบใจ)(?:มาก)?[^\n]{0,80}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน)[^\n]{0,80}(?:ติดตาม|สนับสนุน|อ่าน|กำลังใจ|พาวเวอร์สโตน|power\s*stones?)/i,
+  /^ฝาก[^\n]{0,100}(?:ติดตาม|สนับสนุน|อ่าน)[^\n]{0,80}(?:ตอน|บท|เรื่อง|นิยาย|ผู้เขียน|ช่องทาง|patreon|พาวเวอร์สโตน|power\s*stones?)/i,
+  /^ขอ(?:โทษ|อภัย)[^\n]{0,100}(?:ลงช้า|อัปเดต|อัพเดต|อัพเดท|ตอน|บท)/i,
+  /^(?:(?:ฉัน|ผม|เรา|ผู้เขียน|คนเขียน)\s*)?(?:ช่วงนี้\s*)?(?:ป่วย|ไม่สบาย)[^\n]{0,100}(?:ขออภัย|ขอโทษ|ลง(?:ตอน|บท|ช้า)|อัปเดต|อัพเดต|อัพเดท)/i,
+  // Reader-directed author farewell, e.g. "แล้วพบกันใหม่ตอนหน้า" or
+  // "เจอกันตอนหน้า". The line must be the bare farewell formula: no leading
+  // subject/time phrase and no trailing location, so narrative such as
+  // "หลายปีต่อมา ทั้งสองพบกันใหม่ที่หน้าประตู" stays narrative.
+  /^(?:แล้ว)?\s*(?:ก็)?\s*(?:พบ|เจอ)กัน(?:ใหม่(?:\s*(?:ใน)?\s*(?:ตอน|บท)(?:หน้า|ถัดไป))?|\s*(?:ใน)?\s*(?:ตอน|บท)(?:หน้า|ถัดไป))(?:\s*(?:นะ(?:ครับ|คะ)?|ครับ|ค่ะ|คะ))?[.!…]*$/i,
+] as const;
+
+function isQuoteWrappedNarrativeLine(text: string) {
+  const value = String(text || "").trim();
+  return (
+    value.length >= 2 &&
+    /^["“”‘’「『]/.test(value) &&
+    /["”’」』]$/.test(value)
+  );
+}
+
+const SOURCE_JUNK_CONTINUATION_PATTERNS = [
+  /^(?:\.{2,}|…+)$/,
+  /^[\s\-_=—–*#~·•]{3,}$/,
+  /^(?:โดยเฉพาะ)?(?:สิบอันดับแรก|top\s*10)[^\n]*(?:พาวเวอร์สโตน|power\s*stones?)/i,
+  /^ขอบคุณ(?:มาก)?(?:ทุกคน)?(?:สำหรับ|ที่)(?:การ)?(?:ติดตาม|อ่าน|สนับสนุน)/i,
+] as const;
+
+const SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE =
+  /^\d{1,3}\s*[.)\]:-]\s*(\S.{0,100})$/;
+
+// Advance/early-access promo continuation, e.g. "20 advance chapters",
+// "20 chapters ahead", "Read 20 chapters ahead", "10 early access chapters",
+// "Get 15 advance chapters". The line must be the bare numeric promo formula,
+// so "Chapter 20", a bare count, or narrative like
+// "He advanced twenty steps ahead" never match. It only extends an already
+// active junk/promo block and never opens one by itself.
+const SOURCE_JUNK_PROMO_CONTINUATION_RE =
+  /^(?:(?:read|get|unlock|access|enjoy)\s+)?(?:\d{1,3}\s+(?:advance(?:d)?|early[-\s]?access)\s+chapters?|\d{1,3}\s+chapters?\s+ahead)[.!…]*$/i;
+
+function isSourceJunkPromoContinuation(text: string) {
+  return SOURCE_JUNK_PROMO_CONTINUATION_RE.test(String(text || "").trim());
+}
+
+const SOURCE_JUNK_LINK_ONLY_RE =
+  /^(?:(?:https?:\/\/|www\.)\S+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+\.(?:com|net|org|co|io|me|jp|kr|cn|th)\b\S*)(?:\s*(?:[|,;·•-]\s*)?(?:(?:https?:\/\/|www\.)\S+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+\.(?:com|net|org|co|io|me|jp|kr|cn|th)\b\S*))*$/i;
+
+function isSourceJunkEndMarker(text: string) {
+  return SOURCE_JUNK_END_MARKER_RE.test(String(text || "").trim());
+}
+
+function isSourceJunkSectionHeading(text: string) {
+  const value = String(text || "").trim();
+  return SOURCE_JUNK_SECTION_HEADING_PATTERNS.some(pattern => pattern.test(value));
+}
+
+function isSourceJunkNarrativeResume(
+  text: string,
+  supporterListContext: boolean
+) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  // Quote-wrapped dialogue is unambiguous narrative even when it contains
+  // note-ish polite particles.
+  if (isQuoteWrappedNarrativeLine(value)) return true;
+  return !isTrailingSectionContent(value, supporterListContext);
+}
+
+/**
+ * A short line that is almost entirely a supporter-list signal (Supporters /
+ * ผู้สนับสนุน / Power Stones / top-10) is a list heading. Narrative that merely
+ * mentions these words leaves a long remainder and is not a list heading.
+ */
+const SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS = [
+  /^รายชื่อ\s*ผู้สนับสนุน(?:\s*(?:[:：-]\s*[^.!?]{1,80}|ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)\s*[^.!?]{1,60}))?$/i,
+  /^(?:ผู้สนับสนุน|supporters?)(?:\s*(?:[:：-]\s*[^.!?]{1,80}|ประจำ(?:เดือน|สัปดาห์|ปี|ตอน|บท)\s*[^.!?]{1,60}|(?:for|this)\s+(?:month|week|chapter|episode)\b[^.!?]{0,40}))?$/i,
+  /^(?:พาวเวอร์สโตน|power\s*stones?)(?:\s*(?:[:：-]\s*[^.!?]{1,80}|(?:สิบอันดับแรก|top\s*10)(?:\s*[:：-]\s*[^.!?]{1,60})?))?$/i,
+  /^(?:สิบอันดับแรก|top\s*10)(?:\s*(?:ของ)?\s*(?:พาวเวอร์สโตน|power\s*stones?))?(?:\s*[:：-]\s*[^.!?]{1,60})?$/i,
+] as const;
+
+function isSupporterListHeadingLine(text: string) {
+  const value = String(text || "").trim();
+  if (!value || value.length > 120) return false;
+  return SOURCE_JUNK_SUPPORTER_HEADING_PATTERNS.some(pattern => pattern.test(value));
+}
+
+function isTrailingSectionContent(
+  text: string,
+  supporterListContext: boolean
+) {
+  const value = String(text || "").trim();
+  return (
+    isSourceJunkEndMarker(value) ||
+    isSourceJunkContinuation(value) ||
+    isSourceJunkPromoContinuation(value) ||
+    isSupporterListHeadingLine(value) ||
+    (supporterListContext &&
+      (isPlainSupporterHandle(value) || isNumberedSupporterHandle(value))) ||
+    SOURCE_JUNK_NOTE_PROSE_PATTERNS.some(pattern => pattern.test(value))
+  );
+}
+
+/**
+ * Semantic, bounded trailing-section detection. A section heading opens a
+ * trailing author-note/junk section of any length; the section stays open only
+ * while every non-empty paragraph still reads as note/junk content and closes
+ * immediately once narrative resumes (or at an end marker). Unlike the old
+ * fixed <=6-paragraph + end-marker heuristic, genuine long trailing notes are
+ * still detected while mid-chapter headings followed by story prose never
+ * swallow the narrative that follows.
+ */
+function sourceJunkTrailingSectionEndIndex(
+  ordered: readonly EditorialCheckerParagraphInput[],
+  anchorIndex: number
+) {
+  if (!isSourceJunkSectionHeading(ordered[anchorIndex]?.text || "")) return null;
+
+  let sectionEnd: number | null = null;
+  let supporterListContext = isSourceJunkSupporterSignal(
+    ordered[anchorIndex]?.text || ""
+  );
+  for (let index = anchorIndex + 1; index < ordered.length; index++) {
+    const text = String(ordered[index].text || "").trim();
+    if (!text) continue;
+    if (isSourceJunkEndMarker(text)) {
+      sectionEnd = index;
+      break;
+    }
+    if (isSourceJunkSupporterSignal(text)) supporterListContext = true;
+    if (isSourceJunkNarrativeResume(text, supporterListContext)) break;
+    sectionEnd = index;
+  }
+  return sectionEnd;
+}
+
+function isSourceJunkSupporterSignal(text: string) {
+  return SOURCE_JUNK_SUPPORTER_SIGNAL_RE.test(String(text || "").trim());
+}
+
+function isPlainSupporterHandle(text: string) {
+  const value = String(text || "").trim();
+  return (
+    value.length >= 2 &&
+    value.length <= 40 &&
+    /^@?[A-Za-z][A-Za-z0-9_.-]*$/.test(value)
+  );
+}
+
+function isNumberedSupporterHandle(text: string) {
+  const value = String(text || "").trim();
+  const match = value.match(SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE);
+  return !!match && isPlainSupporterHandle(match[1]);
+}
+
+function isSourceJunkContinuation(text: string) {
+  const value = String(text || "").trim();
+  if (!value) return true;
+  if (hasSourceJunkAnchor(value) || isSourceJunkEndMarker(value)) return true;
+  if (SOURCE_JUNK_CONTINUATION_PATTERNS.some(pattern => pattern.test(value))) {
+    return true;
+  }
+  if (SOURCE_JUNK_LINK_ONLY_RE.test(value)) return true;
+
+  // Repeated or digit-bearing account-like tokens are strong enough to be
+  // continuation evidence on their own. Plain alphabetic handles are only
+  // accepted while an explicit supporter-list signal is active in the block.
+  if (/^([A-Za-z0-9_.-]{2,})(?:\s+\1)+$/i.test(value)) return true;
+  if (
+    value.length <= 80 &&
+    !/[\u0E00-\u0E7F]/.test(value) &&
+    /^[A-Za-z][A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*$/.test(value)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function evaluateEditorialSourceJunkBlocks(
   paragraphs: readonly EditorialCheckerParagraphInput[]
 ): EditorialForeignFinding[] {
   const grouped = new Map<string, EditorialCheckerParagraphInput[]>();
@@ -370,24 +566,103 @@ function evaluateEditorialSourceJunkTail(
     const ordered = [...rows].sort(
       (a, b) => a.paragraphOrder - b.paragraphOrder
     );
-    const anchorIndex = ordered.findIndex(paragraph =>
-      hasSourceJunkAnchor(paragraph.text)
-    );
-    if (anchorIndex < 0) continue;
 
-    for (const paragraph of ordered.slice(anchorIndex)) {
-      const token = String(paragraph.text || "").trim();
-      if (!token) continue;
-      const startOffset = paragraph.text.indexOf(token);
-      findings.push(
-        buildFinding(
-          paragraph,
-          EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
-          Math.max(0, startOffset),
-          Math.max(0, startOffset) + token.length,
-          token
-        )
+    for (let index = 0; index < ordered.length; index++) {
+      if (!hasSourceJunkAnchor(ordered[index].text)) continue;
+
+      const trailingSectionEnd = sourceJunkTrailingSectionEndIndex(
+        ordered,
+        index
       );
+      if (trailingSectionEnd !== null) {
+        for (let cursor = index; cursor <= trailingSectionEnd; cursor++) {
+          const paragraph = ordered[cursor];
+          const token = String(paragraph.text || "").trim();
+          if (!token) continue;
+          const startOffset = paragraph.text.indexOf(token);
+          findings.push(
+            buildFinding(
+              paragraph,
+              EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
+              Math.max(0, startOffset),
+              Math.max(0, startOffset) + token.length,
+              token
+            )
+          );
+        }
+        index = trailingSectionEnd;
+        continue;
+      }
+
+      let supporterListContext = isSourceJunkSupporterSignal(
+        ordered[index].text
+      );
+      for (let cursor = index; cursor < ordered.length; cursor++) {
+        const paragraph = ordered[cursor];
+        const token = String(paragraph.text || "").trim();
+
+        if (cursor > index) {
+          const nestedTrailingSectionEnd = sourceJunkTrailingSectionEndIndex(
+            ordered,
+            cursor
+          );
+          if (nestedTrailingSectionEnd !== null) {
+            for (
+              let tailCursor = cursor;
+              tailCursor <= nestedTrailingSectionEnd;
+              tailCursor++
+            ) {
+              const tailParagraph = ordered[tailCursor];
+              const tailToken = String(tailParagraph.text || "").trim();
+              if (!tailToken) continue;
+              const tailStartOffset = tailParagraph.text.indexOf(tailToken);
+              findings.push(
+                buildFinding(
+                  tailParagraph,
+                  EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
+                  Math.max(0, tailStartOffset),
+                  Math.max(0, tailStartOffset) + tailToken.length,
+                  tailToken
+                )
+              );
+            }
+            index = nestedTrailingSectionEnd;
+            break;
+          }
+        }
+
+        const isAnchor = cursor === index || hasSourceJunkAnchor(token);
+        // A supporter-list signal (Supporters / ผู้สนับสนุน / Power Stones /
+        // top-10) must open supporter context BEFORE boundary evaluation so
+        // the signal line itself and the handles that follow it stay inside
+        // the junk block only in explicit supporter-list context.
+        if (isSourceJunkSupporterSignal(token)) supporterListContext = true;
+        if (
+          !isAnchor &&
+          !isTrailingSectionContent(token, supporterListContext)
+        ) {
+          // A normal narrative paragraph is an explicit block boundary. Do not
+          // inherit source_junk into the rest of the chapter merely because an
+          // author note appeared earlier in the tab.
+          index = cursor - 1;
+          break;
+        }
+        if (!token) {
+          if (cursor === ordered.length - 1) index = cursor;
+          continue;
+        }
+        const startOffset = paragraph.text.indexOf(token);
+        findings.push(
+          buildFinding(
+            paragraph,
+            EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
+            Math.max(0, startOffset),
+            Math.max(0, startOffset) + token.length,
+            token
+          )
+        );
+        if (cursor === ordered.length - 1) index = cursor;
+      }
     }
   }
   return findings;
@@ -404,7 +679,7 @@ export function evaluateEditorialForeignDraft(input: {
     ...input.paragraphs.flatMap(paragraph =>
       evaluateEditorialForeignParagraph(paragraph, allowWords)
     ),
-    ...evaluateEditorialSourceJunkTail(input.paragraphs),
+    ...evaluateEditorialSourceJunkBlocks(input.paragraphs),
   ].sort(
     (a, b) =>
       a.sourceTabId.localeCompare(b.sourceTabId) ||

@@ -6,6 +6,7 @@ import {
   groupEditorialBulkCleanupFindings,
 } from "./editorialBulkFindingCleanup.domain";
 import { reindexEditorialDraftDocument } from "./editorialDraft.domain";
+import { evaluateEditorialForeignDraft } from "./editorialForeignChecker.domain";
 
 function document(paragraphs: string[]) {
   return reindexEditorialDraftDocument({
@@ -137,6 +138,183 @@ describe("Editorial Bulk Finding Cleanup domain", () => {
     expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
       "บทที่ 74",
       "เนื้อหาปกติ",
+    ]);
+  });
+
+  it("removes only the bounded mid-chapter junk block and preserves resumed narrative", () => {
+    const input = document([
+      "บท 225 ตอนที่ 256: เข้าหลอม (II)",
+      "หมายเหตุผู้เขียน: พระเจ้า ผู้แต่งลงสองวันติดกัน โลกกำลังจะแตกหรืออะไรสักอย่าง",
+      "...",
+      "ช่วงเช้ากับโยรุอิจิทิ้งให้คาซึยะไม่มีเอนเท่าใดนัก ความสุขบริสุทธิ์สีสิบบนที่กับชุนซุยย่อมพลิกอารมณ์ทั้งหมด",
+      "‘ตอนนี้ไม่ได้’",
+      "ขณะที่กำลังจะใส่เสื้อแจ็กเก็ต เขาเห็นฮาริเบลหยิบเสื้อแจ็กเก็ตของชุนซุยจากพื้นและสวมกลับให้",
+      "จบตอน",
+    ]);
+    const checked = evaluateEditorialForeignDraft({
+      paragraphs: input.tabs[0].paragraphs.map(paragraph => ({
+        sourceTabId: input.tabs[0].sourceTabId,
+        tabTitle: input.tabs[0].title,
+        paragraphKey: paragraph.paragraphKey,
+        paragraphOrder: paragraph.paragraphOrder,
+        paragraphFingerprint: paragraph.paragraphFingerprint,
+        text: paragraph.text,
+      })),
+    });
+    const junk = checked.findings
+      .filter(finding => finding.ruleKey === "source_junk")
+      .map(finding => ({
+        ...finding,
+        disposition: "open" as const,
+        resolutionVersion: 0,
+      }));
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3]);
+
+    const result = applyEditorialBulkCleanupToDocument({
+      document: input,
+      findings: junk,
+    });
+    expect(result.removedParagraphCount).toBe(2);
+    expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
+      "บท 225 ตอนที่ 256: เข้าหลอม (II)",
+      "ช่วงเช้ากับโยรุอิจิทิ้งให้คาซึยะไม่มีเอนเท่าใดนัก ความสุขบริสุทธิ์สีสิบบนที่กับชุนซุยย่อมพลิกอารมณ์ทั้งหมด",
+      "‘ตอนนี้ไม่ได้’",
+      "ขณะที่กำลังจะใส่เสื้อแจ็กเก็ต เขาเห็นฮาริเบลหยิบเสื้อแจ็กเก็ตของชุนซุยจากพื้นและสวมกลับให้",
+      "จบตอน",
+    ]);
+  });
+
+  it("removes junk across story→junk→story→long trailing note and preserves every narrative paragraph", () => {
+    const input = document([
+      "บทที่ 75",
+      "เขาเปิดประตูออกไปอย่างช้า ๆ",
+      "หมายเหตุผู้เขียน: วันนี้ลงสองตอน",
+      "...",
+      "เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร",
+      "ความคิดของผู้สร้าง",
+      "ตอนนี้เขียนฉากนี้ยากมาก และหวังว่าทุกคนจะชอบ",
+      "https://www.patreon.com/author",
+      "รายชื่อผู้สนับสนุน",
+      "Unown",
+      "ฝากติดตามกันได้ในตอนถัดไป แล้วพบกันใหม่ครับ",
+      "จบตอน",
+    ]);
+    const checked = evaluateEditorialForeignDraft({
+      paragraphs: input.tabs[0].paragraphs.map(paragraph => ({
+        sourceTabId: input.tabs[0].sourceTabId,
+        tabTitle: input.tabs[0].title,
+        paragraphKey: paragraph.paragraphKey,
+        paragraphOrder: paragraph.paragraphOrder,
+        paragraphFingerprint: paragraph.paragraphFingerprint,
+        text: paragraph.text,
+      })),
+    });
+    const junk = checked.findings
+      .filter(finding => finding.ruleKey === "source_junk")
+      .map(finding => ({
+        ...finding,
+        disposition: "open" as const,
+        resolutionVersion: 0,
+      }));
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([
+      3, 4, 6, 7, 8, 9, 10, 11, 12,
+    ]);
+
+    const result = applyEditorialBulkCleanupToDocument({
+      document: input,
+      findings: junk,
+    });
+    expect(result.removedParagraphCount).toBe(9);
+    expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
+      "บทที่ 75",
+      "เขาเปิดประตูออกไปอย่างช้า ๆ",
+      "เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร",
+    ]);
+  });
+
+  it("removes a supporter @handle junk block with farewell wording and preserves resumed narrative", () => {
+    const input = document([
+      "บทที่ 76",
+      "เขาเดินตามทางเดียวดายในความมืด",
+      "ความคิดของผู้สร้าง",
+      "ผู้สนับสนุน",
+      "@Unown",
+      "@Oboro21",
+      "@user_name",
+      "แล้วพบกันใหม่ตอนหน้า",
+      "เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร",
+      "จบตอน",
+    ]);
+    const checked = evaluateEditorialForeignDraft({
+      paragraphs: input.tabs[0].paragraphs.map(paragraph => ({
+        sourceTabId: input.tabs[0].sourceTabId,
+        tabTitle: input.tabs[0].title,
+        paragraphKey: paragraph.paragraphKey,
+        paragraphOrder: paragraph.paragraphOrder,
+        paragraphFingerprint: paragraph.paragraphFingerprint,
+        text: paragraph.text,
+      })),
+    });
+    const junk = checked.findings
+      .filter(finding => finding.ruleKey === "source_junk")
+      .map(finding => ({
+        ...finding,
+        disposition: "open" as const,
+        resolutionVersion: 0,
+      }));
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([
+      3, 4, 5, 6, 7, 8,
+    ]);
+
+    const result = applyEditorialBulkCleanupToDocument({
+      document: input,
+      findings: junk,
+    });
+    expect(result.removedParagraphCount).toBe(6);
+    expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
+      "บทที่ 76",
+      "เขาเดินตามทางเดียวดายในความมืด",
+      "เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร",
+      "จบตอน",
+    ]);
+  });
+
+  it("removes a patreon + advance-chapters promo block and preserves resumed narrative", () => {
+    const input = document([
+      "บทที่ 77",
+      "เนื้อเรื่องจริง",
+      "https://www.patreon.com/author",
+      "20 advance chapters",
+      "เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด",
+    ]);
+    const checked = evaluateEditorialForeignDraft({
+      paragraphs: input.tabs[0].paragraphs.map(paragraph => ({
+        sourceTabId: input.tabs[0].sourceTabId,
+        tabTitle: input.tabs[0].title,
+        paragraphKey: paragraph.paragraphKey,
+        paragraphOrder: paragraph.paragraphOrder,
+        paragraphFingerprint: paragraph.paragraphFingerprint,
+        text: paragraph.text,
+      })),
+    });
+    const junk = checked.findings
+      .filter(finding => finding.ruleKey === "source_junk")
+      .map(finding => ({
+        ...finding,
+        disposition: "open" as const,
+        resolutionVersion: 0,
+      }));
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([3, 4]);
+
+    const result = applyEditorialBulkCleanupToDocument({
+      document: input,
+      findings: junk,
+    });
+    expect(result.removedParagraphCount).toBe(2);
+    expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
+      "บทที่ 77",
+      "เนื้อเรื่องจริง",
+      "เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด",
     ]);
   });
 

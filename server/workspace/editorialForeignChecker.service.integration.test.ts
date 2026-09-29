@@ -273,7 +273,7 @@ describe.sequential(
       }
     });
 
-    it("detects Devanagari, long control payloads and source-junk tails", async () => {
+    it("detects Devanagari, long control payloads, bounded source-junk blocks and tails", async () => {
       if (!process.env.TEST_DATABASE_URL) return;
       assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
 
@@ -308,10 +308,14 @@ describe.sequential(
             "บทที่ 74",
             "มันคือโปเกมอนโอมา\u093E\u0907\u091Fกับคาบูโตะ",
             '”}}],"write_control":{"requiredRevisionId":"ANLCKQltefh534_M0rfjVhNAJM9PmNmBCaSHz22Skd9a2MV0Jf447IJ3Z1T4V00Z3st_fX5D-rKYWSSVPYw-PYFxw1m6xDr9uZ60TpCMm3M',
+            "หมายเหตุผู้เขียน: พระเจ้า ผู้แต่งลงสองวันติดกัน โลกกำลังจะแตกหรืออะไรสักอย่าง",
+            "...",
+            "ช่วงเช้ากับโยรุอิจิทิ้งให้คาซึยะไม่มีเอนเท่าใดนัก ความสุขบริสุทธิ์ย่อมพลิกอารมณ์ทั้งหมด",
             "ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด",
-            "1.Unown",
-            "2. Oboro21",
+            "Unown",
+            "Oboro",
             "ความคิดของผู้สร้าง",
+            "ฉันตั้งใจเขียนฉากนี้มานานแล้ว และหวังว่าทุกคนจะชอบจังหวะของตอนนี้",
             "alex02373 alex02373",
             "จบตอน",
           ]),
@@ -325,7 +329,7 @@ describe.sequential(
         });
 
         expect(checked.run.engineVersion).toBe(
-          "workspace-editorial-foreign-checker-v7"
+          "workspace-editorial-foreign-checker-v8"
         );
         const devanagari = checked.findings.find(
           (finding: any) => finding.token === "\u093E\u0907\u091F"
@@ -346,13 +350,21 @@ describe.sequential(
           (finding: any) => finding.ruleKey === "source_junk"
         );
         expect(junk.map((finding: any) => finding.token)).toEqual([
+          "หมายเหตุผู้เขียน: พระเจ้า ผู้แต่งลงสองวันติดกัน โลกกำลังจะแตกหรืออะไรสักอย่าง",
+          "...",
           "ขอบคุณสำหรับพาวเวอร์สโตนทั้งหมด",
-          "1.Unown",
-          "2. Oboro21",
+          "Unown",
+          "Oboro",
           "ความคิดของผู้สร้าง",
+          "ฉันตั้งใจเขียนฉากนี้มานานแล้ว และหวังว่าทุกคนจะชอบจังหวะของตอนนี้",
           "alex02373 alex02373",
           "จบตอน",
         ]);
+        expect(
+          junk.some((finding: any) =>
+            finding.token.includes("ช่วงเช้ากับโยรุอิจิ")
+          )
+        ).toBe(false);
         expect(checked.effectiveStatus).toBe("failed");
 
         await expect(
