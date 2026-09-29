@@ -679,6 +679,76 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
   });
 
+  it("extends a patreon junk block across an advance-chapters promo and stops at resumed narrative", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เนื้อเรื่องจริง", { paragraphKey: "promo-story", paragraphOrder: 1 }),
+        paragraph("https://www.patreon.com/author", { paragraphKey: "promo-patreon", paragraphOrder: 2 }),
+        paragraph("20 advance chapters", { paragraphKey: "promo-line", paragraphOrder: 3 }),
+        paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "promo-story-2", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3]);
+    expect(
+      junk.some(finding => finding.paragraphOrder === 4)
+    ).toBe(false);
+  });
+
+  it("keeps read-ahead and early-access promo variants inside the junk block", () => {
+    for (const promoLine of [
+      "Read 20 chapters ahead",
+      "10 early access chapters",
+      "20 chapters ahead",
+      "Get 15 advance chapters",
+    ]) {
+      const result = evaluateEditorialForeignDraft({
+        paragraphs: [
+          paragraph("https://www.patreon.com/author", { paragraphKey: "variant-patreon", paragraphOrder: 1 }),
+          paragraph(promoLine, { paragraphKey: "variant-promo", paragraphOrder: 2 }),
+          paragraph("เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร", { paragraphKey: "variant-story", paragraphOrder: 3 }),
+        ],
+      });
+      const junk = result.findings.filter(
+        finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+      );
+      expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2]);
+    }
+  });
+
+  it("stops a junk block before a chapter-number line instead of eating it as promo", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "ch20-patreon", paragraphOrder: 1 }),
+        paragraph("Chapter 20", { paragraphKey: "ch20-line", paragraphOrder: 2 }),
+        paragraph("เนื้อเรื่องกลับมาต่อตรงนี้", { paragraphKey: "ch20-story", paragraphOrder: 3 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
+  it("does not open a source-junk block from promo wording without an active junk anchor", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เนื้อเรื่องปกติ", { paragraphKey: "solo-story", paragraphOrder: 1 }),
+        paragraph("20 advance chapters", { paragraphKey: "solo-promo", paragraphOrder: 2 }),
+        paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "solo-story-2", paragraphOrder: 3 }),
+        paragraph("He advanced twenty steps ahead of the others", { paragraphKey: "solo-english", paragraphOrder: 4 }),
+        paragraph("20", { paragraphKey: "solo-count", paragraphOrder: 5 }),
+      ],
+    });
+    expect(
+      result.findings.filter(
+        finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+      )
+    ).toEqual([]);
+  });
+
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
     const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
     expect(

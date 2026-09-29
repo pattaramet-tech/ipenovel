@@ -279,6 +279,45 @@ describe("Editorial Bulk Finding Cleanup domain", () => {
     ]);
   });
 
+  it("removes a patreon + advance-chapters promo block and preserves resumed narrative", () => {
+    const input = document([
+      "บทที่ 77",
+      "เนื้อเรื่องจริง",
+      "https://www.patreon.com/author",
+      "20 advance chapters",
+      "เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด",
+    ]);
+    const checked = evaluateEditorialForeignDraft({
+      paragraphs: input.tabs[0].paragraphs.map(paragraph => ({
+        sourceTabId: input.tabs[0].sourceTabId,
+        tabTitle: input.tabs[0].title,
+        paragraphKey: paragraph.paragraphKey,
+        paragraphOrder: paragraph.paragraphOrder,
+        paragraphFingerprint: paragraph.paragraphFingerprint,
+        text: paragraph.text,
+      })),
+    });
+    const junk = checked.findings
+      .filter(finding => finding.ruleKey === "source_junk")
+      .map(finding => ({
+        ...finding,
+        disposition: "open" as const,
+        resolutionVersion: 0,
+      }));
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([3, 4]);
+
+    const result = applyEditorialBulkCleanupToDocument({
+      document: input,
+      findings: junk,
+    });
+    expect(result.removedParagraphCount).toBe(2);
+    expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
+      "บทที่ 77",
+      "เนื้อเรื่องจริง",
+      "เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด",
+    ]);
+  });
+
   it("fails closed when a paragraph fingerprint is stale", () => {
     const input = document(["บทที่ 1", "พบ ाइट"]);
     const paragraph = input.tabs[0].paragraphs[1];

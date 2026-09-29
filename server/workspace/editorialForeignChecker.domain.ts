@@ -405,6 +405,19 @@ const SOURCE_JUNK_CONTINUATION_PATTERNS = [
 const SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE =
   /^\d{1,3}\s*[.)\]:-]\s*(\S.{0,100})$/;
 
+// Advance/early-access promo continuation, e.g. "20 advance chapters",
+// "20 chapters ahead", "Read 20 chapters ahead", "10 early access chapters",
+// "Get 15 advance chapters". The line must be the bare numeric promo formula,
+// so "Chapter 20", a bare count, or narrative like
+// "He advanced twenty steps ahead" never match. It only extends an already
+// active junk/promo block and never opens one by itself.
+const SOURCE_JUNK_PROMO_CONTINUATION_RE =
+  /^(?:(?:read|get|unlock|access|enjoy)\s+)?(?:\d{1,3}\s+(?:advance(?:d)?|early[-\s]?access)\s+chapters?|\d{1,3}\s+chapters?\s+ahead)[.!…]*$/i;
+
+function isSourceJunkPromoContinuation(text: string) {
+  return SOURCE_JUNK_PROMO_CONTINUATION_RE.test(String(text || "").trim());
+}
+
 const SOURCE_JUNK_LINK_ONLY_RE =
   /^(?:(?:https?:\/\/|www\.)\S+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+\.(?:com|net|org|co|io|me|jp|kr|cn|th)\b\S*)(?:\s*(?:[|,;·•-]\s*)?(?:(?:https?:\/\/|www\.)\S+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+\.(?:com|net|org|co|io|me|jp|kr|cn|th)\b\S*))*$/i;
 
@@ -455,6 +468,7 @@ function isTrailingSectionContent(
   return (
     isSourceJunkEndMarker(value) ||
     isSourceJunkContinuation(value) ||
+    isSourceJunkPromoContinuation(value) ||
     isSupporterListHeadingLine(value) ||
     (supporterListContext &&
       (isPlainSupporterHandle(value) || isNumberedSupporterHandle(value))) ||
