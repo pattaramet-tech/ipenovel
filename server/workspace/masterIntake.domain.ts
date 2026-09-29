@@ -109,6 +109,20 @@ export function masterIntakeRowFingerprint(row: MasterIntakeRowCanonical): strin
     .digest("hex");
 }
 
+export function masterIntakeProvenancePreviewStatus(input: {
+  hasBlockers: boolean;
+  rowUnchanged: boolean;
+  sourceAlreadyLinked: boolean;
+  workspaceNovelActive: boolean;
+}) {
+  if (input.hasBlockers) return "CONFLICT" as const;
+  return input.rowUnchanged &&
+    input.sourceAlreadyLinked &&
+    input.workspaceNovelActive
+    ? ("UNCHANGED" as const)
+    : ("UPDATED" as const);
+}
+
 export function masterIntakePreviewFingerprint(input: {
   workspaceId: number;
   startRow: number;

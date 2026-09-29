@@ -4,6 +4,7 @@ import {
   assertMasterIntakeRowRange,
   googleDocumentIdFromUrlOrId,
   masterIntakePreviewFingerprint,
+  masterIntakeProvenancePreviewStatus,
   masterIntakeRowFingerprint,
   normalizeOptionalHttpUrl,
   parseMasterIntakeTitleRange,
@@ -74,6 +75,33 @@ describe("Workspace Master Intake domain", () => {
     expect(() => assertMasterIntakeRowRange(2, 101)).not.toThrow();
     expect(() => assertMasterIntakeRowRange(2, 102)).toThrow(/1-100 rows/);
     expect(() => assertMasterIntakeRowRange(1, 1)).toThrow(/1-100 rows/);
+  });
+
+  it("makes an unchanged synced row actionable when its novel was removed from Workspace", () => {
+    expect(
+      masterIntakeProvenancePreviewStatus({
+        hasBlockers: false,
+        rowUnchanged: true,
+        sourceAlreadyLinked: true,
+        workspaceNovelActive: true,
+      })
+    ).toBe("UNCHANGED");
+    expect(
+      masterIntakeProvenancePreviewStatus({
+        hasBlockers: false,
+        rowUnchanged: true,
+        sourceAlreadyLinked: true,
+        workspaceNovelActive: false,
+      })
+    ).toBe("UPDATED");
+    expect(
+      masterIntakeProvenancePreviewStatus({
+        hasBlockers: true,
+        rowUnchanged: true,
+        sourceAlreadyLinked: true,
+        workspaceNovelActive: false,
+      })
+    ).toBe("CONFLICT");
   });
 
   it("binds preview fingerprints to resolved Workspace targets", () => {

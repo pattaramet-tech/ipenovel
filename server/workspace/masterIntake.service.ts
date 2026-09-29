@@ -27,6 +27,7 @@ import {
   assertMasterIntakeRowRange,
   googleDocumentIdFromUrlOrId,
   masterIntakePreviewFingerprint,
+  masterIntakeProvenancePreviewStatus,
   masterIntakeRowFingerprint,
   normalizeMasterIntakeNovelTitle,
   normalizeOptionalHttpUrl,
@@ -400,14 +401,17 @@ export async function previewWorkspaceMasterIntake(input: {
         }
         provenanceSourceAlreadyLinked = matchingSource;
       }
+      const provenanceWorkspaceNovel = workspaceNovelRows.find(
+        (item: any) => Number(item.id) === Number(provenance.workspaceNovelId)
+      );
       rows.push({
         rowNumber,
-        status: blockers.length
-          ? "CONFLICT"
-          : provenance.rowFingerprint === rowFingerprint &&
-              provenanceSourceAlreadyLinked
-            ? "UNCHANGED"
-            : "UPDATED",
+        status: masterIntakeProvenancePreviewStatus({
+          hasBlockers: blockers.length > 0,
+          rowUnchanged: provenance.rowFingerprint === rowFingerprint,
+          sourceAlreadyLinked: provenanceSourceAlreadyLinked,
+          workspaceNovelActive: provenanceWorkspaceNovel?.status === "active",
+        }),
         rowFingerprint,
         rawTitle,
         novelTitle: parsed.novelTitle,
