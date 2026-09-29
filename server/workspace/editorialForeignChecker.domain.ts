@@ -391,9 +391,6 @@ const SOURCE_JUNK_NOTE_PROSE_RE = new RegExp(
     "พบกัน(?:ใหม่|ตอนหน้า)",
     "เจอกัน(?:ตอน)?หน้า",
     "(?:ป่วย|ไม่สบาย)(?:หนัก|อยู่|ช่วงนี้|สัปดาห์ที่แล้ว|เมื่อวาน)",
-    "(?:นะ)?ครับ\\s*$",
-    "นะคะ\\s*$",
-    "ค่ะ\\s*$",
   ].join("|"),
   "i"
 );
@@ -424,13 +421,16 @@ function isSourceJunkSectionHeading(text: string) {
   return SOURCE_JUNK_SECTION_HEADING_PATTERNS.some(pattern => pattern.test(value));
 }
 
-function isSourceJunkNarrativeResume(text: string) {
+function isSourceJunkNarrativeResume(
+  text: string,
+  supporterListContext: boolean
+) {
   const value = String(text || "").trim();
   if (!value) return false;
   // Quote-wrapped dialogue is unambiguous narrative even when it contains
   // note-ish polite particles.
   if (isQuoteWrappedNarrativeLine(value)) return true;
-  return !isTrailingSectionContent(value);
+  return !isTrailingSectionContent(value, supporterListContext);
 }
 
 /**
@@ -448,13 +448,16 @@ function isSupporterListHeadingLine(text: string) {
   return remainder.length <= 8;
 }
 
-function isTrailingSectionContent(text: string) {
+function isTrailingSectionContent(
+  text: string,
+  supporterListContext: boolean
+) {
   const value = String(text || "").trim();
   return (
     isSourceJunkEndMarker(value) ||
     isSourceJunkContinuation(value) ||
     isSupporterListHeadingLine(value) ||
-    isPlainSupporterHandle(value) ||
+    (supporterListContext && isPlainSupporterHandle(value)) ||
     SOURCE_JUNK_NOTE_PROSE_RE.test(value)
   );
 }
@@ -475,6 +478,9 @@ function sourceJunkTrailingSectionEndIndex(
   if (!isSourceJunkSectionHeading(ordered[anchorIndex]?.text || "")) return null;
 
   let sectionEnd: number | null = null;
+  let supporterListContext = isSourceJunkSupporterSignal(
+    ordered[anchorIndex]?.text || ""
+  );
   for (let index = anchorIndex + 1; index < ordered.length; index++) {
     const text = String(ordered[index].text || "").trim();
     if (!text) continue;
@@ -482,7 +488,8 @@ function sourceJunkTrailingSectionEndIndex(
       sectionEnd = index;
       break;
     }
-    if (isSourceJunkNarrativeResume(text)) break;
+    if (isSupporterListHeadingLine(text)) supporterListContext = true;
+    if (isSourceJunkNarrativeResume(text, supporterListContext)) break;
     sectionEnd = index;
   }
   return sectionEnd;

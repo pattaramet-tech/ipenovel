@@ -328,6 +328,21 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
   });
 
+  it("does not treat a plain English token as a supporter handle inside a trailing note unless supporter context is active", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "plain-heading", paragraphOrder: 1 }),
+        paragraph("Unown", { paragraphKey: "plain-token", paragraphOrder: 2 }),
+        paragraph("เขากล่าวตอบด้วยน้ำเสียงสุภาพครับ", { paragraphKey: "plain-story", paragraphOrder: 3 }),
+        paragraph("จบตอน", { paragraphKey: "plain-end", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
     const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
     expect(
