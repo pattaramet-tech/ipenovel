@@ -4,6 +4,7 @@ import {
   EDITORIAL_FOREIGN_CHECKER_RULES,
   editorialAllowListSha256,
   evaluateEditorialForeignDraft,
+  getEditorialCheckerStaleReason,
   evaluateEditorialForeignParagraph,
   isLikelyKaomoji,
   normalizeEditorialAllowedWord,
@@ -325,5 +326,29 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(editorialAllowListSha256(["Support", "เทสต์", "support"])).toBe(
       editorialAllowListSha256(["เทสต์", "SUPPORT"])
     );
+  });
+
+  it("treats allow-list drift as checker staleness even when Draft and engine are unchanged", () => {
+    const base = {
+      currentDraftId: 42,
+      runDraftId: 42,
+      runEngineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
+      currentEngineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
+      runAllowListSha256: editorialAllowListSha256([]),
+      currentAllowListSha256: editorialAllowListSha256([]),
+    };
+    expect(getEditorialCheckerStaleReason(base)).toBeNull();
+    expect(
+      getEditorialCheckerStaleReason({
+        ...base,
+        currentAllowListSha256: editorialAllowListSha256(["つ"]),
+      })
+    ).toBe("ALLOW_LIST_CHANGED");
+    expect(
+      getEditorialCheckerStaleReason({ ...base, currentDraftId: 43 })
+    ).toBe("DRAFT_CHANGED");
+    expect(
+      getEditorialCheckerStaleReason({ ...base, currentEngineVersion: "next" })
+    ).toBe("ENGINE_CHANGED");
   });
 });

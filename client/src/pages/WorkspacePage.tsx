@@ -376,7 +376,13 @@ export default function WorkspacePage() {
   );
   const editorialBoard = trpc.workspace.editorial.board.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId),
+      refetchOnMount: "always",
+      refetchOnWindowFocus: "always",
+      refetchInterval: 30_000,
+      refetchIntervalInBackground: false,
+    }
   );
   const editorialEvidenceWorkItemIds = (((editorialBoard.data as any)?.columns ?? []) as any[])
     .flatMap((column: any) => column.cards ?? [])
@@ -1459,6 +1465,18 @@ export default function WorkspacePage() {
     (card: any) => card.workItemId === selectedSourceWorkItemId
   );
   const selectableEditorialWorkItemIds = editorialCards.map((card: any) => card.workItemId).filter((id: any): id is number => Number.isInteger(id));
+  const editorialBoardWorkItemIdKey = editorialEvidenceWorkItemIds.join(",");
+  useEffect(() => {
+    if (!editorialBoard.isSuccess) return;
+    const activeWorkItemIds = new Set(editorialEvidenceWorkItemIds);
+    setSelectedEditorialWorkItemIds((current) => {
+      const next = current.filter((workItemId) => activeWorkItemIds.has(workItemId));
+      return next.length === current.length ? current : next;
+    });
+    if (selectedSourceWorkItemId && !activeWorkItemIds.has(selectedSourceWorkItemId)) {
+      setSelectedSourceWorkItemId(undefined);
+    }
+  }, [editorialBoard.isSuccess, editorialBoardWorkItemIdKey, selectedSourceWorkItemId, selectedWorkspaceId]);
   const selectedEditorialSet = new Set(selectedEditorialWorkItemIds);
   const allEditorialSelected = selectableEditorialWorkItemIds.length > 0 && selectableEditorialWorkItemIds.every((id) => selectedEditorialSet.has(id));
   const toggleEditorialSelection = (workItemId: number) => setSelectedEditorialWorkItemIds((current) => current.includes(workItemId) ? current.filter((id) => id !== workItemId) : [...current, workItemId]);
@@ -1467,13 +1485,21 @@ export default function WorkspacePage() {
   const editorialEditorData = editorialEditor.data as any;
   const editorialApprovalData = editorialApproval.data as any;
   const editorialCheckerData = editorialForeignChecker.data as any;
+  const editorialCheckerStaleReason = editorialCheckerData?.staleReason as
+    | "DRAFT_CHANGED"
+    | "ENGINE_CHANGED"
+    | "ALLOW_LIST_CHANGED"
+    | null
+    | undefined;
   const editorialCheckerRunStale = Boolean(
     editorialCheckerData?.run &&
       (
         editorialCheckerData?.isCurrent === false ||
         !editorialCheckerData?.latestDraft ||
         editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id ||
-        editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion
+        editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion ||
+        (editorialCheckerData.currentAllowListSha256 &&
+          editorialCheckerData.run.allowListSha256 !== editorialCheckerData.currentAllowListSha256)
       )
   );
   const chapterEditorTabs = (editorialDraftData?.tabs ?? []) as any[];
@@ -3225,7 +3251,11 @@ export default function WorkspacePage() {
 
                     {editorialCheckerRunStale && (
                       <div className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
-                        ผลตรวจนี้เก่าแล้ว — Draft หรือ Checker engine เปลี่ยน ให้กด “ตรวจ / ตรวจซ้ำ” ก่อนแก้สถานะ finding
+                        {editorialCheckerStaleReason === "ALLOW_LIST_CHANGED"
+                          ? "ผลตรวจนี้เก่าแล้ว — Allow List เปลี่ยน ให้กด “ตรวจ / ตรวจซ้ำ” เพื่อสร้าง QC evidence ชุดใหม่"
+                          : editorialCheckerStaleReason === "ENGINE_CHANGED"
+                            ? "ผลตรวจนี้เก่าแล้ว — Checker engine เปลี่ยน ให้กด “ตรวจ / ตรวจซ้ำ”"
+                            : "ผลตรวจนี้เก่าแล้ว — Draft เปลี่ยน ให้กด “ตรวจ / ตรวจซ้ำ” ก่อนแก้สถานะ finding"}
                       </div>
                     )}
 

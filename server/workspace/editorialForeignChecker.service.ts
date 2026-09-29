@@ -28,6 +28,7 @@ import {
   EDITORIAL_FOREIGN_CHECKER_RULES,
   editorialAllowListSha256,
   evaluateEditorialForeignDraft,
+  getEditorialCheckerStaleReason,
   normalizeEditorialAllowedWord,
   type EditorialCheckerParagraphInput,
 } from "./editorialForeignChecker.domain";
@@ -622,11 +623,18 @@ export async function getEditorialForeignCheckerReadModel(input: {
       anomaly.disposition !== "confirmed_source_note"
   ).length;
 
-  const isCurrent = Boolean(
-    draft &&
-      run.draftId === draft.id &&
-      run.engineVersion === EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION
+  const currentAllowListSha256 = editorialAllowListSha256(
+    allowWords.map((word: any) => word.normalizedWord)
   );
+  const staleReason = getEditorialCheckerStaleReason({
+    currentDraftId: draft?.id,
+    runDraftId: run.draftId,
+    runEngineVersion: run.engineVersion,
+    currentEngineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
+    runAllowListSha256: run.allowListSha256,
+    currentAllowListSha256,
+  });
+  const isCurrent = staleReason === null;
   const blockingIssueCount =
     unresolvedCount + effectiveBlockingAnomalyCount;
   return {
@@ -643,6 +651,8 @@ export async function getEditorialForeignCheckerReadModel(input: {
       blockingAnomalyCount: effectiveBlockingAnomalyCount,
     },
     allowWords,
+    currentAllowListSha256,
+    staleReason,
     unresolvedCount,
     blockingIssueCount,
     isCurrent,

@@ -140,6 +140,18 @@ describe.sequential(
         });
         expect(allowed.normalizedWord).toBe("テスト");
 
+        const staleAfterAllow = await getEditorialForeignCheckerReadModel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          runId: first.run.id,
+        });
+        expect(staleAfterAllow.isCurrent).toBe(false);
+        expect(staleAfterAllow.staleReason).toBe("ALLOW_LIST_CHANGED");
+        expect(staleAfterAllow.currentAllowListSha256).not.toBe(
+          first.run.allowListSha256
+        );
+
         const afterAllow = await runEditorialForeignChecker({
           actorUserId: owner.id,
           workspaceId: workspace.workspaceId,
@@ -153,6 +165,9 @@ describe.sequential(
         expect(afterAllow.findings[0].disposition).toBe("ignored");
         expect(afterAllow.unresolvedCount).toBe(0);
         expect(afterAllow.effectiveStatus).toBe("passed");
+        expect(afterAllow.isCurrent).toBe(true);
+        expect(afterAllow.staleReason).toBeNull();
+        expect(afterAllow.currentAllowListSha256).toBe(afterAllow.run.allowListSha256);
 
         await removeEditorialAllowedWord({
           actorUserId: owner.id,
