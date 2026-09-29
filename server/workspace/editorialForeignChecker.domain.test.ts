@@ -155,6 +155,17 @@ describe("Editorial deterministic foreign-word checker", () => {
       ordinary.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
     ).toEqual([1]);
 
+    const proDropNarrative = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงช้า", { paragraphKey: "pro-drop-anchor", paragraphOrder: 1 }),
+        paragraph("ตอนนี้เขียนจดหมายได้ยากเพราะมือสั่น", { paragraphKey: "pro-drop-story", paragraphOrder: 2 }),
+        paragraph("จากนั้นจึงวางปากกาลงบนโต๊ะ", { paragraphKey: "pro-drop-story-2", paragraphOrder: 3 }),
+      ],
+    });
+    expect(
+      proDropNarrative.findings.filter(finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk).map(finding => finding.paragraphOrder)
+    ).toEqual([1]);
+
     const embeddedLink = evaluateEditorialForeignDraft({
       paragraphs: [
         paragraph("หมายเหตุผู้เขียน: วันนี้ลงช้า", { paragraphKey: "link-prose-anchor", paragraphOrder: 1 }),
@@ -182,6 +193,21 @@ describe("Editorial deterministic foreign-word checker", () => {
       finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
     );
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 4, 5, 6]);
+  });
+
+  it("does not duplicate source-junk findings when the block ends with an empty paragraph", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "empty-tail-anchor", paragraphOrder: 1 }),
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "empty-tail-heading", paragraphOrder: 2 }),
+        paragraph("", { paragraphKey: "empty-tail-terminal", paragraphOrder: 3 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2]);
+    expect(new Set(junk.map(finding => finding.findingKey)).size).toBe(junk.length);
   });
 
   it("does not classify ordinary narrative support wording as source junk", () => {
