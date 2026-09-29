@@ -232,6 +232,102 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3, 4]);
   });
 
+  it("keeps resumed narrative clean between two junk blocks (story→junk→story→note)", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เขาเดินนำทางให้เพื่อน ๆ อย่างมั่นใจ", { paragraphKey: "two-story-1", paragraphOrder: 1 }),
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงสองตอน", { paragraphKey: "two-note-1", paragraphOrder: 2 }),
+        paragraph("...", { paragraphKey: "two-ellipsis", paragraphOrder: 3 }),
+        paragraph("รุ่งเช้าเขาตื่นมาพร้อมแสงแดดที่ส่องเข้ามาในห้อง", { paragraphKey: "two-story-2", paragraphOrder: 4 }),
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "two-heading", paragraphOrder: 5 }),
+        paragraph("ตอนนี้เขียนยากมาก และหวังว่าทุกคนจะชอบ", { paragraphKey: "two-note-2", paragraphOrder: 6 }),
+        paragraph("https://www.patreon.com/author", { paragraphKey: "two-link", paragraphOrder: 7 }),
+        paragraph("ขอบคุณทุกคนที่ติดตามกันมาตลอด แล้วเจอกันตอนหน้า ครับ", { paragraphKey: "two-note-3", paragraphOrder: 8 }),
+        paragraph("จบตอน", { paragraphKey: "two-end", paragraphOrder: 9 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([
+      2, 3, 5, 6, 7, 8, 9,
+    ]);
+    expect(
+      junk.some(finding => finding.paragraphOrder === 4)
+    ).toBe(false);
+  });
+
+  it("closes a mid-chapter heading section immediately when narrative resumes even with a later end marker", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เขาลุกขึ้นยืนช้า ๆ แล้วมองไปรอบห้อง", { paragraphKey: "close-story-1", paragraphOrder: 1 }),
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "close-heading", paragraphOrder: 2 }),
+        paragraph("ตอนนี้เขียนยากมาก และหวังว่าจะได้รับกำลังใจจากทุกคน", { paragraphKey: "close-note", paragraphOrder: 3 }),
+        paragraph("เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร", { paragraphKey: "close-story-2", paragraphOrder: 4 }),
+        paragraph("จบตอน", { paragraphKey: "close-end", paragraphOrder: 5 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3]);
+  });
+
+  it("detects a genuine long trailing author-note section longer than six paragraphs", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เนื้อเรื่องปกติ", { paragraphKey: "long-story", paragraphOrder: 1 }),
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "long-heading", paragraphOrder: 2 }),
+        paragraph("ตอนนี้ยาวมาก และหวังว่าทุกคนจะชอบจังหวะของมัน", { paragraphKey: "long-note-1", paragraphOrder: 3 }),
+        paragraph("ช่วงนี้ไม่สบายอยู่ ขออภัยที่ลงช้า ครับ", { paragraphKey: "long-note-2", paragraphOrder: 4 }),
+        paragraph("https://www.patreon.com/author", { paragraphKey: "long-link", paragraphOrder: 5 }),
+        paragraph("รายชื่อผู้สนับสนุน", { paragraphKey: "long-supporters", paragraphOrder: 6 }),
+        paragraph("Unown", { paragraphKey: "long-handle-1", paragraphOrder: 7 }),
+        paragraph("Oboro", { paragraphKey: "long-handle-2", paragraphOrder: 8 }),
+        paragraph("ฝากติดตามกันได้ในตอนถัดไป แล้วพบกันใหม่ครับ", { paragraphKey: "long-note-3", paragraphOrder: 9 }),
+        paragraph("จบตอน", { paragraphKey: "long-end", paragraphOrder: 10 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([
+      2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
+  });
+
+  it("lets a supporter-list signal open context before boundary evaluation so plain handles stay in the junk block", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("เนื้อเรื่องปกติ", { paragraphKey: "sup-story", paragraphOrder: 1 }),
+        paragraph("https://www.patreon.com/author", { paragraphKey: "sup-patreon", paragraphOrder: 2 }),
+        paragraph("ผู้สนับสนุน", { paragraphKey: "sup-heading", paragraphOrder: 3 }),
+        paragraph("Unown", { paragraphKey: "sup-handle-1", paragraphOrder: 4 }),
+        paragraph("Oboro", { paragraphKey: "sup-handle-2", paragraphOrder: 5 }),
+        paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "sup-story-2", paragraphOrder: 6 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3, 4, 5]);
+  });
+
+  it("keeps plain handles out of the junk block when no supporter-list context is open", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("https://www.patreon.com/author", { paragraphKey: "no-sup-patreon", paragraphOrder: 1 }),
+        paragraph("เขายิ้มให้เพื่อนแล้วเดินกลับบ้านในความมืด", { paragraphKey: "no-sup-story", paragraphOrder: 2 }),
+        paragraph("Unown", { paragraphKey: "no-sup-handle", paragraphOrder: 3 }),
+        paragraph("เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร", { paragraphKey: "no-sup-story-2", paragraphOrder: 4 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
   it("ignores basic A-Z/a-z alphabet words and acronyms", () => {
     const text = "เขาบอกว่าจะ support BLUE WGO เรื่องนี้ให้เต็มที่";
     expect(

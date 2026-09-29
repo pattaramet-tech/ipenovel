@@ -367,6 +367,46 @@ const SOURCE_JUNK_SECTION_HEADING_PATTERNS = [
 const SOURCE_JUNK_SUPPORTER_SIGNAL_RE =
   /(?:พาวเวอร์สโตน|power\s*stones?|สิบอันดับแรก|top\s*10|ผู้สนับสนุน|supporters?)/i;
 
+// Note-content prose markers: reader-directed wording that keeps a trailing
+// author-note/junk section open. Anything without these (or other junk signals)
+// is treated as resumed narrative and closes the section immediately.
+const SOURCE_JUNK_NOTE_PROSE_RE = new RegExp(
+  [
+    "หวังว่า",
+    "ขอบคุณ",
+    "ฝาก(?:ติดตาม|กด|เมล์|เมล)",
+    "กด(?:ติดตาม|ไลก์|ถูกใจ)",
+    "ติดตาม(?:ได้|ต่อ|กัน|อ่าน|ผม|เรา|เว็บ|ช่อง|ที่)",
+    "ทุกคน",
+    "ทุกท่าน",
+    "สนับสนุน(?:ผม|เรา|ผู้เขียน|กัน|ได้ที่)",
+    "พาวเวอร์สโตน",
+    "power\\s*stones?",
+    "สิบอันดับแรก",
+    "top\\s*10",
+    "ตอน(?:หน้า|ถัดไป)",
+    "ลง(?:ตอน|เรื่อง|สอง|ให้ใหม่)",
+    "อัปเดต|อัพเดต|อัพเดท|อัปเดท",
+    "ขอ(?:โทษ|อภัย)",
+    "พบกัน(?:ใหม่|ตอนหน้า)",
+    "เจอกัน(?:ตอน)?หน้า",
+    "(?:ป่วย|ไม่สบาย)(?:หนัก|อยู่|ช่วงนี้|สัปดาห์ที่แล้ว|เมื่อวาน)",
+    "(?:นะ)?ครับ\\s*$",
+    "นะคะ\\s*$",
+    "ค่ะ\\s*$",
+  ].join("|"),
+  "i"
+);
+
+function isQuoteWrappedNarrativeLine(text: string) {
+  const value = String(text || "").trim();
+  return (
+    value.length >= 2 &&
+    /^["“”‘’「『]/.test(value) &&
+    /["”’」』]$/.test(value)
+  );
+}
+
 const SOURCE_JUNK_CONTINUATION_PATTERNS = [
   /^(?:\.{2,}|…+)$/,
   /^[\s\-_=—–*#~·•]{3,}$/,
@@ -384,21 +424,68 @@ function isSourceJunkSectionHeading(text: string) {
   return SOURCE_JUNK_SECTION_HEADING_PATTERNS.some(pattern => pattern.test(value));
 }
 
+function isSourceJunkNarrativeResume(text: string) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  // Quote-wrapped dialogue is unambiguous narrative even when it contains
+  // note-ish polite particles.
+  if (isQuoteWrappedNarrativeLine(value)) return true;
+  return !isTrailingSectionContent(value);
+}
+
+/**
+ * A short line that is almost entirely a supporter-list signal (Supporters /
+ * ผู้สนับสนุน / Power Stones / top-10) is a list heading. Narrative that merely
+ * mentions these words leaves a long remainder and is not a list heading.
+ */
+function isSupporterListHeadingLine(text: string) {
+  const value = String(text || "").trim();
+  if (!value || value.length > 60) return false;
+  if (!isSourceJunkSupporterSignal(value)) return false;
+  const remainder = value
+    .replace(new RegExp(SOURCE_JUNK_SUPPORTER_SIGNAL_RE.source, "gi"), "")
+    .replace(/[\s:：\-–—•·|,.]+/g, "");
+  return remainder.length <= 8;
+}
+
+function isTrailingSectionContent(text: string) {
+  const value = String(text || "").trim();
+  return (
+    isSourceJunkEndMarker(value) ||
+    isSourceJunkContinuation(value) ||
+    isSupporterListHeadingLine(value) ||
+    isPlainSupporterHandle(value) ||
+    SOURCE_JUNK_NOTE_PROSE_RE.test(value)
+  );
+}
+
+/**
+ * Semantic, bounded trailing-section detection. A section heading opens a
+ * trailing author-note/junk section of any length; the section stays open only
+ * while every non-empty paragraph still reads as note/junk content and closes
+ * immediately once narrative resumes (or at an end marker). Unlike the old
+ * fixed <=6-paragraph + end-marker heuristic, genuine long trailing notes are
+ * still detected while mid-chapter headings followed by story prose never
+ * swallow the narrative that follows.
+ */
 function sourceJunkTrailingSectionEndIndex(
   ordered: readonly EditorialCheckerParagraphInput[],
   anchorIndex: number
 ) {
   if (!isSourceJunkSectionHeading(ordered[anchorIndex]?.text || "")) return null;
 
-  const nonEmptyAfter: Array<{ index: number; text: string }> = [];
+  let sectionEnd: number | null = null;
   for (let index = anchorIndex + 1; index < ordered.length; index++) {
     const text = String(ordered[index].text || "").trim();
-    if (text) nonEmptyAfter.push({ index, text });
+    if (!text) continue;
+    if (isSourceJunkEndMarker(text)) {
+      sectionEnd = index;
+      break;
+    }
+    if (isSourceJunkNarrativeResume(text)) break;
+    sectionEnd = index;
   }
-  if (!nonEmptyAfter.length || nonEmptyAfter.length > 6) return null;
-
-  const final = nonEmptyAfter[nonEmptyAfter.length - 1];
-  return isSourceJunkEndMarker(final.text) ? final.index : null;
+  return sectionEnd;
 }
 
 function isSourceJunkSupporterSignal(text: string) {
@@ -518,16 +605,25 @@ function evaluateEditorialSourceJunkBlocks(
         }
 
         const isAnchor = cursor === index || hasSourceJunkAnchor(token);
+        // A supporter-list signal (Supporters / ผู้สนับสนุน / Power Stones /
+        // top-10) must open supporter context BEFORE boundary evaluation so
+        // the signal line itself and the plain handles that follow it (e.g.
+        // Unown, Oboro) stay inside the junk block in supporter-list context.
+        if (isSourceJunkSupporterSignal(token)) supporterListContext = true;
         const isSupporterHandle =
           supporterListContext && isPlainSupporterHandle(token);
-        if (!isAnchor && !isSourceJunkContinuation(token) && !isSupporterHandle) {
+        if (
+          !isAnchor &&
+          !isSourceJunkContinuation(token) &&
+          !isSupporterHandle &&
+          !isSupporterListHeadingLine(token)
+        ) {
           // A normal narrative paragraph is an explicit block boundary. Do not
           // inherit source_junk into the rest of the chapter merely because an
           // author note appeared earlier in the tab.
           index = cursor - 1;
           break;
         }
-        if (isSourceJunkSupporterSignal(token)) supporterListContext = true;
         if (!token) continue;
         const startOffset = paragraph.text.indexOf(token);
         findings.push(

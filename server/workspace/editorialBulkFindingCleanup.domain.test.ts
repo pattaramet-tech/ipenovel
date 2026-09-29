@@ -184,6 +184,54 @@ describe("Editorial Bulk Finding Cleanup domain", () => {
     ]);
   });
 
+  it("removes junk across story→junk→story→long trailing note and preserves every narrative paragraph", () => {
+    const input = document([
+      "บทที่ 75",
+      "เขาเปิดประตูออกไปอย่างช้า ๆ",
+      "หมายเหตุผู้เขียน: วันนี้ลงสองตอน",
+      "...",
+      "เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร",
+      "ความคิดของผู้สร้าง",
+      "ตอนนี้เขียนยากมาก และหวังว่าทุกคนจะชอบ",
+      "https://www.patreon.com/author",
+      "รายชื่อผู้สนับสนุน",
+      "Unown",
+      "ฝากติดตามกันได้ในตอนถัดไป แล้วพบกันใหม่ครับ",
+      "จบตอน",
+    ]);
+    const checked = evaluateEditorialForeignDraft({
+      paragraphs: input.tabs[0].paragraphs.map(paragraph => ({
+        sourceTabId: input.tabs[0].sourceTabId,
+        tabTitle: input.tabs[0].title,
+        paragraphKey: paragraph.paragraphKey,
+        paragraphOrder: paragraph.paragraphOrder,
+        paragraphFingerprint: paragraph.paragraphFingerprint,
+        text: paragraph.text,
+      })),
+    });
+    const junk = checked.findings
+      .filter(finding => finding.ruleKey === "source_junk")
+      .map(finding => ({
+        ...finding,
+        disposition: "open" as const,
+        resolutionVersion: 0,
+      }));
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([
+      3, 4, 6, 7, 8, 9, 10, 11, 12,
+    ]);
+
+    const result = applyEditorialBulkCleanupToDocument({
+      document: input,
+      findings: junk,
+    });
+    expect(result.removedParagraphCount).toBe(9);
+    expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
+      "บทที่ 75",
+      "เขาเปิดประตูออกไปอย่างช้า ๆ",
+      "เช้ามืดเขาออกเดินทางต่อโดยไม่บอกใคร",
+    ]);
+  });
+
   it("fails closed when a paragraph fingerprint is stale", () => {
     const input = document(["บทที่ 1", "พบ ाइट"]);
     const paragraph = input.tabs[0].paragraphs[1];
