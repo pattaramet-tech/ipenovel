@@ -29,6 +29,7 @@ import {
   masterIntakePreviewFingerprint,
   masterIntakeProvenancePreviewStatus,
   masterIntakeRowFingerprint,
+  masterIntakeRowIdentityFingerprint,
   normalizeMasterIntakeNovelTitle,
   normalizeOptionalHttpUrl,
   parseMasterIntakeTitleRange,
@@ -75,6 +76,8 @@ type PreviewRow = {
   existingNovelId: number | null;
   workspaceNovelId: number | null;
   workItemId: number | null;
+  provenanceId: number | null;
+  provenanceRowNumber: number | null;
   blockers: string[];
   sourceAlreadyLinked: boolean;
 };
@@ -112,6 +115,29 @@ function rawFingerprint(input: {
   return createHash("sha256")
     .update(JSON.stringify({ version: "workspace-master-intake-invalid-v1", ...input }))
     .digest("hex");
+}
+
+function affectedRows(result: any) {
+  return Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0);
+}
+
+function provenanceIdentityFingerprint(row: any) {
+  return masterIntakeRowIdentityFingerprint({
+    spreadsheetId: String(row.spreadsheetId),
+    sheetId: Number(row.sheetId),
+    sheetName: String(row.sheetName),
+    rowNumber: Number(row.rowNumber),
+    novelTitle: String(row.normalizedTitle),
+    normalizedTitle: String(row.normalizedTitle),
+    episodeNumber: String(row.episodeNumber),
+    translationDocUrl: String(row.translationDocUrl),
+    translationDocumentId: String(row.translationDocumentId),
+    webSourceUrl: row.webSourceUrl == null ? null : String(row.webSourceUrl),
+    preparedSourceDocUrl:
+      row.preparedSourceDocUrl == null ? null : String(row.preparedSourceDocUrl),
+    preparedSourceDocumentId:
+      row.preparedSourceDocumentId == null ? null : String(row.preparedSourceDocumentId),
+  });
 }
 
 function parseEpisodeSpan(value: string) {
@@ -200,6 +226,79 @@ async function readSheetRows(input: {
   };
 }
 
+async function readSpecificSheetRows(input: {
+  actorUserId: number;
+  googleConnectionId: number;
+  rowNumbers: number[];
+}) {
+  const uniqueRows = Array.from(new Set(input.rowNumbers)).sort((a, b) => a - b);
+  const valuesByRow = new Map<number, unknown[]>();
+  if (uniqueRows.length === 0) return valuesByRow;
+  const transport = new GoogleRestReadOnlyTransport({
+    accessTokenProvider: () =>
+      refreshWorkspaceGoogleNqaReadAccessToken({
+        actorUserId: input.actorUserId,
+        connectionId: input.googleConnectionId,
+      }),
+  });
+  const ranges = uniqueRows.map(
+    rowNumber =>
+      quoteSheetName(NQA_AUTOLINK_LIVE_TARGET.sheetName) +
+      "!B" +
+      rowNumber +
+      ":O" +
+      rowNumber
+  );
+  let batches;
+  try {
+    batches = await transport.batchGetValues({
+      spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+      ranges,
+    });
+  } catch {
+    throw new WorkspaceMasterIntakeError(
+      "GOOGLE_READ_FAILED",
+      "Google Sheets provenance rows could not be verified."
+    );
+  }
+  uniqueRows.forEach((rowNumber, index) => {
+    valuesByRow.set(rowNumber, batches[index]?.values?.[0] ?? []);
+  });
+  return valuesByRow;
+}
+
+function sheetRowIdentityFingerprint(input: {
+  rowNumber: number;
+  cells: unknown[];
+  sheetId: number;
+}) {
+  const rawTitle = String(input.cells[0] ?? "").trim();
+  const translationDocUrl = String(input.cells[1] ?? "").trim();
+  const webSourceRaw = String(input.cells[3] ?? "").trim();
+  const preparedSourceRaw = String(input.cells[13] ?? "").trim();
+  const parsed = parseMasterIntakeTitleRange(rawTitle);
+  const translationDocumentId = googleDocumentIdFromUrlOrId(translationDocUrl);
+  const preparedSourceDocumentId = preparedSourceRaw
+    ? googleDocumentIdFromUrlOrId(preparedSourceRaw)
+    : null;
+  const webSourceUrl = normalizeOptionalHttpUrl(webSourceRaw);
+  if (!parsed || !translationDocumentId || webSourceUrl === undefined) return null;
+  return masterIntakeRowIdentityFingerprint({
+    spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+    sheetId: input.sheetId,
+    sheetName: NQA_AUTOLINK_LIVE_TARGET.sheetName,
+    rowNumber: input.rowNumber,
+    novelTitle: parsed.novelTitle,
+    normalizedTitle: parsed.normalizedTitle,
+    episodeNumber: parsed.episodeNumber,
+    translationDocUrl,
+    translationDocumentId,
+    webSourceUrl,
+    preparedSourceDocUrl: preparedSourceDocumentId ? preparedSourceRaw : null,
+    preparedSourceDocumentId,
+  });
+}
+
 async function requireWorkspace(db: any, actorUserId: number, workspaceId: number) {
   await requireWorkspacePlatformAdmin(db, actorUserId);
   const [workspace] = await db
@@ -258,6 +357,38 @@ export async function previewWorkspaceMasterIntake(input: {
       .from(workspaceMasterIntakeRows)
       .where(eq(workspaceMasterIntakeRows.workspaceId, input.workspaceId)),
   ]);
+
+  const currentSheetIdentityByRow = new Map<number, string | null>();
+  const selectedIdentityFingerprints = new Set<string>();
+  for (let rowNumber = input.startRow; rowNumber <= input.endRow; rowNumber += 1) {
+    const identity = sheetRowIdentityFingerprint({
+      rowNumber,
+      cells: sheetRead.values[rowNumber - input.startRow] ?? [],
+      sheetId: sheetRead.sheetId,
+    });
+    currentSheetIdentityByRow.set(rowNumber, identity);
+    if (identity) selectedIdentityFingerprints.add(identity);
+  }
+  const provenanceRowsToVerify = provenanceRows
+    .filter(
+      (row: any) =>
+        row.spreadsheetId === NQA_AUTOLINK_LIVE_TARGET.spreadsheetId &&
+        Number(row.sheetId) === Number(sheetRead.sheetId) &&
+        selectedIdentityFingerprints.has(provenanceIdentityFingerprint(row)) &&
+        (Number(row.rowNumber) < input.startRow || Number(row.rowNumber) > input.endRow)
+    )
+    .map((row: any) => Number(row.rowNumber));
+  const externalIdentityRows = await readSpecificSheetRows({
+    actorUserId: input.actorUserId,
+    googleConnectionId: input.googleConnectionId,
+    rowNumbers: provenanceRowsToVerify,
+  });
+  externalIdentityRows.forEach((cells, rowNumber) => {
+    currentSheetIdentityByRow.set(
+      rowNumber,
+      sheetRowIdentityFingerprint({ rowNumber, cells, sheetId: sheetRead.sheetId })
+    );
+  });
 
   const titles = new Map<string, Array<{ id: number; title: string }>>();
   for (const novel of publicationNovels) {
@@ -318,6 +449,8 @@ export async function previewWorkspaceMasterIntake(input: {
         existingNovelId: null,
         workspaceNovelId: null,
         workItemId: null,
+        provenanceId: null,
+        provenanceRowNumber: null,
         blockers,
         sourceAlreadyLinked: false,
       });
@@ -339,7 +472,30 @@ export async function previewWorkspaceMasterIntake(input: {
       preparedSourceDocumentId,
     };
     const rowFingerprint = masterIntakeRowFingerprint(canonical);
-    const provenance = provenanceByRow.get(rowNumber) as any;
+    const identityFingerprint = masterIntakeRowIdentityFingerprint(canonical);
+    const provenanceAtRow = provenanceByRow.get(rowNumber) as any;
+    const identityMatches = provenanceRows.filter(
+      (candidate: any) =>
+        candidate.spreadsheetId === NQA_AUTOLINK_LIVE_TARGET.spreadsheetId &&
+        Number(candidate.sheetId) === Number(sheetRead.sheetId) &&
+        provenanceIdentityFingerprint(candidate) === identityFingerprint
+    );
+    if (identityMatches.length > 1) blockers.push("AMBIGUOUS_PROVENANCE_REBIND");
+    const uniqueIdentityMatch = identityMatches.length === 1 ? identityMatches[0] : null;
+    if (uniqueIdentityMatch && Number(uniqueIdentityMatch.rowNumber) !== rowNumber) {
+      const oldRowIdentity = currentSheetIdentityByRow.get(Number(uniqueIdentityMatch.rowNumber));
+      if (oldRowIdentity === undefined) {
+        blockers.push("PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+      } else if (oldRowIdentity === identityFingerprint) {
+        blockers.push("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
+      }
+    }
+    const provenance =
+      provenanceAtRow && provenanceIdentityFingerprint(provenanceAtRow) === identityFingerprint
+        ? provenanceAtRow
+        : identityMatches.length === 1
+          ? identityMatches[0]
+          : provenanceAtRow;
 
     if (provenance) {
       if (
@@ -428,6 +584,8 @@ export async function previewWorkspaceMasterIntake(input: {
           : null,
         workspaceNovelId: Number(provenance.workspaceNovelId),
         workItemId: Number(provenance.workItemId),
+        provenanceId: Number(provenance.id),
+        provenanceRowNumber: Number(provenance.rowNumber),
         blockers,
         sourceAlreadyLinked: provenanceSourceAlreadyLinked,
       });
@@ -532,6 +690,8 @@ export async function previewWorkspaceMasterIntake(input: {
       existingNovelId: candidate?.id ?? null,
       workspaceNovelId,
       workItemId,
+      provenanceId: null,
+      provenanceRowNumber: null,
       blockers,
       sourceAlreadyLinked,
     });
@@ -563,6 +723,38 @@ export async function previewWorkspaceMasterIntake(input: {
       if (!right.blockers.includes(blocker)) right.blockers.push(blocker);
       left.status = "CONFLICT";
       right.status = "CONFLICT";
+    }
+  }
+
+  const provenanceRebindRows = rows.filter(
+    row =>
+      row.provenanceId !== null &&
+      row.provenanceRowNumber !== null &&
+      row.provenanceRowNumber !== row.rowNumber
+  );
+  if (provenanceRebindRows.length > 0) {
+    const movingIds = new Set(
+      provenanceRebindRows.map(row => Number(row.provenanceId))
+    );
+    let unsafeBatch = provenanceRebindRows.some(row => row.status === "CONFLICT");
+    for (const row of provenanceRebindRows) {
+      const occupant = provenanceByRow.get(row.rowNumber) as any;
+      if (
+        occupant &&
+        Number(occupant.id) !== Number(row.provenanceId) &&
+        !movingIds.has(Number(occupant.id))
+      ) {
+        unsafeBatch = true;
+      }
+    }
+    if (movingIds.size !== provenanceRebindRows.length) unsafeBatch = true;
+    if (unsafeBatch) {
+      for (const row of provenanceRebindRows) {
+        if (!row.blockers.includes("PROVENANCE_REBIND_BATCH_INCOMPLETE")) {
+          row.blockers.push("PROVENANCE_REBIND_BATCH_INCOMPLETE");
+        }
+        row.status = "CONFLICT";
+      }
     }
   }
 
@@ -745,6 +937,122 @@ async function persistProvenance(input: {
   }
 }
 
+async function rebindMovedMasterIntakeProvenance(preview: PreviewResult) {
+  const moves = preview.rows.filter(
+    row =>
+      row.status !== "CONFLICT" &&
+      row.provenanceId !== null &&
+      row.provenanceRowNumber !== null &&
+      row.provenanceRowNumber !== row.rowNumber
+  );
+  if (moves.length === 0) return;
+
+  const db = await database();
+  await db.transaction(async (tx: any) => {
+    const scopeRows = await tx
+      .select()
+      .from(workspaceMasterIntakeRows)
+      .where(
+        and(
+          eq(workspaceMasterIntakeRows.workspaceId, preview.workspaceId),
+          eq(workspaceMasterIntakeRows.spreadsheetId, preview.target.spreadsheetId),
+          eq(workspaceMasterIntakeRows.sheetId, preview.target.sheetId)
+        )
+      )
+      .for("update");
+    const byId = new Map(scopeRows.map((row: any) => [Number(row.id), row]));
+    const byRow = new Map(scopeRows.map((row: any) => [Number(row.rowNumber), row]));
+    const movingIds = new Set(moves.map(row => Number(row.provenanceId)));
+
+    if (movingIds.size !== moves.length) {
+      throw new Error("Master Intake provenance rebind is ambiguous.");
+    }
+
+    for (const move of moves) {
+      const record = byId.get(Number(move.provenanceId)) as any;
+      if (
+        !record ||
+        Number(record.workItemId) !== Number(move.workItemId) ||
+        Number(record.workspaceNovelId) !== Number(move.workspaceNovelId) ||
+        Number(record.rowNumber) !== Number(move.provenanceRowNumber)
+      ) {
+        throw new Error("Master Intake provenance changed before row rebind.");
+      }
+      const parsed = parseMasterIntakeTitleRange(move.rawTitle);
+      const translationDocumentId = move.translationDocUrl
+        ? googleDocumentIdFromUrlOrId(move.translationDocUrl)
+        : null;
+      const preparedSourceDocumentId = move.preparedSourceDocUrl
+        ? googleDocumentIdFromUrlOrId(move.preparedSourceDocUrl)
+        : null;
+      if (!parsed || !translationDocumentId) {
+        throw new Error("Master Intake row identity became invalid before row rebind.");
+      }
+      const currentIdentity = masterIntakeRowIdentityFingerprint({
+        spreadsheetId: preview.target.spreadsheetId,
+        sheetId: preview.target.sheetId,
+        sheetName: preview.target.sheetName,
+        rowNumber: move.rowNumber,
+        novelTitle: parsed.novelTitle,
+        normalizedTitle: parsed.normalizedTitle,
+        episodeNumber: parsed.episodeNumber,
+        translationDocUrl: move.translationDocUrl!,
+        translationDocumentId,
+        webSourceUrl: move.webSourceUrl,
+        preparedSourceDocUrl: move.preparedSourceDocUrl,
+        preparedSourceDocumentId,
+      });
+      if (provenanceIdentityFingerprint(record) !== currentIdentity) {
+        throw new Error("Master Intake source identity changed before row rebind.");
+      }
+      const occupant = byRow.get(move.rowNumber) as any;
+      if (
+        occupant &&
+        Number(occupant.id) !== Number(move.provenanceId) &&
+        !movingIds.has(Number(occupant.id))
+      ) {
+        throw new Error("Master Intake row rebind target became occupied.");
+      }
+      const temporaryRow = -Number(move.provenanceId);
+      const temporaryOccupant = byRow.get(temporaryRow) as any;
+      if (temporaryOccupant && Number(temporaryOccupant.id) !== Number(move.provenanceId)) {
+        throw new Error("Master Intake provenance rebind temporary slot is unavailable.");
+      }
+    }
+
+    for (const move of moves) {
+      const temporaryRow = -Number(move.provenanceId);
+      const update = await tx
+        .update(workspaceMasterIntakeRows)
+        .set({ rowNumber: temporaryRow })
+        .where(
+          and(
+            eq(workspaceMasterIntakeRows.id, Number(move.provenanceId)),
+            eq(workspaceMasterIntakeRows.rowNumber, Number(move.provenanceRowNumber))
+          )
+        );
+      if (affectedRows(update) !== 1) {
+        throw new Error("Master Intake provenance changed during row rebind.");
+      }
+    }
+    for (const move of moves) {
+      const temporaryRow = -Number(move.provenanceId);
+      const update = await tx
+        .update(workspaceMasterIntakeRows)
+        .set({ rowNumber: move.rowNumber })
+        .where(
+          and(
+            eq(workspaceMasterIntakeRows.id, Number(move.provenanceId)),
+            eq(workspaceMasterIntakeRows.rowNumber, temporaryRow)
+          )
+        );
+      if (affectedRows(update) !== 1) {
+        throw new Error("Master Intake provenance rebind could not be finalized.");
+      }
+    }
+  });
+}
+
 export async function syncWorkspaceMasterIntake(input: {
   actorUserId: number;
   workspaceId: number;
@@ -760,6 +1068,8 @@ export async function syncWorkspaceMasterIntake(input: {
       "Google Sheet or Workspace state changed after preview. Preview again before syncing."
     );
   }
+
+  await rebindMovedMasterIntakeProvenance(preview);
 
   const correlationId = "master-intake:" + randomUUID();
   const results: Array<{

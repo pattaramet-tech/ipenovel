@@ -88,6 +88,26 @@ export function normalizeOptionalHttpUrl(value: string): string | null | undefin
   }
 }
 
+export function masterIntakeRowIdentityFingerprint(row: MasterIntakeRowCanonical): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: "workspace-master-intake-row-identity-v1",
+        spreadsheetId: row.spreadsheetId,
+        sheetId: row.sheetId,
+        sheetName: row.sheetName,
+        normalizedTitle: row.normalizedTitle,
+        episodeNumber: row.episodeNumber,
+        translationDocumentId: row.translationDocumentId,
+        translationDocUrl: row.translationDocUrl.trim(),
+        webSourceUrl: row.webSourceUrl?.trim() ?? null,
+        preparedSourceDocumentId: row.preparedSourceDocumentId,
+        preparedSourceDocUrl: row.preparedSourceDocUrl?.trim() ?? null,
+      })
+    )
+    .digest("hex");
+}
+
 export function masterIntakeRowFingerprint(row: MasterIntakeRowCanonical): string {
   return createHash("sha256")
     .update(
@@ -134,6 +154,8 @@ export function masterIntakePreviewFingerprint(input: {
     existingNovelId?: number | null;
     workspaceNovelId?: number | null;
     workItemId?: number | null;
+    provenanceId?: number | null;
+    provenanceRowNumber?: number | null;
     blockers?: string[];
     sourceAlreadyLinked?: boolean;
   }>;
@@ -152,6 +174,8 @@ export function masterIntakePreviewFingerprint(input: {
           existingNovelId: row.existingNovelId ?? null,
           workspaceNovelId: row.workspaceNovelId ?? null,
           workItemId: row.workItemId ?? null,
+          provenanceId: row.provenanceId ?? null,
+          provenanceRowNumber: row.provenanceRowNumber ?? null,
           blockers: [...(row.blockers ?? [])].sort(),
           sourceAlreadyLinked: row.sourceAlreadyLinked === true,
         })),

@@ -93,6 +93,30 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(page).toContain('row.status === "CONFLICT" || row.status === "UNCHANGED"');
   });
 
+  it("rebinds pure Sheet row drift only when canonical provenance identity is unique and complete", () => {
+    const domain = read("server/workspace/masterIntake.domain.ts");
+    const service = read("server/workspace/masterIntake.service.ts");
+    expect(domain).toContain("masterIntakeRowIdentityFingerprint");
+    expect(service).toContain("provenanceIdentityFingerprint(candidate) === identityFingerprint");
+    expect(service).toContain("AMBIGUOUS_PROVENANCE_REBIND");
+    expect(service).toContain("PROVENANCE_REBIND_BATCH_INCOMPLETE");
+    expect(service).toContain("Master Intake source identity changed before row rebind.");
+    expect(service).toContain("PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+    expect(service).toContain("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
+    expect(service).toContain("readSpecificSheetRows");
+    expect(service).toContain("currentSheetIdentityByRow");
+    expect(service).toContain("Number(record.rowNumber) !== Number(move.provenanceRowNumber)");
+    expect(service).toContain("eq(workspaceMasterIntakeRows.rowNumber, Number(move.provenanceRowNumber))");
+    expect(service).toContain("eq(workspaceMasterIntakeRows.rowNumber, temporaryRow)");
+    expect(service).toContain("affectedRows(update) !== 1");
+    expect(service).toContain('.for("update")');
+    expect(service.indexOf('BATCH_EPISODE_RANGE_OVERLAP')).toBeLessThan(
+      service.indexOf('const provenanceRebindRows = rows.filter')
+    );
+    expect(service).toContain(".set({ rowNumber: move.rowNumber })");
+    expect(service).toContain("await rebindMovedMasterIntakeProvenance(preview)");
+  });
+
   it("restores a removed MATCH pack through the shared Episode intake path", () => {
     const service = read("server/workspace/masterIntake.service.ts");
     const board = read("server/workspace/editorialBoard.service.ts");

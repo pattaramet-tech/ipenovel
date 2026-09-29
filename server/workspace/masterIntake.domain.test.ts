@@ -6,6 +6,7 @@ import {
   masterIntakePreviewFingerprint,
   masterIntakeProvenancePreviewStatus,
   masterIntakeRowFingerprint,
+  masterIntakeRowIdentityFingerprint,
   normalizeOptionalHttpUrl,
   parseMasterIntakeTitleRange,
 } from "./masterIntake.domain";
@@ -116,6 +117,8 @@ describe("Workspace Master Intake domain", () => {
         existingNovelId: 10,
         workspaceNovelId: 20,
         workItemId: 30,
+        provenanceId: 40,
+        provenanceRowNumber: 1583,
         blockers: [] as string[],
         sourceAlreadyLinked: true,
       }],
@@ -132,6 +135,12 @@ describe("Workspace Master Intake domain", () => {
       masterIntakePreviewFingerprint({
         ...base,
         rows: [{ ...base.rows[0], sourceAlreadyLinked: false }],
+      })
+    ).not.toBe(fingerprint);
+    expect(
+      masterIntakePreviewFingerprint({
+        ...base,
+        rows: [{ ...base.rows[0], provenanceRowNumber: 1582 }],
       })
     ).not.toBe(fingerprint);
   });
@@ -173,5 +182,28 @@ describe("Workspace Master Intake domain", () => {
     expect(masterIntakeRowFingerprint(row)).toBe(masterIntakeRowFingerprint({ ...row }));
     expect(masterIntakeRowFingerprint({ ...row, webSourceUrl: "https://example.com/changed" }))
       .not.toBe(masterIntakeRowFingerprint(row));
+  });
+
+  it("separates stable row identity from physical Sheet row position", () => {
+    const row = {
+      spreadsheetId: "sheet",
+      sheetId: 10,
+      sheetName: "tab",
+      rowNumber: 1619,
+      novelTitle: "เรื่อง",
+      normalizedTitle: "เรื่อง",
+      episodeNumber: "301-350",
+      translationDocUrl: "https://docs.google.com/document/d/12345678901234567890/edit?tab=t.0",
+      translationDocumentId: "12345678901234567890",
+      webSourceUrl: "https://example.com/source",
+      preparedSourceDocUrl: "https://docs.google.com/document/d/abcdefghijabcdefghij/edit?tab=t.0",
+      preparedSourceDocumentId: "abcdefghijabcdefghij",
+    };
+    expect(masterIntakeRowIdentityFingerprint({ ...row, rowNumber: 1620 }))
+      .toBe(masterIntakeRowIdentityFingerprint(row));
+    expect(masterIntakeRowFingerprint({ ...row, rowNumber: 1620 }))
+      .not.toBe(masterIntakeRowFingerprint(row));
+    expect(masterIntakeRowIdentityFingerprint({ ...row, translationDocUrl: "https://docs.google.com/document/d/ZYXWVUTSRQPONMLKJIHG/edit?tab=t.0", translationDocumentId: "ZYXWVUTSRQPONMLKJIHG" }))
+      .not.toBe(masterIntakeRowIdentityFingerprint(row));
   });
 });
