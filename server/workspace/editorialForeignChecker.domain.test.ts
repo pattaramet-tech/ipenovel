@@ -178,6 +178,20 @@ describe("Editorial deterministic foreign-word checker", () => {
     ).toEqual([1]);
   });
 
+  it("does not treat third-person hope narration as author-note prose", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงช้า", { paragraphKey: "hope-story-anchor", paragraphOrder: 1 }),
+        paragraph("เขาหวังว่าทุกคนจะชอบของขวัญชิ้นนี้ก่อนจะเดินจากไป", { paragraphKey: "hope-story", paragraphOrder: 2 }),
+        paragraph("จากนั้นเขาก็ปิดประตูอย่างเงียบงัน", { paragraphKey: "hope-story-2", paragraphOrder: 3 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1]);
+  });
+
   it("can detect another source-junk block after narrative resumes without contaminating the story between blocks", () => {
     const result = evaluateEditorialForeignDraft({
       paragraphs: [
@@ -266,27 +280,29 @@ describe("Editorial deterministic foreign-word checker", () => {
     ).toEqual([]);
   });
 
-  it("treats punctuation-only text outside a standalone parenthetical author note as junk, not narrative", () => {
-    const result = evaluateEditorialForeignDraft({
-      paragraphs: [
-        paragraph("(หมายเหตุผู้เขียน: วันนี้ลงช้า).", {
-          paragraphKey: "paren-note-anchor",
-          paragraphOrder: 1,
-        }),
-        paragraph("หวังว่าทุกคนจะชอบและสนุกกับตอนนี้", {
-          paragraphKey: "paren-note-body",
-          paragraphOrder: 2,
-        }),
-        paragraph("คาซึยะเปิดประตูแล้วเดินกลับเข้าไปในห้องอย่างเงียบงัน", {
-          paragraphKey: "paren-note-story",
-          paragraphOrder: 3,
-        }),
-      ],
-    });
-    const junk = result.findings.filter(
-      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
-    );
-    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2]);
+  it("treats ASCII and full-width punctuation-only text outside a standalone parenthetical author note as junk, not narrative", () => {
+    for (const [suffix, key] of [[".", "ascii"], ["。", "ideographic"], ["！", "fullwidth"]]) {
+      const result = evaluateEditorialForeignDraft({
+        paragraphs: [
+          paragraph(`(หมายเหตุผู้เขียน: วันนี้ลงช้า)${suffix}`, {
+            paragraphKey: `paren-note-anchor-${key}`,
+            paragraphOrder: 1,
+          }),
+          paragraph("หวังว่าทุกคนจะชอบและสนุกกับตอนนี้", {
+            paragraphKey: `paren-note-body-${key}`,
+            paragraphOrder: 2,
+          }),
+          paragraph("คาซึยะเปิดประตูแล้วเดินกลับเข้าไปในห้องอย่างเงียบงัน", {
+            paragraphKey: `paren-note-story-${key}`,
+            paragraphOrder: 3,
+          }),
+        ],
+      });
+      const junk = result.findings.filter(
+        finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+      );
+      expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2]);
+    }
   });
 
   it("still detects a genuine trailing author-note/source-junk section", () => {
