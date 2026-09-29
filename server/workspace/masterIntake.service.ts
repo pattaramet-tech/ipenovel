@@ -958,7 +958,8 @@ async function rebindMovedMasterIntakeProvenance(preview: PreviewResult) {
           eq(workspaceMasterIntakeRows.spreadsheetId, preview.target.spreadsheetId),
           eq(workspaceMasterIntakeRows.sheetId, preview.target.sheetId)
         )
-      );
+      )
+      .for("update");
     const byId = new Map(scopeRows.map((row: any) => [Number(row.id), row]));
     const byRow = new Map(scopeRows.map((row: any) => [Number(row.rowNumber), row]));
     const movingIds = new Set(moves.map(row => Number(row.provenanceId)));
