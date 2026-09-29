@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v7" as const;
+  "workspace-editorial-foreign-checker-v8" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",
@@ -355,7 +355,39 @@ function hasSourceJunkAnchor(text: string) {
   return SOURCE_JUNK_ANCHOR_PATTERNS.some(pattern => pattern.test(value));
 }
 
-function evaluateEditorialSourceJunkTail(
+const SOURCE_JUNK_CONTINUATION_PATTERNS = [
+  /^(?:\.{2,}|…+)$/,
+  /^[\s\-_=—–*#~·•]{3,}$/,
+  /^(?:จบตอน|จบบท|จบตอนที่\s*\d+|end(?:\s+of)?\s+(?:chapter|part))\s*[.!…]*$/i,
+  /^\d{1,3}\s*[.)\]:-]\s*\S.{0,100}$/,
+  /^(?:โดยเฉพาะ)?(?:สิบอันดับแรก|top\s*10)[^\n]*(?:พาวเวอร์สโตน|power\s*stones?)/i,
+  /^ขอบคุณ(?:มาก)?(?:ทุกคน)?(?:สำหรับ|ที่)(?:การ)?(?:ติดตาม|อ่าน|สนับสนุน)/i,
+] as const;
+
+function isSourceJunkContinuation(text: string) {
+  const value = String(text || "").trim();
+  if (!value) return true;
+  if (hasSourceJunkAnchor(value)) return true;
+  if (SOURCE_JUNK_CONTINUATION_PATTERNS.some(pattern => pattern.test(value))) {
+    return true;
+  }
+  if (new RegExp(LINK_OR_EMAIL_RE.source, "i").test(value)) return true;
+
+  // Supporter/account lists are common immediately after author-note anchors.
+  // Keep this intentionally narrow so normal short English dialogue cannot
+  // silently extend a junk block into resumed story content.
+  if (/^([A-Za-z0-9_.-]{2,})(?:\s+\1)+$/i.test(value)) return true;
+  if (
+    value.length <= 80 &&
+    !/[\u0E00-\u0E7F]/.test(value) &&
+    /^[A-Za-z][A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*$/.test(value)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function evaluateEditorialSourceJunkBlocks(
   paragraphs: readonly EditorialCheckerParagraphInput[]
 ): EditorialForeignFinding[] {
   const grouped = new Map<string, EditorialCheckerParagraphInput[]>();
@@ -370,24 +402,34 @@ function evaluateEditorialSourceJunkTail(
     const ordered = [...rows].sort(
       (a, b) => a.paragraphOrder - b.paragraphOrder
     );
-    const anchorIndex = ordered.findIndex(paragraph =>
-      hasSourceJunkAnchor(paragraph.text)
-    );
-    if (anchorIndex < 0) continue;
 
-    for (const paragraph of ordered.slice(anchorIndex)) {
-      const token = String(paragraph.text || "").trim();
-      if (!token) continue;
-      const startOffset = paragraph.text.indexOf(token);
-      findings.push(
-        buildFinding(
-          paragraph,
-          EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
-          Math.max(0, startOffset),
-          Math.max(0, startOffset) + token.length,
-          token
-        )
-      );
+    for (let index = 0; index < ordered.length; index++) {
+      if (!hasSourceJunkAnchor(ordered[index].text)) continue;
+
+      for (let cursor = index; cursor < ordered.length; cursor++) {
+        const paragraph = ordered[cursor];
+        const token = String(paragraph.text || "").trim();
+        const isAnchor = cursor === index || hasSourceJunkAnchor(token);
+        if (!isAnchor && !isSourceJunkContinuation(token)) {
+          // A normal narrative paragraph is an explicit block boundary. Do not
+          // inherit source_junk into the rest of the chapter merely because an
+          // author note appeared earlier in the tab.
+          index = cursor - 1;
+          break;
+        }
+        if (!token) continue;
+        const startOffset = paragraph.text.indexOf(token);
+        findings.push(
+          buildFinding(
+            paragraph,
+            EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk,
+            Math.max(0, startOffset),
+            Math.max(0, startOffset) + token.length,
+            token
+          )
+        );
+        if (cursor === ordered.length - 1) index = cursor;
+      }
     }
   }
   return findings;
@@ -404,7 +446,7 @@ export function evaluateEditorialForeignDraft(input: {
     ...input.paragraphs.flatMap(paragraph =>
       evaluateEditorialForeignParagraph(paragraph, allowWords)
     ),
-    ...evaluateEditorialSourceJunkTail(input.paragraphs),
+    ...evaluateEditorialSourceJunkBlocks(input.paragraphs),
   ].sort(
     (a, b) =>
       a.sourceTabId.localeCompare(b.sourceTabId) ||

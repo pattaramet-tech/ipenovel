@@ -6,6 +6,7 @@ import {
   groupEditorialBulkCleanupFindings,
 } from "./editorialBulkFindingCleanup.domain";
 import { reindexEditorialDraftDocument } from "./editorialDraft.domain";
+import { evaluateEditorialForeignDraft } from "./editorialForeignChecker.domain";
 
 function document(paragraphs: string[]) {
   return reindexEditorialDraftDocument({
@@ -137,6 +138,49 @@ describe("Editorial Bulk Finding Cleanup domain", () => {
     expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
       "บทที่ 74",
       "เนื้อหาปกติ",
+    ]);
+  });
+
+  it("removes only the bounded mid-chapter junk block and preserves resumed narrative", () => {
+    const input = document([
+      "บท 225 ตอนที่ 256: เข้าหลอม (II)",
+      "หมายเหตุผู้เขียน: พระเจ้า ผู้แต่งลงสองวันติดกัน โลกกำลังจะแตกหรืออะไรสักอย่าง",
+      "...",
+      "ช่วงเช้ากับโยรุอิจิทิ้งให้คาซึยะไม่มีเอนเท่าใดนัก ความสุขบริสุทธิ์สีสิบบนที่กับชุนซุยย่อมพลิกอารมณ์ทั้งหมด",
+      "‘ตอนนี้ไม่ได้’",
+      "ขณะที่กำลังจะใส่เสื้อแจ็กเก็ต เขาเห็นฮาริเบลหยิบเสื้อแจ็กเก็ตของชุนซุยจากพื้นและสวมกลับให้",
+      "จบตอน",
+    ]);
+    const checked = evaluateEditorialForeignDraft({
+      paragraphs: input.tabs[0].paragraphs.map(paragraph => ({
+        sourceTabId: input.tabs[0].sourceTabId,
+        tabTitle: input.tabs[0].title,
+        paragraphKey: paragraph.paragraphKey,
+        paragraphOrder: paragraph.paragraphOrder,
+        paragraphFingerprint: paragraph.paragraphFingerprint,
+        text: paragraph.text,
+      })),
+    });
+    const junk = checked.findings
+      .filter(finding => finding.ruleKey === "source_junk")
+      .map(finding => ({
+        ...finding,
+        disposition: "open" as const,
+        resolutionVersion: 0,
+      }));
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3]);
+
+    const result = applyEditorialBulkCleanupToDocument({
+      document: input,
+      findings: junk,
+    });
+    expect(result.removedParagraphCount).toBe(2);
+    expect(result.document.tabs[0].paragraphs.map(row => row.text)).toEqual([
+      "บท 225 ตอนที่ 256: เข้าหลอม (II)",
+      "ช่วงเช้ากับโยรุอิจิทิ้งให้คาซึยะไม่มีเอนเท่าใดนัก ความสุขบริสุทธิ์สีสิบบนที่กับชุนซุยย่อมพลิกอารมณ์ทั้งหมด",
+      "‘ตอนนี้ไม่ได้’",
+      "ขณะที่กำลังจะใส่เสื้อแจ็กเก็ต เขาเห็นฮาริเบลหยิบเสื้อแจ็กเก็ตของชุนซุยจากพื้นและสวมกลับให้",
+      "จบตอน",
     ]);
   });
 

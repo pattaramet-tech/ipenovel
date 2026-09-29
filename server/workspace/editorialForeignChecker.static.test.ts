@@ -54,6 +54,9 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(domain).toContain("พาวเวอร์สโตน");
     expect(domain).toContain("ความคิดของ");
     expect(domain).toContain("หากคุณอยากอ่านตอนถัดไปก่อนใคร");
+    expect(domain).toContain("SOURCE_JUNK_CONTINUATION_PATTERNS");
+    expect(domain).toContain("normal narrative paragraph is an explicit block boundary");
+    expect(domain).not.toContain("ordered.slice(anchorIndex)");
     expect(service).toContain("EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk");
     expect(page).toContain('finding.ruleKey === "source_junk"');
     expect(service + domain).not.toMatch(/deleteEditorial|autoDelete|removeParagraph/);

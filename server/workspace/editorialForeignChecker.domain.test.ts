@@ -85,6 +85,66 @@ describe("Editorial deterministic foreign-word checker", () => {
     expect(result.status).toBe("failed");
   });
 
+  it("bounds an inline author-note junk block and preserves narrative that resumes afterward", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("บท 225 ตอนที่ 256: เข้าหลอม (II)", {
+          paragraphKey: "mid-title",
+          paragraphOrder: 1,
+        }),
+        paragraph("หมายเหตุผู้เขียน: พระเจ้า ผู้แต่งลงสองวันติดกัน โลกกำลังจะแตกหรืออะไรสักอย่าง", {
+          paragraphKey: "mid-note",
+          paragraphOrder: 2,
+        }),
+        paragraph("...", {
+          paragraphKey: "mid-ellipsis",
+          paragraphOrder: 3,
+        }),
+        paragraph("ช่วงเช้ากับโยรุอิจิทิ้งให้คาซึยะไม่มีเอนเท่าใดนัก ความสุขบริสุทธิ์สีสิบบนที่กับชุนซุยย่อมพลิกอารมณ์ทั้งหมด แต่เขารู้สึกประหลาดเล็กน้อยที่จะมีเซ็กซ์ ทั้งที่อุโนฮานะนั่งอยู่ชั้นล่างเพียงหนึ่งชั้น", {
+          paragraphKey: "mid-story-1",
+          paragraphOrder: 4,
+        }),
+        paragraph("‘ตอนนี้ไม่ได้’", {
+          paragraphKey: "mid-story-2",
+          paragraphOrder: 5,
+        }),
+        paragraph("ขณะที่กำลังจะใส่เสื้อแจ็กเก็ต เขาเห็นฮาริเบลหยิบเสื้อแจ็กเก็ตของชุนซุยจากพื้นและสวมกลับให้", {
+          paragraphKey: "mid-story-3",
+          paragraphOrder: 6,
+        }),
+        paragraph("จบตอน", {
+          paragraphKey: "mid-end",
+          paragraphOrder: 7,
+        }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([2, 3]);
+    expect(junk.map(finding => finding.token)).toEqual([
+      "หมายเหตุผู้เขียน: พระเจ้า ผู้แต่งลงสองวันติดกัน โลกกำลังจะแตกหรืออะไรสักอย่าง",
+      "...",
+    ]);
+  });
+
+  it("can detect another source-junk block after narrative resumes without contaminating the story between blocks", () => {
+    const result = evaluateEditorialForeignDraft({
+      paragraphs: [
+        paragraph("หมายเหตุผู้เขียน: วันนี้ลงสองตอน", { paragraphKey: "multi-note-1", paragraphOrder: 1 }),
+        paragraph("...", { paragraphKey: "multi-note-2", paragraphOrder: 2 }),
+        paragraph("ตัวละครเดินกลับเข้าไปในห้องและปิดประตูอย่างเงียบงัน", { paragraphKey: "multi-story", paragraphOrder: 3 }),
+        paragraph("ความคิดของผู้สร้าง", { paragraphKey: "multi-tail-1", paragraphOrder: 4 }),
+        paragraph("alex02373 alex02373", { paragraphKey: "multi-tail-2", paragraphOrder: 5 }),
+        paragraph("จบตอน", { paragraphKey: "multi-tail-3", paragraphOrder: 6 }),
+      ],
+    });
+    const junk = result.findings.filter(
+      finding => finding.ruleKey === EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk
+    );
+    expect(junk.map(finding => finding.paragraphOrder)).toEqual([1, 2, 4, 5, 6]);
+  });
+
   it("does not classify ordinary narrative support wording as source junk", () => {
     const result = evaluateEditorialForeignDraft({
       paragraphs: [
