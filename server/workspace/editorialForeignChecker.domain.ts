@@ -372,7 +372,7 @@ const SOURCE_JUNK_SUPPORTER_SIGNAL_RE =
 // is treated as resumed narrative and closes the section immediately.
 const SOURCE_JUNK_NOTE_PROSE_PATTERNS = [
   /^(?:ฉัน|ผม|เรา|ผู้เขียน|คนเขียน)[^\n]{0,100}(?:เขียน|แต่ง|แปล)[^\n]{0,80}(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?/i,
-  /(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?[^\n]{0,80}(?:เขียน|แต่ง|แปล)[^\n]{0,60}(?:ยาก|นาน|เสร็จ|ช้า)/i,
+  /^ตอนนี้\s*(?:เขียน|แต่ง|แปล)(?:\s*(?:ตอน|บท|ฉาก|เรื่อง|นิยาย)(?:นี้|หน้า|ถัดไป)?)?[^\n]{0,80}(?:ยาก|นาน|เสร็จ|ช้า)/i,
   /หวังว่า[^\n]{0,100}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน)[^\n]{0,100}(?:ชอบ|สนุก|ติดตาม|อ่าน)/i,
   /(?:ขอบคุณ|ขอบใจ|ฝาก|ขอ(?:โทษ|อภัย))[^\n]{0,120}(?:ทุกคน|ทุกท่าน|ผู้อ่าน|นักอ่าน|ติดตาม|สนับสนุน|อ่าน|ลงช้า)/i,
   /(?:ป่วย|ไม่สบาย)[^\n]{0,100}(?:ลง|ตอน|อัปเดต|อัพเดต|อัพเดท|ขออภัย|ขอโทษ)/i,
@@ -401,6 +401,9 @@ const SOURCE_JUNK_CONTINUATION_PATTERNS = [
 
 const SOURCE_JUNK_NUMBERED_LIST_ENTRY_RE =
   /^\d{1,3}\s*[.)\]:-]\s*(\S.{0,100})$/;
+
+const SOURCE_JUNK_LINK_ONLY_RE =
+  /^(?:(?:https?:\/\/|www\.)\S+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+\.(?:com|net|org|co|io|me|jp|kr|cn|th)\b\S*)(?:\s*(?:[|,;·•-]\s*)?(?:(?:https?:\/\/|www\.)\S+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9-]+\.(?:com|net|org|co|io|me|jp|kr|cn|th)\b\S*))*$/i;
 
 function isSourceJunkEndMarker(text: string) {
   return SOURCE_JUNK_END_MARKER_RE.test(String(text || "").trim());
@@ -515,7 +518,7 @@ function isSourceJunkContinuation(text: string) {
   if (SOURCE_JUNK_CONTINUATION_PATTERNS.some(pattern => pattern.test(value))) {
     return true;
   }
-  if (new RegExp(LINK_OR_EMAIL_RE.source, "i").test(value)) return true;
+  if (SOURCE_JUNK_LINK_ONLY_RE.test(value)) return true;
 
   // Repeated or digit-bearing account-like tokens are strong enough to be
   // continuation evidence on their own. Plain alphabetic handles are only
