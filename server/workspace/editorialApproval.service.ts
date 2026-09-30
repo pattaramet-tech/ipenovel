@@ -46,6 +46,7 @@ import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
 import {
   EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
   editorialAllowListSha256,
+  evaluateEditorialCheckerState,
 } from "./editorialForeignChecker.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 
@@ -276,6 +277,8 @@ async function currentQcEvidence(
       qcEvidenceSha256: null,
       unresolvedCount: null,
       findings: [],
+      // IPE-058-E: canonical state for status chips — never guess from counts.
+      state: "NOT_RUN" as const,
     };
   }
   if (
@@ -289,6 +292,7 @@ async function currentQcEvidence(
       qcEvidenceSha256: null,
       unresolvedCount: null,
       findings: [],
+      state: "STALE" as const,
     };
   }
 
@@ -348,6 +352,7 @@ async function currentQcEvidence(
       qcEvidenceSha256: null,
       unresolvedCount: null,
       findings: [],
+      state: "STALE" as const,
     };
   }
 
@@ -406,6 +411,15 @@ async function currentQcEvidence(
     anomalies: projectedAnomalies,
   });
   const ready = unresolvedCount === 0 && blockingAnomalyCount === 0;
+  // IPE-058-E: canonical state from the shared pure evaluator — QC ready only
+  // in CURRENT_READY; open=0 on a stale run can never look ready (IPE-058-A).
+  const { state } = evaluateEditorialCheckerState({
+    hasRun: true,
+    errorReason: null,
+    staleReason: null,
+    unresolvedCount,
+    blockingAnomalyCount,
+  });
   return {
     ready,
     reason: ready ? null : ("QC_UNRESOLVED" as const),
@@ -415,6 +429,7 @@ async function currentQcEvidence(
     blockingAnomalyCount,
     anomalies: projectedAnomalies,
     findings: projected,
+    state,
   };
 }
 

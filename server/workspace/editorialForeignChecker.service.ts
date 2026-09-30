@@ -29,6 +29,7 @@ import {
   editorialAllowListSha256,
   evaluateEditorialForeignDraft,
   getEditorialCheckerStaleReason,
+  evaluateEditorialCheckerState,
   normalizeEditorialAllowedWord,
   type EditorialCheckerParagraphInput,
 } from "./editorialForeignChecker.domain";
@@ -536,6 +537,7 @@ export async function getEditorialForeignCheckerReadModel(input: {
       unresolvedCount: 0,
       blockingIssueCount: 0,
       isCurrent: false,
+      state: "NOT_RUN" as const,
       effectiveStatus: null,
     };
   }
@@ -637,6 +639,28 @@ export async function getEditorialForeignCheckerReadModel(input: {
   const isCurrent = staleReason === null;
   const blockingIssueCount =
     unresolvedCount + effectiveBlockingAnomalyCount;
+  // IPE-058-E: canonical state from the shared pure evaluator — one authority
+  // for checker/QC state across read models and client chips.
+  const { state } = evaluateEditorialCheckerState({
+    hasRun: true,
+    errorReason: null,
+    staleReason,
+    unresolvedCount,
+    blockingAnomalyCount: effectiveBlockingAnomalyCount,
+  });
+  // IPE-058-E review fix: effectiveStatus derives from the canonical state —
+  // a stale run (even open=0) can never render as passed. Only CURRENT
+  // evidence reports passed/failed; other states report their own value.
+  const effectiveStatus =
+    state === "CURRENT_READY"
+      ? ("passed" as const)
+      : state === "CURRENT_HAS_FINDINGS"
+        ? ("failed" as const)
+        : state === "RUNNING"
+          ? ("running" as const)
+          : state === "ERROR"
+            ? ("error" as const)
+            : ("stale" as const);
   return {
     engineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
     latestDraft: draft,
@@ -656,7 +680,8 @@ export async function getEditorialForeignCheckerReadModel(input: {
     unresolvedCount,
     blockingIssueCount,
     isCurrent,
-    effectiveStatus: blockingIssueCount === 0 ? "passed" : "failed",
+    state,
+    effectiveStatus,
   };
 }
 

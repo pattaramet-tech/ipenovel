@@ -20,6 +20,7 @@ import {
   chapterCanvasFindingRange,
   chapterCanvasParagraphStartOffset,
   createChapterCanvasHistory,
+  deriveApprovalPresentationState,
   pushChapterCanvasHistory,
   redoChapterCanvas,
   serializeChapterCanvasForSave,
@@ -131,6 +132,23 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 
 function editorialTabText(tab: any) {
   return (tab?.paragraphs ?? []).map((paragraph: any) => String(paragraph.text ?? "")).join("\n\n");
+}
+
+/**
+ * IPE-058-E: actionable QC reason from the durable read model — the UI never
+ * guesses; it reports what the server state machine says and what to do next.
+ */
+function editorialQCReasonText(qc: any) {
+  if (!qc) return "ยังไม่มีข้อมูล QC";
+  const runLabel = `run #${qc.checkerRunId ?? "—"}`;
+  if (qc.state === "NOT_RUN") return "ต้อง Run Checker สำหรับ Draft นี้ก่อน";
+  if (qc.state === "STALE")
+    return `Checker ยังเป็นของ Draft ก่อนหน้า (${runLabel}) — ต้อง Run Checker ใหม่`;
+  if (qc.state === "ERROR") return `Checker ผิดพลาด — ต้อง Run Checker ใหม่ (${qc.errorReason ?? "unknown"})`;
+  if (qc.state === "CURRENT_HAS_FINDINGS")
+    return `มี ${qc.unresolvedCount ?? 0} findings ที่ยังไม่ resolve (${runLabel})`;
+  if (qc.ready) return `${runLabel} · evidence ตรงกับ Draft ปัจจุบัน`;
+  return `${runLabel} · ยัง resolve ไม่ครบ`;
 }
 
 // IPE-058-C: the editor state IS the canvas paragraph model now.
@@ -1063,6 +1081,38 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  // IPE-058-E: exactly-once automatic recheck. Identity =
+  // workItemId + draftId + allow-list hash; coalesces concurrent calls,
+  // reuses completed runs for the same identity (server replay dedupes
+  // storage), and never double-runs on refetch.
+  const editorialAutoRecheckInFlight = useRef(new Map<string, Promise<unknown>>());
+  const editorialAutoRecheckDone = useRef(new Set<string>());
+  const runEditorialForeignCheckerOnceForDraft = (draftId: number) => {
+    if (!selectedWorkspaceId || !selectedSourceWorkItemId) {
+      return Promise.resolve();
+    }
+    const currentAllowListSha256 = editorialCheckerData?.currentAllowListSha256 as string | undefined;
+    const identity = `${selectedSourceWorkItemId}:${draftId}:${currentAllowListSha256 ?? ""}`;
+    const inFlight = editorialAutoRecheckInFlight.current.get(identity);
+    if (inFlight) return inFlight;
+    if (editorialAutoRecheckDone.current.has(identity)) return Promise.resolve();
+    const promise = runEditorialForeignChecker
+      .mutateAsync({
+        workspaceId: selectedWorkspaceId,
+        workItemId: selectedSourceWorkItemId,
+        expectedDraftId: draftId,
+      })
+      .then((result) => {
+        editorialAutoRecheckDone.current.add(identity);
+        return result;
+      })
+      .finally(() => {
+        editorialAutoRecheckInFlight.current.delete(identity);
+      });
+    editorialAutoRecheckInFlight.current.set(identity, promise);
+    return promise;
+  };
+
   const applyEditorialFullCheckerTransform = trpc.workspace.editorial.fullCheckerApply.useMutation({
     onSuccess: async () => {
       await Promise.all([
@@ -1104,11 +1154,7 @@ export default function WorkspacePage() {
         result.draft?.id &&
         result.isCurrent !== false
       ) {
-        await runEditorialForeignChecker.mutateAsync({
-          workspaceId: selectedWorkspaceId,
-          workItemId: selectedSourceWorkItemId,
-          expectedDraftId: result.draft.id,
-        });
+        await runEditorialForeignCheckerOnceForDraft(result.draft.id);
       }
       if (savedChapterTarget) {
         const freshDraftData = sourceDraftResult.data as any;
@@ -1189,11 +1235,7 @@ export default function WorkspacePage() {
         result.draft?.id &&
         result.isCurrent !== false
       ) {
-        await runEditorialForeignChecker.mutateAsync({
-          workspaceId: selectedWorkspaceId,
-          workItemId: selectedSourceWorkItemId,
-          expectedDraftId: result.draft.id,
-        });
+        await runEditorialForeignCheckerOnceForDraft(result.draft.id);
       }
       toast.success("Undo สร้าง Draft เวอร์ชันใหม่และตรวจซ้ำแล้ว");
     },
@@ -1263,11 +1305,9 @@ export default function WorkspacePage() {
     onSuccess: async () => {
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
-        await runEditorialForeignChecker.mutateAsync({
-          workspaceId: selectedWorkspaceId,
-          workItemId: selectedSourceWorkItemId,
-          expectedDraftId: latestDraft?.id,
-        });
+        if (latestDraft?.id) {
+          await runEditorialForeignCheckerOnceForDraft(latestDraft.id);
+        }
       }
     },
     onError: (error) => toast.error(error.message),
@@ -1287,11 +1327,9 @@ export default function WorkspacePage() {
     onSuccess: async () => {
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
-        await runEditorialForeignChecker.mutateAsync({
-          workspaceId: selectedWorkspaceId,
-          workItemId: selectedSourceWorkItemId,
-          expectedDraftId: latestDraft?.id,
-        });
+        if (latestDraft?.id) {
+          await runEditorialForeignCheckerOnceForDraft(latestDraft.id);
+        }
       }
     },
     onError: (error) => toast.error(error.message),
@@ -1547,16 +1585,28 @@ export default function WorkspacePage() {
     | "ALLOW_LIST_CHANGED"
     | null
     | undefined;
+  // IPE-058-E: derive chips from the durable read-model state (server
+  // authority) — no open===0 shortcuts, no local timestamp guesses.
+  const editorialCheckerState = editorialCheckerData?.state as
+    | "NOT_RUN"
+    | "RUNNING"
+    | "STALE"
+    | "ERROR"
+    | "CURRENT_HAS_FINDINGS"
+    | "CURRENT_READY"
+    | undefined;
   const editorialCheckerRunStale = Boolean(
-    editorialCheckerData?.run &&
-      (
-        editorialCheckerData?.isCurrent === false ||
-        !editorialCheckerData?.latestDraft ||
-        editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id ||
-        editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion ||
-        (editorialCheckerData.currentAllowListSha256 &&
-          editorialCheckerData.run.allowListSha256 !== editorialCheckerData.currentAllowListSha256)
-      )
+    editorialCheckerState
+      ? editorialCheckerState === "STALE"
+      : editorialCheckerData?.run &&
+        (
+          editorialCheckerData?.isCurrent === false ||
+          !editorialCheckerData?.latestDraft ||
+          editorialCheckerData.run.draftId !== editorialCheckerData.latestDraft.id ||
+          editorialCheckerData.run.engineVersion !== editorialCheckerData.engineVersion ||
+          (editorialCheckerData.currentAllowListSha256 &&
+            editorialCheckerData.run.allowListSha256 !== editorialCheckerData.currentAllowListSha256)
+        )
   );
   const chapterEditorTabs = (editorialDraftData?.tabs ?? []) as any[];
   const editorialCheckerCurrent = Boolean(
@@ -3350,6 +3400,20 @@ export default function WorkspacePage() {
                       </div>
                     )}
 
+                    {/* IPE-058-E: explicit checker ERROR state — an errored
+                        attempt is never open=0/ready/pending_confirm. */}
+                    {runEditorialForeignChecker.isError && (
+                      <div className="rounded-md border border-destructive bg-destructive/10 p-2 text-sm text-destructive">
+                        Checker ERROR — {runEditorialForeignChecker.error?.message ?? "unknown error"} ·
+                        กด “ตรวจ / ตรวจซ้ำ” อีกครั้ง และยังไม่สามารถ Confirm/Stage ได้จนกว่าจะมี evidence ใหม่
+                      </div>
+                    )}
+                    {editorialCheckerState === "NOT_RUN" && editorialCheckerData?.latestDraft && !runEditorialForeignChecker.isPending && (
+                      <div className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
+                        ยังไม่ได้ตรวจ Draft นี้ — กด “ตรวจ / ตรวจซ้ำ” เพื่อสร้าง QC evidence
+                      </div>
+                    )}
+
                     {(editorialForeignChecker.data as any)?.run ? (
                       <div className="grid gap-2 sm:grid-cols-3">
                         <div className="rounded border p-2 text-sm">
@@ -4512,11 +4576,19 @@ export default function WorkspacePage() {
                       </div>
                       <StatusPill
                         value={
-                          editorialApprovalData?.readyToPublish
-                            ? "ready_to_publish"
-                            : editorialApprovalData?.approvalStatus?.valid
-                              ? "approved"
-                              : "pending_confirm"
+                          // IPE-058-E review fix: pending_confirm is NOT a
+                          // fallback — derived from the server state machine
+                          // only (no_draft/not_run/checking/stale/error/
+                          // qc_blocked are explicit states).
+                          deriveApprovalPresentationState({
+                            hasDraft: Boolean(editorialApprovalData?.latestDraft),
+                            qcState: editorialApprovalData?.qc?.state,
+                            qcReady: editorialApprovalData?.qc?.ready,
+                            approvalValid:
+                              editorialApprovalData?.approvalStatus?.valid,
+                            readyToPublish:
+                              editorialApprovalData?.readyToPublish,
+                          })
                         }
                       />
                     </div>
@@ -4530,8 +4602,11 @@ export default function WorkspacePage() {
                       </div>
                       <div className="rounded border p-2 text-sm">
                         QC {editorialApprovalData?.qc?.ready ? "clean" : "not ready"}
+                        {editorialApprovalData?.qc?.state
+                          ? ` · ${editorialApprovalData.qc.state}`
+                          : ""}
                         <div className="text-xs text-muted-foreground">
-                          run #{editorialApprovalData?.qc?.checkerRunId ?? "—"} · open {editorialApprovalData?.qc?.unresolvedCount ?? "—"}
+                          {editorialQCReasonText(editorialApprovalData?.qc)}
                         </div>
                       </div>
                       <div className="rounded border p-2 text-sm">

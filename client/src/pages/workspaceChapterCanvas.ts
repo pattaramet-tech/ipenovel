@@ -257,9 +257,17 @@ export type ChapterCanvasFindingRange = { start: number; end: number };
 
 /**
  * Map a QC finding (paragraphKey + UTF-16 offsets within that paragraph) onto
- * the flat canvas text. Returns null when the paragraphKey no longer exists
- * (stale finding) — callers must fail gracefully and never highlight another
- * paragraph in its place.
+ * the flat canvas text. Returns null when the finding cannot be targeted
+ * safely — callers must fail gracefully and never highlight another
+ * paragraph or a different text span in its place:
+ * - the paragraphKey no longer exists (stale finding);
+ * - offsets are not finite numbers (NaN/Infinity);
+ * - offsets are negative;
+ * - start > end;
+ * - either offset exceeds the paragraph's UTF-16 length (no clamping onto
+ *   the paragraph boundary — an invalid coordinate is no-target, period).
+ *
+ * A zero-width range (start === end) is valid (caret-style findings).
  */
 export function chapterCanvasFindingRange(
   paragraphs: readonly ChapterCanvasParagraph[],
@@ -275,18 +283,24 @@ export function chapterCanvasFindingRange(
     paragraph => paragraph.paragraphKey === paragraphKey
   );
   if (nodeIndex < 0) return null;
+  const rawStart = Number(finding.startOffset ?? 0);
+  const rawEnd = Number(finding.endOffset ?? rawStart);
+  if (
+    !Number.isFinite(rawStart) ||
+    !Number.isFinite(rawEnd) ||
+    rawStart < 0 ||
+    rawEnd < 0 ||
+    rawStart > rawEnd
+  ) {
+    return null;
+  }
   const starts = chapterCanvasParagraphStarts(paragraphs);
   const nodeStart = starts[nodeIndex]!;
   const nodeLength = paragraphs[nodeIndex]!.text.length;
-  const start = Math.max(
-    0,
-    Math.min(Number(finding.startOffset ?? 0), nodeLength)
-  );
-  const end = Math.max(
-    start,
-    Math.min(Number(finding.endOffset ?? start), nodeLength)
-  );
-  return { start: nodeStart + start, end: nodeStart + end };
+  if (rawStart > nodeLength || rawEnd > nodeLength) {
+    return null;
+  }
+  return { start: nodeStart + rawStart, end: nodeStart + rawEnd };
 }
 
 /** Canvas offset of the start of a paragraph node (clamped). */
@@ -349,4 +363,54 @@ export function redoChapterCanvas(
     },
     entry: next,
   };
+}
+
+/**
+ * IPE-058-E review fix: canonical PRESENTATION state for the approval/QC
+ * panel. pending_confirm is NOT a fallback — it exists ONLY when a current
+ * Draft exists, QC evidence is CURRENT_READY, QC is ready, and the existing
+ * approval is not already valid (and Stage is not already ready to publish).
+ * Every other condition gets an explicit state, so a stale draft/checker or
+ * an errored/running/missing checker can never display as pending_confirm.
+ */
+export type EditorialApprovalPresentationState =
+  | "no_draft"
+  | "checker_not_run"
+  | "checking"
+  | "checker_stale"
+  | "checker_error"
+  | "qc_blocked"
+  | "pending_confirm"
+  | "approved"
+  | "ready_to_publish";
+
+export function deriveApprovalPresentationState(input: {
+  hasDraft: boolean;
+  qcState:
+    | "NOT_RUN"
+    | "RUNNING"
+    | "STALE"
+    | "ERROR"
+    | "CURRENT_HAS_FINDINGS"
+    | "CURRENT_READY"
+    | null
+    | undefined;
+  qcReady: boolean | null | undefined;
+  approvalValid: boolean | null | undefined;
+  readyToPublish: boolean | null | undefined;
+}): EditorialApprovalPresentationState {
+  if (!input.hasDraft) return "no_draft";
+  if (input.readyToPublish) return "ready_to_publish";
+  if (input.approvalValid) return "approved";
+  if (input.qcState === "STALE") return "checker_stale";
+  if (input.qcState === "ERROR") return "checker_error";
+  if (input.qcState === "RUNNING") return "checking";
+  if (input.qcState === "NOT_RUN" || input.qcState == null) {
+    return "checker_not_run";
+  }
+  if (input.qcState === "CURRENT_READY" && input.qcReady) {
+    return "pending_confirm";
+  }
+  // CURRENT_HAS_FINDINGS or a non-ready CURRENT_READY (defensive).
+  return "qc_blocked";
 }

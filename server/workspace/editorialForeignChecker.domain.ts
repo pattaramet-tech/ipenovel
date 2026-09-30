@@ -725,3 +725,73 @@ export function getEditorialCheckerStaleReason(input: {
   }
   return null;
 }
+
+/**
+ * IPE-058-E — canonical checker/QC state machine (pure).
+ *
+ * Single authority for "what state is the checker evidence in RIGHT NOW",
+ * consumed by the checker read model, the approval QC read model and the
+ * client status chips so the semantics can never diverge per surface.
+ *
+ * States:
+ * - NOT_RUN: no checker run exists for the current draft.
+ * - RUNNING: a run is in flight (client in-flight flag; no durable row yet).
+ * - STALE: a run exists but binds a different draft / engine / allow-list —
+ *   stale evidence is stale even when openFindings === 0 (IPE-058-A).
+ * - ERROR: the checker run errored (bounded safe reason; never ready, never
+ *   pending_confirm; Stage blocks).
+ * - CURRENT_HAS_FINDINGS: current evidence with unresolved blocking issues.
+ * - CURRENT_READY: current evidence, run succeeded, no unresolved blocking
+ *   findings/anomalies — the ONLY state from which QC can be ready.
+ *
+ * Currentness NEVER derives from finding counts, timestamps, tabOrder, the
+ * latest row, or UI state — only from exact Draft/engine/allow-list binding
+ * (draftId is the immutable revision identity; drafts are append-only).
+ */
+export type EditorialCheckerState =
+  | "NOT_RUN"
+  | "RUNNING"
+  | "STALE"
+  | "ERROR"
+  | "CURRENT_HAS_FINDINGS"
+  | "CURRENT_READY";
+
+export function evaluateEditorialCheckerState(input: {
+  hasRun: boolean;
+  isRunning?: boolean;
+  /** Bounded safe error reason for an errored checker attempt. */
+  errorReason?: string | null;
+  staleReason: EditorialCheckerStaleReason | null;
+  /** Unresolved blocking findings on the run (open dispositions). */
+  unresolvedCount: number;
+  /** Current unresolved structural anomalies. */
+  blockingAnomalyCount: number;
+}): {
+  state: EditorialCheckerState;
+  /** True only for CURRENT_READY / CURRENT_HAS_FINDINGS. */
+  isCurrent: boolean;
+  /** True when QC may proceed (CURRENT_READY only). */
+  qcReady: boolean;
+} {
+  if (!input.hasRun) {
+    return {
+      state: input.isRunning ? "RUNNING" : "NOT_RUN",
+      isCurrent: false,
+      qcReady: false,
+    };
+  }
+  if (input.errorReason) {
+    return { state: "ERROR", isCurrent: false, qcReady: false };
+  }
+  if (input.staleReason) {
+    return { state: "STALE", isCurrent: false, qcReady: false };
+  }
+  if (input.unresolvedCount > 0 || input.blockingAnomalyCount > 0) {
+    return {
+      state: "CURRENT_HAS_FINDINGS",
+      isCurrent: true,
+      qcReady: false,
+    };
+  }
+  return { state: "CURRENT_READY", isCurrent: true, qcReady: true };
+}

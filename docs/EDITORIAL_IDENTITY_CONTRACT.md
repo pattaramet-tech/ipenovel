@@ -148,13 +148,60 @@ save). See `client/src/pages/workspaceChapterCanvas.ts` for the model:
 - ParagraphKey positional-carry defect: FIXED (explicit canvas identity +
   legacy occurrence matching).
 
-## Still open for IPE-058-D/E
+## IPE-058-E — QC/Approval state machine (canonical currentness)
 
-- Full Checker UX parity inside the canvas (inline finding rendering depth,
-  transform preview) — the existing Issue Queue / QC controls remain the
-  surface for now and still work against the canvas.
+The Draft→Checker→QC→Approval→Stage machine now has ONE pure authority:
+`evaluateEditorialCheckerState` (editorialForeignChecker.domain.ts), consumed
+by the checker read model, the approval QC read model, and the client status
+chips. States: `NOT_RUN`, `RUNNING`, `STALE`, `ERROR`,
+`CURRENT_HAS_FINDINGS`, `CURRENT_READY`.
+
+- **Currentness** binds exact draftId (immutable revision identity — drafts
+  are append-only) + engineVersion + allowListSha256. It NEVER derives from
+  finding counts, timestamps, tabOrder, the latest row, or UI state. Stale
+  evidence is stale even at open=0 (IPE-058-A invariant, now enforced by the
+  evaluator itself).
+- **QC ready** requires `CURRENT_READY` only: run succeeded + current
+  evidence + zero unresolved blocking findings/anomalies. The approval
+  `currentQcEvidence` returns the canonical `state` alongside
+  ready/reason/QcEvidenceSha256.
+- **Checker ERROR** is an explicit state (bounded safe reason) — never
+  open=0/ready/pending_confirm; Stage is blocked because no usable evidence
+  exists. **SCHEMA BLOCKER (IPE-058-E review fix, audited):** no existing
+  durable store can carry an authoritative checker-ERROR record without a
+  schema extension. Audited candidates: (1)
+  `workspaceEditorialCheckerRuns.status` is a MySQL enum `passed|failed` —
+  faking an error as a failed row with zero findings would become latestRun
+  and look CURRENT_READY (actively wrong); (2)
+  `workspaceEditorialDraftEditEvents` is Draft-edit semantics (editKind enum
+  + text hashes) — checker failures are not edits; (3) `workspaceOutbox` is
+  the M05 publish-delivery contract with a required publishRunId FK.
+  Required extension (for a migration milestone, NOT done here): extend the
+  run status enum with `error` + add nullable `errorReason varchar(255)` on
+  `workspaceEditorialCheckerRuns`, persist an error row inside the run
+  transaction, and have `evaluateEditorialCheckerState` consume
+  `run.status === "error"` as authoritative. Until then: an errored attempt
+  persists nothing, the previous run keeps its own (stale/current) state,
+  and the client surfaces the error banner from the typed mutation error
+  (transient, not durable).
+- **Ghost pending_confirm**: the client approval pill downgrades to
+  `stale`/`not_run` based on the server QC state — a stale draft/checker can
+  never display as pending_confirm. (Server-side kanban already moves the
+  card to `editing` on every content-changing revision path.)
+- **Exactly-once auto recheck**: the client coalesces concurrent rechecks and
+  skips already-completed ones per identity
+  `workItemId:draftId:allowListSha256`; the server additionally dedupes run
+  rows by (workItem, draft, sha, engine, allowlist) idempotency key.
+- **Full Checker Apply (IPE-058-D)** creates a new Draft revision → old run
+  stale by draftId, old approval `DRAFT_CHANGED`, card projected to
+  `editing`; a cancelled preview persists nothing.
+
+## Still open for IPE-058-F
+
+- Durable checker ERROR run rows (requires schema enum/message column).
 - "แท็บ X/Y" bulk-checker summary still derives from checker structural summary (separate
   taxonomy from pack reconciliation) — unify presentation if desired.
 - Native browser undo interplay for IME composition sessions (controlled
   history covers programmatic ops; composition-heavy IME undo may not restore
   intermediate composition states).
+- Final UX polish of the issue drawer / canvas (IPE-058-F scope).
