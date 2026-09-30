@@ -175,6 +175,19 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     expect(service).toContain("stageItemIdempotencyKey");
   });
 
+  it("consolidates editorial staged item-key handling onto the identity contract", () => {
+    const publishService = source("server/workspace/editorialPublish.service.ts");
+    const provider = source("server/workspace/ipenovelPublish.provider.ts");
+    const contract = source("server/workspace/editorialIdentityContract.domain.ts");
+    expect(publishService).toContain("editorialStagedEpisodeItemKey(stageId, episodeId)");
+    expect(publishService).toContain("parseEditorialStagedEpisodeItemKey(value)");
+    expect(provider).toContain("parseEditorialStagedEpisodeItemKey(value)");
+    // Persisted format is unchanged; legacy inline regex parsers are gone.
+    expect(contract).toContain("editorial-stage");
+    expect(publishService).not.toContain('match(/^editorial-stage:');
+    expect(provider).not.toContain('match(/^editorial-stage:');
+  });
+
   it("shows explicit Confirm and unpublished Episode staging controls in Workspace", () => {
     const page = source("client/src/pages/WorkspacePage.tsx");
     expect(page).toContain("4. ยืนยัน Draft ปัจจุบัน");

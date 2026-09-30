@@ -4506,6 +4506,50 @@ export default function WorkspacePage() {
                           </div>
                         )}
 
+                        {(() => {
+                          const rec = editorialApprovalData.stagePlan.reconciliation;
+                          if (!rec) return null;
+                          const hasDetail =
+                            (rec.missingEpisodeNumbers?.length ?? 0) > 0 ||
+                            (rec.duplicateEpisodeNumbers?.length ?? 0) > 0 ||
+                            (rec.outOfRangeEpisodeNumbers?.length ?? 0) > 0 ||
+                            (rec.unreadableTabs?.length ?? 0) > 0;
+                          if (!hasDetail) return null;
+                          return (
+                            <div className="space-y-1 rounded border bg-muted/40 p-2 text-xs">
+                              <div className="font-medium">
+                                ครบ {rec.mappedCount}/{rec.expectedCount} ตอน
+                              </div>
+                              {(rec.missingEpisodeNumbers?.length ?? 0) > 0 && (
+                                <div className="text-destructive">
+                                  ตอนที่หาย: {rec.missingEpisodeNumbers.join(", ")}
+                                </div>
+                              )}
+                              {(rec.duplicateEpisodeNumbers?.length ?? 0) > 0 && (
+                                <div className="text-destructive">
+                                  เลขตอนซ้ำ: {rec.duplicateEpisodeNumbers.join(", ")}
+                                </div>
+                              )}
+                              {(rec.outOfRangeEpisodeNumbers?.length ?? 0) > 0 && (
+                                <div className="text-destructive">
+                                  อยู่นอกช่วงแพ็ก: {rec.outOfRangeEpisodeNumbers.join(", ")}
+                                </div>
+                              )}
+                              {(rec.unreadableTabs?.length ?? 0) > 0 && (
+                                <div className="text-muted-foreground">
+                                  แท็บที่อ่าน identity ไม่ได้:{" "}
+                                  {rec.unreadableTabs
+                                    .map(
+                                      (tab: any) =>
+                                        `${tab.sourceTabTitle || tab.sourceTabId} (${tab.code})`
+                                    )
+                                    .join(", ")}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
                         {editorialApprovalData.stagePlan.items?.length > 0 && (
                           <details className="rounded border bg-background">
                             <summary className="cursor-pointer px-3 py-2 text-xs font-medium">

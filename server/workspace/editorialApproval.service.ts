@@ -519,6 +519,9 @@ function stagePlanSummary(
     } : null,
     anomalies: plan.anomalies,
     blockers: plan.blockers,
+    // Deterministic coverage diagnostics (IPE-058-B): which episodes are
+    // missing/duplicated/out-of-range and which tabs are unreadable.
+    reconciliation: plan.reconciliation,
     ready: plan.ready,
     ...(first ? stagePlanItemSummary(first) : {}),
   };

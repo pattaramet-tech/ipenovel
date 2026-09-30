@@ -14,6 +14,7 @@ import {
   editorialQcEvidenceSha256,
   normalizeEditorialEpisodeNumber,
   parseEditorialEpisodeHeading,
+  resolveEditorialTabChapterIdentity,
 } from "./editorialApproval.domain";
 
 function input(overrides: Record<string, unknown> = {}) {
@@ -960,10 +961,10 @@ describe("Episode Pack commerce plan", () => {
     );
     expect(plan.ready).toBe(false);
     // The draft tab keeps chapterNumber "001-030" (see draft domain test),
-    // but staging canonicalizes it to null and raises TAB_NUMBER_MISSING
-    // instead of mapping the pack range onto a single Episode identity.
+    // but a range-shaped heading can never become a canonical single chapter
+    // identity — staging fails closed with RANGE_USED_AS_CHAPTER_IDENTITY.
     expect(plan.blockers.map(blocker => blocker.code)).toContain(
-      "TAB_NUMBER_MISSING"
+      "RANGE_USED_AS_CHAPTER_IDENTITY"
     );
     expect(plan.items).toHaveLength(0);
   });
@@ -1132,5 +1133,400 @@ describe("Episode Pack commerce plan", () => {
       sourceTabId: "tab-heading-only",
     });
     expect(plan.items).toHaveLength(1);
+  });
+
+  it("IPE-058-B: reconciles an exact complete pack mapping with full coverage", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 003",
+        tabs: [1, 2, 3].map(episode => ({
+          sourceTabId: `tab-00${episode}`,
+          tabOrder: episode - 1,
+          title: `แท็บ ${episode}`,
+          chapterNumber: `00${episode}`,
+          chapterTitle: null,
+          paragraphs: [
+            { paragraphOrder: 0, text: `บทที่ ${episode} ชื่อบท ${episode}` },
+            { paragraphOrder: 1, text: `เนื้อหาตอน ${episode} ${"ก".repeat(500)}` },
+          ],
+        })),
+      })
+    );
+    expect(plan.ready).toBe(true);
+    expect(plan.reconciliation).toMatchObject({
+      expectedCount: 3,
+      mappedCount: 3,
+      ready: true,
+    });
+    expect(plan.reconciliation.missingEpisodeNumbers).toEqual([]);
+    expect(plan.reconciliation.duplicateEpisodeNumbers).toEqual([]);
+    expect(plan.reconciliation.outOfRangeEpisodeNumbers).toEqual([]);
+    expect(plan.reconciliation.unreadableTabs).toEqual([]);
+    expect(plan.reconciliation.identityConflicts).toEqual([]);
+    expect(plan.reconciliation.mappedEpisodeNumbers).toEqual(["001", "002", "003"]);
+  });
+
+  it("IPE-058-B: blocks a same-count wrong-identity pack (expected 1,2,3 vs detected 1,1,3)", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 003",
+        tabs: [
+          {
+            sourceTabId: "tab-a",
+            tabOrder: 0,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท 1" },
+              { paragraphOrder: 1, text: `เนื้อหาตอน 1 ${"ก".repeat(500)}` },
+            ],
+          },
+          {
+            sourceTabId: "tab-b",
+            tabOrder: 1,
+            title: "แท็บ 2",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท ซ้ำ" },
+              { paragraphOrder: 1, text: `เนื้อหาตอนซ้ำ ${"ข".repeat(500)}` },
+            ],
+          },
+          {
+            sourceTabId: "tab-c",
+            tabOrder: 2,
+            title: "แท็บ 3",
+            chapterNumber: "003",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 3 ชื่อบท 3" },
+              { paragraphOrder: 1, text: `เนื้อหาตอน 3 ${"ค".repeat(500)}` },
+            ],
+          },
+        ],
+      })
+    );
+    // Equal counts (3 tabs / 3 expected) must still block on identity coverage.
+    expect(plan.ready).toBe(false);
+    expect(plan.reconciliation.expectedCount).toBe(3);
+    expect(plan.reconciliation.mappedCount).toBe(3);
+    expect(plan.reconciliation.duplicateEpisodeNumbers).toEqual(["001"]);
+    expect(plan.reconciliation.missingEpisodeNumbers).toEqual(["002"]);
+    const codes = plan.blockers.map(blocker => blocker.code);
+    expect(codes).toContain("TAB_NUMBER_DUPLICATE");
+    expect(codes).toContain("EXPECTED_EPISODE_MISSING");
+  });
+
+  it("IPE-058-B: blocks a range-shaped heading with RANGE_USED_AS_CHAPTER_IDENTITY and per-source evidence", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 005",
+        tabs: [
+          {
+            sourceTabId: "tab-range",
+            tabOrder: 0,
+            title: "ช่วงพิเศษ",
+            chapterNumber: "001-030",
+            chapterTitle: "ช่วงพิเศษ",
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 001-030 ช่วงพิเศษ" },
+              { paragraphOrder: 1, text: "เนื้อหาย่อหน้าแรก" },
+            ],
+          },
+        ],
+      })
+    );
+    expect(plan.ready).toBe(false);
+    expect(
+      plan.blockers.filter(
+        blocker => blocker.code === "RANGE_USED_AS_CHAPTER_IDENTITY"
+      )
+    ).toHaveLength(1);
+    expect(
+      plan.blockers.find(
+        blocker => blocker.code === "RANGE_USED_AS_CHAPTER_IDENTITY"
+      )
+    ).toMatchObject({
+      severity: "blocker",
+      sourceTabId: "tab-range",
+    });
+    expect(plan.items).toHaveLength(0);
+    expect(plan.reconciliation.unreadableTabs).toEqual([
+      {
+        sourceTabId: "tab-range",
+        sourceTabTitle: "ช่วงพิเศษ",
+        tabOrder: 0,
+        code: "RANGE_USED_AS_CHAPTER_IDENTITY",
+      },
+    ]);
+    expect(plan.reconciliation.identityConflicts).toHaveLength(1);
+    const candidates = plan.reconciliation.identityConflicts[0].candidates;
+    expect(candidates.some(candidate => candidate.source === "heading" && candidate.rangeShaped)).toBe(true);
+    expect(candidates.some(candidate => candidate.source === "tab_metadata" && candidate.rangeShaped)).toBe(true);
+    // Range-shaped candidates can never produce a canonical single number.
+    expect(candidates.every(candidate => candidate.canonical === null)).toBe(true);
+  });
+
+  it("IPE-058-B: fails closed on heading vs tab-metadata conflict with per-source evidence", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 002",
+        tabs: [
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 0,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 1" },
+            ],
+          },
+          {
+            sourceTabId: "tab-conflict",
+            tabOrder: 1,
+            title: "แท็บ 2",
+            // Heading says 12, source metadata says 13 — never silently pick one.
+            chapterNumber: "013",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 12 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน" },
+            ],
+          },
+        ],
+      })
+    );
+    expect(plan.ready).toBe(false);
+    expect(plan.blockers.map(blocker => blocker.code)).toContain(
+      "TAB_NUMBER_CONFLICT"
+    );
+    const conflict = plan.reconciliation.identityConflicts.find(
+      entry => entry.sourceTabId === "tab-conflict"
+    );
+    expect(conflict).toBeTruthy();
+    const headingCandidate = conflict!.candidates.find(
+      candidate => candidate.source === "heading"
+    );
+    const metadataCandidate = conflict!.candidates.find(
+      candidate => candidate.source === "tab_metadata"
+    );
+    expect(headingCandidate).toMatchObject({ canonical: "012" });
+    expect(metadataCandidate).toMatchObject({ canonical: "013" });
+  });
+
+  it("IPE-058-B: attributes out-of-range episodes and unreadable tabs in the reconciliation", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 003",
+        tabs: [
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 0,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: `เนื้อหาตอน 1 ${"ก".repeat(500)}` },
+            ],
+          },
+          {
+            sourceTabId: "tab-out",
+            tabOrder: 1,
+            title: "แท็บ 9",
+            chapterNumber: "009",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 9 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 9" },
+            ],
+          },
+          {
+            sourceTabId: "tab-unreadable",
+            tabOrder: 2,
+            title: "ชื่อตอนธรรมดา",
+            chapterNumber: null,
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "ชื่อตอนธรรมดา" },
+              { paragraphOrder: 1, text: "ย่อหน้าเนื้อหา" },
+            ],
+          },
+        ],
+      })
+    );
+    expect(plan.ready).toBe(false);
+    expect(plan.reconciliation.outOfRangeEpisodeNumbers).toEqual(["009"]);
+    expect(plan.reconciliation.unreadableTabs).toEqual([
+      {
+        sourceTabId: "tab-out",
+        sourceTabTitle: "แท็บ 9",
+        tabOrder: 1,
+        code: "TAB_NUMBER_OUT_OF_RANGE",
+      },
+      {
+        sourceTabId: "tab-unreadable",
+        sourceTabTitle: "ชื่อตอนธรรมดา",
+        tabOrder: 2,
+        code: "TAB_NUMBER_MISSING",
+      },
+    ]);
+    expect(plan.reconciliation.missingEpisodeNumbers).toEqual(["002", "003"]);
+  });
+
+  it("IPE-058-B: resolves canonical chapter identity from heading, metadata, or title in precedence order", () => {
+    // Heading wins when all candidates agree (title is pre-parsed by the
+    // caller via parseEditorialEpisodeHeading, so the resolver sees "2").
+    const agree = resolveEditorialTabChapterIdentity({
+      headingRawValue: "2",
+      metadataRawValue: "002",
+      titleRawValue: "2",
+      width: 3,
+    });
+    expect(agree.canonicalEpisodeNumber).toBe("002");
+    expect(agree.conflict).toBe(false);
+    expect(agree.rangeShaped).toBe(false);
+    expect(agree.unresolvable).toBe(false);
+
+    // Metadata fallback when the heading carries no number.
+    const metadataOnly = resolveEditorialTabChapterIdentity({
+      headingRawValue: null,
+      metadataRawValue: "007",
+      titleRawValue: null,
+      width: 3,
+    });
+    expect(metadataOnly.canonicalEpisodeNumber).toBe("007");
+
+    // Title fallback last (the caller pre-extracts the number via
+    // parseEditorialEpisodeHeading, so the resolver receives "9").
+    const titleOnly = resolveEditorialTabChapterIdentity({
+      headingRawValue: null,
+      metadataRawValue: null,
+      titleRawValue: "9",
+      width: 3,
+    });
+    expect(titleOnly.canonicalEpisodeNumber).toBe("009");
+    expect(titleOnly.candidates[0]).toMatchObject({
+      source: "tab_title",
+      canonical: "009",
+    });
+
+    // Width overflow stays out of canonical scope (fail closed).
+    const overflow = resolveEditorialTabChapterIdentity({
+      headingRawValue: "12345",
+      metadataRawValue: null,
+      titleRawValue: null,
+      width: 3,
+    });
+    expect(overflow.canonicalEpisodeNumber).toBeNull();
+    expect(overflow.unresolvable).toBe(true);
+  });
+
+  it("IPE-058-B review fix: mixed canonical heading + canonical range metadata blocks range identity", () => {
+    const resolved = resolveEditorialTabChapterIdentity({
+      headingRawValue: "12",
+      metadataRawValue: "001-030",
+      titleRawValue: null,
+      width: 3,
+    });
+    expect(resolved.rangeShaped).toBe(true);
+    expect(resolved.canonicalEpisodeNumber).toBeNull();
+  });
+
+  it("IPE-058-B review fix: mixed canonical heading + non-canonical dot range blocks range identity", () => {
+    const resolved = resolveEditorialTabChapterIdentity({
+      headingRawValue: "12",
+      metadataRawValue: "1..30",
+      titleRawValue: null,
+      width: 3,
+    });
+    expect(resolved.rangeShaped).toBe(true);
+    expect(resolved.canonicalEpisodeNumber).toBeNull();
+  });
+
+  it("IPE-058-B review fix: mixed canonical heading + em-dash range fails closed", () => {
+    const resolved = resolveEditorialTabChapterIdentity({
+      headingRawValue: "12",
+      metadataRawValue: "001—030",
+      titleRawValue: null,
+      width: 3,
+    });
+    expect(resolved.rangeShaped).toBe(true);
+    expect(resolved.canonicalEpisodeNumber).toBeNull();
+  });
+
+  it("IPE-058-B review fix: mixed canonical heading + unreadable claim never silently resolves", () => {
+    const resolved = resolveEditorialTabChapterIdentity({
+      headingRawValue: "12",
+      metadataRawValue: "abc",
+      titleRawValue: null,
+      width: 3,
+    });
+    expect(resolved.canonicalEpisodeNumber).toBeNull();
+    expect(resolved.conflict).toBe(false);
+    expect(resolved.unresolvable).toBe(true);
+  });
+
+  it("IPE-058-B review fix: absent optional candidates never cause conflict", () => {
+    const resolved = resolveEditorialTabChapterIdentity({
+      headingRawValue: null,
+      metadataRawValue: "007",
+      titleRawValue: null,
+      width: 3,
+    });
+    expect(resolved.canonicalEpisodeNumber).toBe("007");
+    expect(resolved.conflict).toBe(false);
+    expect(resolved.candidates).toHaveLength(1);
+  });
+
+  it("IPE-058-B review fix: mixed range metadata in a batch emits RANGE_USED_AS_CHAPTER_IDENTITY", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 002",
+        tabs: [
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 0,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: `เนื้อหาตอน 1 ${"ก".repeat(500)}` },
+            ],
+          },
+          {
+            sourceTabId: "tab-mixed",
+            tabOrder: 1,
+            title: "แท็บ 2",
+            // Heading says 2, metadata carries a pack range — the valid
+            // heading must NOT mask the range-shaped identity claim.
+            chapterNumber: "001-030",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 2 ชื่อบท" },
+              { paragraphOrder: 1, text: `เนื้อหาตอน 2 ${"ข".repeat(500)}` },
+            ],
+          },
+        ],
+      })
+    );
+    expect(plan.ready).toBe(false);
+    expect(
+      plan.blockers.filter(
+        blocker => blocker.code === "RANGE_USED_AS_CHAPTER_IDENTITY"
+      )
+    ).toHaveLength(1);
+    expect(
+      plan.blockers.find(
+        blocker => blocker.code === "RANGE_USED_AS_CHAPTER_IDENTITY"
+      )
+    ).toMatchObject({ sourceTabId: "tab-mixed" });
+    expect(plan.reconciliation.identityConflicts).toHaveLength(1);
+    // The healthy tab still maps; the pack as a whole stays not-ready.
+    expect(plan.items.map(item => item.episodeNumber)).toEqual(["001"]);
   });
 });

@@ -26,6 +26,10 @@ import {
   EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
   EDITORIAL_EPISODE_STAGE_CONTRACT_V3,
 } from "./editorialApproval.domain";
+import {
+  editorialStagedEpisodeItemKey,
+  parseEditorialStagedEpisodeItemKey,
+} from "./editorialIdentityContract.domain";
 import { getEditorialApprovalReadModel } from "./editorialApproval.service";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 import { createPublishDestination, createPublishDryRun } from "./publishDryRun.service";
@@ -56,19 +60,16 @@ export class WorkspaceEditorialPublishError extends Error {
   }
 }
 
+// Item-key construction/parsing is consolidated onto the canonical Editorial
+// Identity Contract (IPE-058-B); the persisted format is unchanged:
+// "editorial-stage:{stageId}:episode:{episodeId}".
 function editorialItemKey(stageId: number, episodeId: number) {
-  return `${EDITORIAL_PUBLISH_ITEM_PREFIX}:${stageId}:episode:${episodeId}`;
+  return editorialStagedEpisodeItemKey(stageId, episodeId);
 }
 
 function parseEditorialItemKey(value: string) {
-  const match = value.match(/^editorial-stage:(\d+):episode:(\d+)$/);
-  if (!match) return null;
-  const stageId = Number(match[1]);
-  const episodeId = Number(match[2]);
-  return Number.isSafeInteger(stageId) && stageId > 0 &&
-    Number.isSafeInteger(episodeId) && episodeId > 0
-    ? { stageId, episodeId }
-    : null;
+  const parsed = parseEditorialStagedEpisodeItemKey(value);
+  return parsed ? { stageId: parsed.stageId, episodeId: parsed.episodeId } : null;
 }
 
 async function database() {

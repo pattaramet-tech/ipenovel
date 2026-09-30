@@ -76,6 +76,13 @@ describe("Editorial identity contract", () => {
       parseEditorialStagedEpisodeItemKey("editorial-stage:abc:episode:1")
     ).toBeNull();
     expect(parseEditorialStagedEpisodeItemKey("episode:93:4021")).toBeNull();
+    // Row identities must be positive integers (legacy parser semantics).
+    expect(
+      parseEditorialStagedEpisodeItemKey("editorial-stage:0:episode:5")
+    ).toBeNull();
+    expect(
+      parseEditorialStagedEpisodeItemKey("editorial-stage:93:episode:0")
+    ).toBeNull();
   });
 
   it("binds the checker-run identity component to run identity so stale open=0 can never look current", () => {

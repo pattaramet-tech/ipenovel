@@ -237,7 +237,14 @@ export function parseEditorialStagedEpisodeItemKey(
   if (!match) return null;
   const stageId = Number(match[1]);
   const episodeId = Number(match[2]);
-  if (!Number.isSafeInteger(stageId) || !Number.isSafeInteger(episodeId)) {
+  // Row identities must be positive integers (matches the legacy parsers in
+  // editorialPublish.service and ipenovelPublish.provider).
+  if (
+    !Number.isSafeInteger(stageId) ||
+    stageId <= 0 ||
+    !Number.isSafeInteger(episodeId) ||
+    episodeId <= 0
+  ) {
     return null;
   }
   return { editorial: true, stageId, episodeId };

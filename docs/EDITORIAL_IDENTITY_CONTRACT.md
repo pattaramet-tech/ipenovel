@@ -66,14 +66,44 @@ production editor behavior was changed in IPE-058-A.
 | D | A checker run with zero findings (`open=0`) is still stale when draftId/engine/allow-list drift; `effectiveStatus` is computed independently of `isCurrent` | checker/QC | checker domain test + approval service integration test (CI-gated) |
 | E | Title-only/empty/source-note/front-matter tabs are classified: source notes are excluded when confirmed, genuine empty tabs raise `TAB_EMPTY`, front matter is excluded only when not conflicting and not in-range | approval | `editorialApproval.domain.test.ts` (E) |
 
-## For IPE-058-B (not done here)
+## IPE-058-B implementation notes (done on branch fix/ipe058b-stage-metadata-reconciliation)
 
-- Reconcile chapter metadata: single canonical `chapterNumber` resolution
-  order (heading paragraph → tab metadata → tab title) with explicit conflict
-  blockers, and stop storing range strings as tab `chapterNumber` without a
-  distinguishing marker.
-- Stage mapping reconciliation for partial pack coverage (the "54/62" class of
-  blocker) — must keep failing closed; no inference from display strings.
-- Unify the duplicated item-key parsers (`editorialPublish.service.ts` vs
-  `ipenovelPublish.provider.ts`) onto the contract function.
-- Decide UI policy for `effectiveStatus` vs `isCurrent` (bulk checker card).
+- **Chapter metadata resolver**: `resolveEditorialTabChapterIdentity` (editorialApproval.domain.ts)
+  collects per-source candidates (heading → tab metadata → tab title), canonicalizes each
+  through the IPE-058-A contract classifier, and only selects a canonical number when ALL
+  observed claims agree as canonical singles: any range-shaped claim emits
+  `RANGE_USED_AS_CHAPTER_IDENTITY`, any observed-but-unresolvable claim (e.g. unreadable
+  metadata) fails closed via `TAB_NUMBER_MISSING` with evidence instead of being silently
+  discarded, and any two distinct canonical claims conflict via `TAB_NUMBER_CONFLICT`
+  (the stable code for chapter-identity conflict). Absent sources (null/empty) are not
+  claims and never conflict. Selection precedence equals candidate precedence — never a
+  silent pick.
+- **Range-shaped metadata**: any range-shaped candidate in a chapter-identity position emits
+  `RANGE_USED_AS_CHAPTER_IDENTITY` (fail closed) with per-source evidence. Canonical pack
+  range stays hyphen-form commerce scope; dot/em-dash forms are range-shaped non-canonical.
+- **Coverage reconciliation**: every batch plan now carries `reconciliation`
+  (expected/mapped/missing/duplicate/out-of-range episode numbers, unreadable tabs with
+  blocker codes, excluded tabs, identity conflicts, ready). Equal counts with wrong
+  identities still block. Surfaced via `stagePlanSummary.reconciliation` and rendered in
+  the Stage panel.
+- **Stable blocker codes**: existing stable codes reused (`TAB_NUMBER_MISSING`,
+  `TAB_NUMBER_CONFLICT`, `TAB_NUMBER_DUPLICATE`, `TAB_NUMBER_OUT_OF_RANGE`,
+  `EXPECTED_EPISODE_MISSING`, `COUNT_MISMATCH`, `TAB_EMPTY`, `TAB_CONTENT_INVALID`);
+  one new code added (`RANGE_USED_AS_CHAPTER_IDENTITY`). Requested
+  `CHAPTER_IDENTITY_CONFLICT` maps to the existing stable `TAB_NUMBER_CONFLICT`;
+  `DUPLICATE_EPISODE_NUMBER` → `TAB_NUMBER_DUPLICATE`;
+  `EPISODE_OUT_OF_RANGE` → `TAB_NUMBER_OUT_OF_RANGE` — no duplicate terminology.
+- **Item-key parser consolidation**: editorialPublish.service and ipenovelPublish.provider
+  now build/parse via the contract functions; persisted format unchanged
+  ("editorial-stage:{stageId}:episode:{episodeId}"), strict positive-integer semantics kept.
+- **ParagraphKey whole-tab-rewrite defect**: DEFERRED. Stage mapping uses canonical chapter
+  identity, not paragraphKey, so the defect does not affect stage correctness; the
+  regression test locking the behavior stays and the fix moves to the editor milestone
+  (IPE-058-C) to keep this change scope-safe.
+
+## Still open for IPE-058-C
+
+- ParagraphKey positional-carry defect under whole-tab rewrite (re-key or text-aware carry).
+- Single-canvas paragraph-aware editor redesign.
+- "แท็บ X/Y" bulk-checker summary still derives from checker structural summary (separate
+  taxonomy from pack reconciliation) — unify presentation if desired.

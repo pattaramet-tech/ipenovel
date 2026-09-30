@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { classifyEditorialChapterNumber } from "./editorialIdentityContract.domain";
+
 export const EDITORIAL_APPROVAL_CONTRACT =
   "workspace-editorial-approval-v1" as const;
 export const EDITORIAL_EPISODE_STAGE_CONTRACT =
@@ -141,6 +143,7 @@ export type EditorialEpisodeDraftBatchAnomaly = {
     | "COUNT_MISMATCH"
     | "TAB_NUMBER_MISSING"
     | "TAB_NUMBER_CONFLICT"
+    | "RANGE_USED_AS_CHAPTER_IDENTITY"
     | "TAB_NUMBER_DUPLICATE"
     | "TAB_NUMBER_OUT_OF_RANGE"
     | "TAB_NUMBER_OUT_OF_ORDER"
@@ -155,6 +158,145 @@ export type EditorialEpisodeDraftBatchAnomaly = {
   episodeNumber?: string;
 };
 
+/** One chapter-identity claim observed on a tab, with its evidence source. */
+export type EditorialTabChapterIdentityCandidate = {
+  source: "heading" | "tab_metadata" | "tab_title";
+  rawValue: string;
+  /** Canonical single episode number, or null when not a pure single integer. */
+  canonical: string | null;
+  /** True when the raw value is range-shaped (canonical or not) per the contract. */
+  rangeShaped: boolean;
+};
+
+/**
+ * Deterministic chapter-identity resolution for one tab (IPE-058-B).
+ *
+ * Selection happens ONLY when every OBSERVED identity claim (a source that
+ * actually carries a non-empty value) agrees after canonicalization:
+ * - any range-shaped claim (canonical or non-canonical form) forbids
+ *   selecting a canonical single chapter number — downstream must fail
+ *   closed with RANGE_USED_AS_CHAPTER_IDENTITY;
+ * - any observed claim that cannot canonicalize (e.g. unreadable metadata)
+ *   forbids selection — it is never silently discarded in favour of another
+ *   candidate (fail closed via TAB_NUMBER_MISSING with evidence);
+ * - two or more distinct canonical claims are a conflict (fail closed via
+ *   TAB_NUMBER_CONFLICT);
+ * - absent sources (null / empty) are NOT claims and never cause conflict.
+ */
+export function resolveEditorialTabChapterIdentity(input: {
+  headingRawValue: string | null;
+  metadataRawValue: string | null;
+  titleRawValue: string | null;
+  width: number;
+}): {
+  candidates: EditorialTabChapterIdentityCandidate[];
+  canonicalEpisodeNumber: string | null;
+  conflict: boolean;
+  rangeShaped: boolean;
+  /** True when an observed claim cannot canonicalize and is not range-shaped. */
+  unresolvable: boolean;
+} {
+  const rawCandidates: Array<{
+    source: EditorialTabChapterIdentityCandidate["source"];
+    rawValue: string | null;
+  }> = [
+    { source: "heading", rawValue: input.headingRawValue },
+    { source: "tab_metadata", rawValue: input.metadataRawValue },
+    { source: "tab_title", rawValue: input.titleRawValue },
+  ];
+  const candidates: EditorialTabChapterIdentityCandidate[] = [];
+  for (const { source, rawValue } of rawCandidates) {
+    const value = String(rawValue ?? "").trim();
+    if (!value) continue;
+    const classified = classifyEditorialChapterNumber(value);
+    let canonical: string | null = null;
+    if (
+      classified.kind === "single" &&
+      /^\d+$/.test(classified.singleNumber ?? "")
+    ) {
+      const padded = String(Number(classified.singleNumber)).padStart(
+        input.width,
+        "0"
+      );
+      // Preserve the legacy width guard: overflow beyond the pack width is
+      // out of canonical scope and canonicalizes to null (fail closed).
+      canonical = padded.length > input.width ? null : padded;
+    }
+    candidates.push({
+      source,
+      rawValue: value,
+      canonical,
+      rangeShaped: classified.rangeShaped,
+    });
+  }
+  const unique = Array.from(
+    new Set(candidates.map(candidate => candidate.canonical).filter(Boolean))
+  ) as string[];
+  const rangeShaped = candidates.some(candidate => candidate.rangeShaped);
+  const unresolvable = candidates.some(
+    candidate => candidate.canonical === null && !candidate.rangeShaped
+  );
+  const conflict = unique.length > 1;
+  return {
+    candidates,
+    // Canonical selection requires ALL observed claims to agree as canonical
+    // singles: no conflict, no range-shaped claim, no unresolvable claim.
+    canonicalEpisodeNumber:
+      candidates.length > 0 && !conflict && !rangeShaped && !unresolvable
+        ? unique[0]
+        : null,
+    conflict,
+    rangeShaped,
+    unresolvable,
+  };
+}
+
+/**
+ * Deterministic Episode-Pack coverage reconciliation (IPE-058-B). Answers
+ * "which episodes are missing/duplicated/out-of-range and which tabs are
+ * unreadable" instead of a bare tabCount vs expectedCount comparison —
+ * equal counts with wrong identities (expected 1,2,3 vs detected 1,1,3)
+ * must still block.
+ */
+export type EditorialEpisodePackReconciliation = {
+  expectedCount: number;
+  mappedCount: number;
+  expectedEpisodeNumbers: string[];
+  mappedEpisodeNumbers: string[];
+  missingEpisodeNumbers: string[];
+  duplicateEpisodeNumbers: string[];
+  outOfRangeEpisodeNumbers: string[];
+  unreadableTabs: Array<{
+    sourceTabId: string;
+    sourceTabTitle: string;
+    tabOrder: number;
+    code: EditorialEpisodeDraftBatchAnomaly["code"];
+  }>;
+  excludedTabs: EditorialEpisodeDraftExcludedTab[];
+  identityConflicts: Array<{
+    sourceTabId: string;
+    sourceTabTitle: string;
+    candidates: EditorialTabChapterIdentityCandidate[];
+  }>;
+  ready: boolean;
+};
+
+function emptyReconciliation(): EditorialEpisodePackReconciliation {
+  return {
+    expectedCount: 0,
+    mappedCount: 0,
+    expectedEpisodeNumbers: [],
+    mappedEpisodeNumbers: [],
+    missingEpisodeNumbers: [],
+    duplicateEpisodeNumbers: [],
+    outOfRangeEpisodeNumbers: [],
+    unreadableTabs: [],
+    excludedTabs: [],
+    identityConflicts: [],
+    ready: false,
+  };
+}
+
 export type EditorialEpisodeDraftBatchPlan = {
   mode: "single" | "range";
   requestedEpisodeNumber: string;
@@ -164,6 +306,8 @@ export type EditorialEpisodeDraftBatchPlan = {
   excludedTabs: EditorialEpisodeDraftExcludedTab[];
   anomalies: EditorialEpisodeDraftBatchAnomaly[];
   blockers: EditorialEpisodeDraftBatchAnomaly[];
+  /** Deterministic coverage reconciliation (see EditorialEpisodePackReconciliation). */
+  reconciliation: EditorialEpisodePackReconciliation;
   ready: boolean;
 };
 
@@ -215,15 +359,6 @@ export function defaultEditorialEpisodePackSaleFromRange(episodeNumber: string) 
   return defaultEditorialEpisodePackSale(normalized, count);
 }
 
-function canonicalRangeEpisodeNumber(value: string | null | undefined, width: number) {
-  const normalized = normalizeEditorialEpisodeNumber(value ?? "");
-  if (!/^\d+$/.test(normalized)) return null;
-  const number = Number(normalized);
-  if (!Number.isSafeInteger(number) || number < 0) return null;
-  const canonical = String(number).padStart(width, "0");
-  return canonical.length > width ? null : canonical;
-}
-
 function tabDetectedEpisodeNumber(
   tab: EditorialEpisodeDraftInput["tabs"][number],
   width: number
@@ -236,19 +371,21 @@ function tabDetectedEpisodeNumber(
     ? parseEditorialEpisodeHeading(String(firstLine.text || "").trim())
     : null;
   const titleHeading = parseEditorialEpisodeHeading(tab.title);
-  const candidates = [
-    heading?.episodeNumber ?? null,
-    tab.chapterNumber ?? null,
-    titleHeading?.episodeNumber ?? null,
-  ]
-    .map(value => canonicalRangeEpisodeNumber(value, width))
-    .filter((value): value is string => Boolean(value));
-  const unique = Array.from(new Set(candidates));
+  const resolved = resolveEditorialTabChapterIdentity({
+    headingRawValue: heading?.episodeNumber ?? null,
+    metadataRawValue: tab.chapterNumber ?? null,
+    titleRawValue: titleHeading?.episodeNumber ?? null,
+    width,
+  });
   return {
     firstLine: firstLine ? String(firstLine.text || "").trim() : "",
-    candidates: unique,
-    episodeNumber: unique.length === 1 ? unique[0] : null,
-    conflict: unique.length > 1,
+    candidates: resolved.candidates
+      .map(candidate => candidate.canonical)
+      .filter((value): value is string => Boolean(value)),
+    episodeNumber: resolved.canonicalEpisodeNumber,
+    conflict: resolved.conflict,
+    identityCandidates: resolved.candidates,
+    rangeShaped: resolved.rangeShaped,
   };
 }
 
@@ -368,6 +505,19 @@ export function analyzeEditorialEpisodeDraftBatch(
         excludedTabs: [],
         anomalies: [],
         blockers: [],
+        reconciliation: {
+          expectedCount: 1,
+          mappedCount: 1,
+          expectedEpisodeNumbers: [plan.episodeNumber],
+          mappedEpisodeNumbers: [plan.episodeNumber],
+          missingEpisodeNumbers: [],
+          duplicateEpisodeNumbers: [],
+          outOfRangeEpisodeNumbers: [],
+          unreadableTabs: [],
+          excludedTabs: [],
+          identityConflicts: [],
+          ready: true,
+        },
         ready: true,
       };
     } catch (error) {
@@ -396,6 +546,14 @@ export function analyzeEditorialEpisodeDraftBatch(
         excludedTabs: [],
         anomalies: [anomaly],
         blockers: [anomaly],
+        reconciliation: {
+          ...emptyReconciliation(),
+          expectedEpisodeNumbers: requestedEpisodeNumber
+            ? [requestedEpisodeNumber]
+            : [],
+          expectedCount: requestedEpisodeNumber ? 1 : 0,
+          ready: false,
+        },
         ready: false,
       };
     }
@@ -411,6 +569,8 @@ export function analyzeEditorialEpisodeDraftBatch(
     tab: EditorialEpisodeDraftInput["tabs"][number];
     episodeNumber: string;
   }> = [];
+  const identityConflicts: EditorialEpisodePackReconciliation["identityConflicts"] = [];
+  const unreadableTabs: EditorialEpisodePackReconciliation["unreadableTabs"] = [];
 
   for (const tab of tabs) {
     const detected = tabDetectedEpisodeNumber(tab, range.width);
@@ -436,6 +596,12 @@ export function analyzeEditorialEpisodeDraftBatch(
         sourceTabId: tab.sourceTabId,
         sourceTabTitle: tab.title,
       });
+      unreadableTabs.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        code: "TAB_EMPTY",
+      });
       continue;
     }
     if (detected.conflict) {
@@ -445,6 +611,46 @@ export function analyzeEditorialEpisodeDraftBatch(
         message: `${tab.title} มีเลขตอนขัดแย้งกัน: ${detected.candidates.join(", ")}`,
         sourceTabId: tab.sourceTabId,
         sourceTabTitle: tab.title,
+      });
+      identityConflicts.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        candidates: detected.identityCandidates,
+      });
+      unreadableTabs.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        code: "TAB_NUMBER_CONFLICT",
+      });
+      continue;
+    }
+    if (detected.rangeShaped) {
+      // Range-shaped metadata in a chapter-identity position: a pack range or
+      // non-canonical range display string must never become the canonical
+      // single chapter number — even when another source carries a valid
+      // single number. Fail closed with actionable evidence.
+      const rangeShapedValues = detected.identityCandidates
+        .filter(candidate => candidate.rangeShaped)
+        .map(candidate => `${candidate.source}="${candidate.rawValue}"`)
+        .join(", ");
+      anomalies.push({
+        code: "RANGE_USED_AS_CHAPTER_IDENTITY",
+        severity: "blocker",
+        message: `${tab.title} ใช้ช่วงตอน (${rangeShapedValues}) แทนเลขตอนจริงของบท — ต้องแยก identity ระดับแพ็กออกจากเลขตอนรายบท`,
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+      });
+      identityConflicts.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        candidates: detected.identityCandidates,
+      });
+      unreadableTabs.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        code: "RANGE_USED_AS_CHAPTER_IDENTITY",
       });
       continue;
     }
@@ -456,6 +662,17 @@ export function analyzeEditorialEpisodeDraftBatch(
         sourceTabId: tab.sourceTabId,
         sourceTabTitle: tab.title,
       });
+      identityConflicts.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        candidates: detected.identityCandidates,
+      });
+      unreadableTabs.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        code: "TAB_NUMBER_MISSING",
+      });
       continue;
     }
     if (!expectedSet.has(detected.episodeNumber)) {
@@ -466,6 +683,12 @@ export function analyzeEditorialEpisodeDraftBatch(
         sourceTabId: tab.sourceTabId,
         sourceTabTitle: tab.title,
         episodeNumber: detected.episodeNumber,
+      });
+      unreadableTabs.push({
+        sourceTabId: tab.sourceTabId,
+        sourceTabTitle: tab.title,
+        tabOrder: tab.tabOrder,
+        code: "TAB_NUMBER_OUT_OF_RANGE",
       });
       continue;
     }
@@ -593,6 +816,18 @@ export function analyzeEditorialEpisodeDraftBatch(
     items.length === expected.length &&
     items.every((item, index) => item.episodeNumber === expected[index]);
 
+  const mappedEpisodeNumbers = detectedRows.map(row => row.episodeNumber);
+  const duplicateEpisodeNumbers = Array.from(seen.entries())
+    .filter(([, count]) => count > 1)
+    .map(([episodeNumber]) => episodeNumber);
+  const missingEpisodeNumbers = expected.filter(
+    episodeNumber => !seen.has(episodeNumber)
+  );
+  const outOfRangeEpisodeNumbers = anomalies
+    .filter(anomaly => anomaly.code === "TAB_NUMBER_OUT_OF_RANGE")
+    .map(anomaly => anomaly.episodeNumber)
+    .filter((episodeNumber): episodeNumber is string => Boolean(episodeNumber));
+
   return {
     mode: "range",
     requestedEpisodeNumber,
@@ -604,6 +839,19 @@ export function analyzeEditorialEpisodeDraftBatch(
     excludedTabs,
     anomalies,
     blockers,
+    reconciliation: {
+      expectedCount: expected.length,
+      mappedCount: mappedEpisodeNumbers.length,
+      expectedEpisodeNumbers: expected,
+      mappedEpisodeNumbers,
+      missingEpisodeNumbers,
+      duplicateEpisodeNumbers,
+      outOfRangeEpisodeNumbers,
+      unreadableTabs,
+      excludedTabs,
+      identityConflicts,
+      ready,
+    },
     ready,
   };
 }

@@ -17,6 +17,7 @@ import {
   EDITORIAL_EPISODE_STAGE_CONTRACT_V3,
   editorialEpisodeReplacementTargetStateSha256,
 } from "./editorialApproval.domain";
+import { parseEditorialStagedEpisodeItemKey } from "./editorialIdentityContract.domain";
 import {
   WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
   type WorkspacePublishProvider,
@@ -78,15 +79,11 @@ function wordCount(text: string): number {
   return trimmed ? trimmed.split(/\s+/).length : 0;
 }
 
+// Consolidated onto the canonical Editorial Identity Contract (IPE-058-B);
+// persisted item-key format unchanged: "editorial-stage:{stageId}:episode:{episodeId}".
 function parseEditorialStageItemKey(value: string) {
-  const match = value.match(/^editorial-stage:(\d+):episode:(\d+)$/);
-  if (!match) return null;
-  const stageId = Number(match[1]);
-  const episodeId = Number(match[2]);
-  return Number.isSafeInteger(stageId) && stageId > 0 &&
-    Number.isSafeInteger(episodeId) && episodeId > 0
-    ? { stageId, episodeId }
-    : null;
+  const parsed = parseEditorialStagedEpisodeItemKey(value);
+  return parsed ? { stageId: parsed.stageId, episodeId: parsed.episodeId } : null;
 }
 
 async function loadEditorialReplacementPlan(tx: any, stage: any) {
