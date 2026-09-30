@@ -83,8 +83,10 @@ import {
 } from "./editorialForeignChecker.service";
 import {
   applyEditorialEditorEdit,
+  applyEditorialFullCheckerTransformRevision,
   excludeEditorialDraftTab,
   getEditorialEditorReadModel,
+  getEditorialFullCheckerReadModel,
   restoreEditorialDraftTab,
   undoEditorialEditorEdit,
   WorkspaceEditorialEditorError,
@@ -1271,6 +1273,48 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await getEditorialEditorReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    fullChecker: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialFullCheckerReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    fullCheckerApply: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+        expectedDraftId: z.number().int().positive(),
+        expectedDraftVersion: z.number().int().positive(),
+        expectedDraftSha256: z.string().trim().length(64),
+        transformCode: z.enum([
+          "chapter_heading_cleanup",
+          "quote_bracket_split",
+          "blank_line_cleanup",
+          "english_source_cleanup",
+          "source_junk_cleanup",
+          "ending_cleanup",
+          "all_safe",
+        ]),
+        expectedTransformId: z.string().trim().length(64),
+        idempotencyKey: z.string().trim().min(1).max(255),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await applyEditorialFullCheckerTransformRevision({
             actorUserId: ctx.user.id,
             ...input,
           });

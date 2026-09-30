@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
+  workspaceEditorialCheckerAllowWords,
   workspaceEditorialCheckerFindingStates,
   workspaceEditorialCheckerFindings,
   workspaceEditorialCheckerRuns,
@@ -27,6 +28,13 @@ import {
   type EditorialBulkCleanupFinding,
 } from "./editorialBulkFindingCleanup.domain";
 import { EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION } from "./editorialForeignChecker.domain";
+import {
+  EDITORIAL_FULL_CHECKER_ENGINE_VERSION,
+  evaluateEditorialFullChecker,
+  previewEditorialFullCheckerTransform,
+  previewEditorialFullCheckerTransforms,
+  type EditorialFullCheckerTransformCode,
+} from "./editorialFullChecker.domain";
 import {
   applyEditorialDraftEdit,
   editorialEditIdempotencyPayloadSha256,
@@ -134,6 +142,20 @@ async function latestDraft(db: any, workItemId: number) {
   return draft ?? null;
 }
 
+async function loadFullCheckerAllowWords(db: any, workspaceId: number) {
+  const rows = await db
+    .select({ normalizedWord: workspaceEditorialCheckerAllowWords.normalizedWord })
+    .from(workspaceEditorialCheckerAllowWords)
+    .where(
+      and(
+        eq(workspaceEditorialCheckerAllowWords.workspaceId, workspaceId),
+        eq(workspaceEditorialCheckerAllowWords.status, "active")
+      )
+    )
+    .orderBy(asc(workspaceEditorialCheckerAllowWords.normalizedWord));
+  return rows.map((row: any) => String(row.normalizedWord));
+}
+
 async function draftById(db: any, workItemId: number, draftId: number) {
   const [draft] = await db
     .select()
@@ -209,7 +231,8 @@ async function persistManualDraft(
       | "manual_undo"
       | "manual_tab_exclude"
       | "manual_tab_restore"
-      | "bulk_finding_cleanup";
+      | "bulk_finding_cleanup"
+      | "full_checker_transform";
     beforeSha256: string;
     document: EditorialDraftDocument;
     presentationJson: string;
@@ -472,6 +495,238 @@ async function createTabRevision(input: {
       idempotencyKey: `editor-tab-${input.action}-${persisted.draftId}`,
     });
     return { draft: await draftById(tx, input.workItemId, persisted.draftId), action: input.action, sourceTabId: input.sourceTabId };
+  });
+}
+
+export async function getEditorialFullCheckerReadModel(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+}) {
+  const db = await database();
+  const row = await requireWorkItem(
+    db,
+    input.actorUserId,
+    input.workspaceId,
+    input.workItemId
+  );
+  const draft = await latestDraft(db, input.workItemId);
+  if (!draft) {
+    return {
+      engineVersion: EDITORIAL_FULL_CHECKER_ENGINE_VERSION,
+      latestDraft: null,
+      checker: null,
+      transforms: [],
+      allSafe: null,
+    };
+  }
+  const document = await loadDraftDocument(db, draft.id);
+  const allowWords = await loadFullCheckerAllowWords(db, input.workspaceId);
+  const checker = evaluateEditorialFullChecker({
+    document,
+    episodeNumber: row.workItem.episodeNumber ?? null,
+    allowWords,
+  });
+  const previews = previewEditorialFullCheckerTransforms({ document, allowWords });
+  return {
+    engineVersion: EDITORIAL_FULL_CHECKER_ENGINE_VERSION,
+    latestDraft: draft,
+    checker,
+    transforms: previews.transforms,
+    allSafe: previews.allSafe,
+  };
+}
+
+export async function applyEditorialFullCheckerTransformRevision(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+  expectedDraftId: number;
+  expectedDraftVersion: number;
+  expectedDraftSha256: string;
+  transformCode: EditorialFullCheckerTransformCode | "all_safe";
+  expectedTransformId: string;
+  idempotencyKey: string;
+}) {
+  const db = await database();
+  const row = await requireWorkItem(
+    db,
+    input.actorUserId,
+    input.workspaceId,
+    input.workItemId
+  );
+  const payloadSha256 = sha256(
+    JSON.stringify({
+      version: EDITORIAL_FULL_CHECKER_ENGINE_VERSION,
+      expectedDraftId: input.expectedDraftId,
+      expectedDraftVersion: input.expectedDraftVersion,
+      expectedDraftSha256: input.expectedDraftSha256,
+      transformCode: input.transformCode,
+      expectedTransformId: input.expectedTransformId,
+    })
+  );
+
+  return db.transaction(async (tx: any) => {
+    const [locked] = await tx
+      .select({ id: workspaceEditorialWorkItems.id })
+      .from(workspaceEditorialWorkItems)
+      .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
+      .for("update")
+      .limit(1);
+    if (!locked) {
+      throw new WorkspaceEditorialEditorError(
+        "WORK_ITEM_NOT_FOUND",
+        "Work item was removed before Full Checker transform started."
+      );
+    }
+
+    const [replay] = await tx
+      .select()
+      .from(workspaceEditorialDraftEditEvents)
+      .where(
+        and(
+          eq(workspaceEditorialDraftEditEvents.workItemId, input.workItemId),
+          eq(workspaceEditorialDraftEditEvents.idempotencyKey, input.idempotencyKey)
+        )
+      )
+      .limit(1);
+    if (replay) {
+      if (
+        replay.payloadSha256 !== payloadSha256 ||
+        replay.actorUserId !== input.actorUserId ||
+        replay.editKind !== "bulk_cleanup"
+      ) {
+        throw new WorkspaceEditorialEditorError(
+          "EDIT_CONFLICT",
+          "Full Checker transform idempotency key was reused with another payload."
+        );
+      }
+      const currentDraft = await latestDraft(tx, input.workItemId);
+      return {
+        draft: await draftById(tx, input.workItemId, replay.toDraftId),
+        editEvent: replay,
+        replayed: true,
+        isCurrent: currentDraft?.id === replay.toDraftId,
+        transformCode: input.transformCode,
+      };
+    }
+
+    const current = await latestDraft(tx, input.workItemId);
+    if (
+      !current ||
+      current.id !== input.expectedDraftId ||
+      current.version !== input.expectedDraftVersion ||
+      current.draftSha256 !== input.expectedDraftSha256
+    ) {
+      throw new WorkspaceEditorialEditorError(
+        "DRAFT_CONFLICT",
+        "Draft changed after Full Checker preview. Preview again before applying."
+      );
+    }
+
+    const document = await loadDraftDocument(tx, current.id);
+    const allowWords = await loadFullCheckerAllowWords(tx, input.workspaceId);
+    const preview = previewEditorialFullCheckerTransform({
+      document,
+      transformCode: input.transformCode,
+      allowWords,
+    });
+    if (preview.transformId !== input.expectedTransformId) {
+      throw new WorkspaceEditorialEditorError(
+        "EDIT_CONFLICT",
+        "Full Checker preview is stale. Preview again before applying."
+      );
+    }
+    if (!preview.changed) {
+      throw new WorkspaceEditorialEditorError(
+        "EDIT_INVALID",
+        "Full Checker transform no longer changes the Draft."
+      );
+    }
+    if (!preview.idempotent) {
+      throw new WorkspaceEditorialEditorError(
+        "EDIT_INVALID",
+        "Full Checker transform failed its idempotency check and cannot be applied."
+      );
+    }
+
+    const checker = evaluateEditorialFullChecker({
+      document,
+      episodeNumber: row.workItem.episodeNumber ?? null,
+      allowWords,
+    });
+    const persisted = await persistManualDraft(tx, {
+      workItemId: input.workItemId,
+      sourceSnapshotId: current.sourceSnapshotId,
+      parentDraftId: current.id,
+      version: current.version + 1,
+      actorUserId: input.actorUserId,
+      transformCode: "full_checker_transform",
+      beforeSha256: current.draftSha256,
+      document: preview.document,
+      presentationJson: current.presentationJson,
+      details: {
+        engineVersion: EDITORIAL_FULL_CHECKER_ENGINE_VERSION,
+        configIdentity: checker.configIdentity,
+        allowListIdentity: checker.allowListIdentity,
+        transformId: preview.transformId,
+        transformCode: input.transformCode,
+        safetyClass: preview.safetyClass,
+        ruleCodes: preview.ruleCodes,
+        changedParagraphCount: preview.changedParagraphCount,
+        idempotent: preview.idempotent,
+        idempotencyKey: input.idempotencyKey,
+      },
+    });
+
+    // IPE-058-D intentionally reuses the existing bulk_cleanup audit enum.
+    // Adding a new editKind would require a schema migration, which this
+    // milestone forbids. The exact Full Checker identity lives in the Draft
+    // transform details while this event provides the existing idempotency
+    // and from/to Draft audit boundary.
+    const eventId = insertId(
+      await tx.insert(workspaceEditorialDraftEditEvents).values({
+        workItemId: input.workItemId,
+        fromDraftId: current.id,
+        toDraftId: persisted.draftId,
+        editKind: "bulk_cleanup",
+        paragraphKey: null,
+        findingKey: null,
+        startOffset: null,
+        endOffset: null,
+        expectedTextSha256: current.draftSha256,
+        replacementTextSha256: persisted.afterSha256,
+        payloadSha256,
+        idempotencyKey: input.idempotencyKey,
+        actorUserId: input.actorUserId,
+      })
+    );
+
+    await projectEditorialQcColumn(tx, {
+      workItemId: input.workItemId,
+      expectedDraftId: persisted.draftId,
+      targetColumnKey: "editing",
+      actorUserId: input.actorUserId,
+      reason: "workspace_full_checker_transform",
+      idempotencyKey: `full-checker-transform-${eventId}`,
+    });
+
+    return {
+      draft: await draftById(tx, input.workItemId, persisted.draftId),
+      editEvent: (
+        await tx
+          .select()
+          .from(workspaceEditorialDraftEditEvents)
+          .where(eq(workspaceEditorialDraftEditEvents.id, eventId))
+          .limit(1)
+      )[0],
+      replayed: false,
+      isCurrent: true,
+      transformCode: input.transformCode,
+      transformId: preview.transformId,
+      changedParagraphCount: preview.changedParagraphCount,
+      ruleCodes: preview.ruleCodes,
+    };
   });
 }
 

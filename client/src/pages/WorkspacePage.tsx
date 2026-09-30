@@ -442,6 +442,16 @@ export default function WorkspacePage() {
       retry: false,
     }
   );
+  const editorialFullChecker = trpc.workspace.editorial.fullChecker.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedSourceWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedSourceWorkItemId),
+      retry: false,
+    }
+  );
   const editorialApproval = trpc.workspace.editorial.approval.useQuery(
     {
       workspaceId: selectedWorkspaceId ?? 0,
@@ -1053,6 +1063,22 @@ export default function WorkspacePage() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const applyEditorialFullCheckerTransform = trpc.workspace.editorial.fullCheckerApply.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        editorialSourceDraft.refetch(),
+        editorialEditor.refetch(),
+        editorialFullChecker.refetch(),
+        editorialForeignChecker.refetch(),
+        editorialApproval.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      setChapterEditorTarget(undefined);
+      setChapterEditorParagraphs([]);
+      toast.success("สร้าง Draft revision ใหม่จาก Full Checker transform แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation({
     onSuccess: async (result, variables) => {
       const savedChapterTarget =
@@ -1512,6 +1538,7 @@ export default function WorkspacePage() {
   const editorialDraftData = editorialSourceDraft.data as any;
   const latestEditorialDraft = editorialDraftData?.latestDraft;
   const editorialEditorData = editorialEditor.data as any;
+  const editorialFullCheckerData = editorialFullChecker.data as any;
   const editorialApprovalData = editorialApproval.data as any;
   const editorialCheckerData = editorialForeignChecker.data as any;
   const editorialCheckerStaleReason = editorialCheckerData?.staleReason as
@@ -3606,6 +3633,60 @@ export default function WorkspacePage() {
                           )}
                         </div>
                       )}
+
+                      {editorialFullCheckerData?.checker && (
+                        <div className="space-y-2 rounded-lg border bg-background p-3">
+                          <div className="font-medium">Full Checker vNext</div>
+                          <div className="text-xs text-muted-foreground">
+                            {editorialFullCheckerData.checker.engineVersion} · {editorialFullCheckerData.checker.findingCount} findings · {editorialFullCheckerData.checker.status}
+                          </div>
+                          {(editorialFullCheckerData.checker.findings ?? []).slice(0, 8).map((finding: any) => (
+                            <div key={finding.findingId} className="rounded border p-2 text-xs">
+                              <span className="font-medium">{finding.code}</span> · {finding.evidence}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="space-y-2 rounded-lg border bg-background p-3">
+                        <div className="text-sm font-medium">Safe Transform Preview</div>
+                        <div className="text-xs text-muted-foreground">Preview เท่านั้น · ไม่มีการ apply อัตโนมัติ</div>
+                        {[...(editorialFullCheckerData?.transforms ?? []), editorialFullCheckerData?.allSafe]
+                          .filter((preview: any) => preview?.changed)
+                          .map((preview: any) => (
+                            <div key={preview.transformId} className="rounded border p-2 text-xs">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="font-medium">{preview.ruleCode} · {preview.safetyClass} · {preview.changedParagraphCount} paragraphs · {preview.idempotent ? "idempotent" : "idempotency failed"}</div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={!latestEditorialDraft || !preview.idempotent || applyEditorialFullCheckerTransform.isPending}
+                                  onClick={() => {
+                                    if (!latestEditorialDraft) return;
+                                    applyEditorialFullCheckerTransform.mutate({
+                                      workspaceId: selectedWorkspaceId!,
+                                      workItemId: selectedSourceWorkItemId!,
+                                      expectedDraftId: latestEditorialDraft.id,
+                                      expectedDraftVersion: latestEditorialDraft.version,
+                                      expectedDraftSha256: latestEditorialDraft.draftSha256,
+                                      transformCode: preview.ruleCode,
+                                      expectedTransformId: preview.transformId,
+                                      idempotencyKey: `full-checker:${latestEditorialDraft.id}:${preview.transformId}`,
+                                    });
+                                  }}
+                                >
+                                  Apply เป็น Draft revision ใหม่
+                                </Button>
+                              </div>
+                              {(preview.changes ?? []).slice(0, 4).map((change: any, index: number) => (
+                                <div key={index} className="mt-1 grid gap-1 rounded bg-muted/30 p-2 md:grid-cols-2">
+                                  <div>ก่อน: {change.before || "(empty)"}</div>
+                                  <div>หลัง: {change.after || "(empty)"}</div>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                      </div>
 
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="space-y-2">

@@ -186,7 +186,7 @@ function isThaiHeading(text: string) {
   );
 }
 
-function detectEnglishSourceBlock(paragraphs: string[]) {
+export function detectEnglishSourceBlock(paragraphs: string[]) {
   const max = Math.min(paragraphs.length, 300);
   let first = -1;
   for (let i = 0; i < max; i += 1) {
@@ -236,7 +236,7 @@ function detectEnglishSourceBlock(paragraphs: string[]) {
   };
 }
 
-function splitAdjacentPairs(text: string) {
+export function splitAdjacentPairs(text: string) {
   const gap = "[\\s\\u00A0\\u200B\\u200C\\u200D\\u200E\\u200F\\uFEFF\\u2060]*";
   return String(text || "")
     .replace(new RegExp('"' + gap + '"', "g"), '"\n"')
@@ -245,7 +245,7 @@ function splitAdjacentPairs(text: string) {
     .replace(new RegExp("\\]" + gap + "\\[", "g"), "]\n[");
 }
 
-function splitBracketStatusBlocks(text: string) {
+export function splitBracketStatusBlocks(text: string) {
   const raw = String(text || "");
   const matches = raw.match(/【[^】]{1,380}】/g);
   if (!matches || matches.length <= 1 || raw.length > 1600) return raw;
@@ -256,7 +256,7 @@ function splitBracketStatusBlocks(text: string) {
   );
 }
 
-function cleanupChapterParagraphs(paragraphs: EditorialDraftParagraph[]) {
+export function cleanupChapterParagraphs(paragraphs: EditorialDraftParagraph[]) {
   const out: EditorialDraftParagraph[] = [];
   let previousChapterOnly: string | null = null;
   for (const paragraph of paragraphs) {
@@ -271,7 +271,7 @@ function cleanupChapterParagraphs(paragraphs: EditorialDraftParagraph[]) {
   return out;
 }
 
-function cleanupEnding(
+export function cleanupEnding(
   paragraphs: EditorialDraftParagraph[],
   sourceTabId: string
 ): EditorialDraftParagraph[] {
