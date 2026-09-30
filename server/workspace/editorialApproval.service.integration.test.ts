@@ -118,6 +118,120 @@ function rangeSourceWithConfirmedNote(): EditorialSourcePayload {
 describe.sequential(
   "Workspace Editorial approval + Episode staging integration",
   () => {
+    it("IPE-058-A (D): reports CHECKER_STALE with no usable evidence after a draft edit even though the old run had open=0", async () => {
+      if (!process.env.TEST_DATABASE_URL) return;
+      assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+
+      const db = getTestDb();
+      const owner = await createTestUser({ role: "admin" });
+      const novel = await createTestNovel();
+      const workspace = await createWorkspace(owner.id, "Editorial stale QC");
+      let boardId: number | null = null;
+
+      try {
+        await bindPublicationNovel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          novelId: novel.id,
+        });
+        const board = await ensureEditorialBoard({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+        });
+        boardId = board?.board.id ?? null;
+        const story = board?.columns
+          .flatMap(column => column.cards)
+          .find(card => card.workItemType === "NEW_STORY");
+        const created = await createEditorialEpisodeWorkItem({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workspaceNovelId: story!.workspaceNovelId!,
+          episodeNumber: "13",
+          episodeTitle: "Stale QC fixture",
+          saleMode: "package",
+          price: "2.00",
+          isFree: false,
+        });
+        const episodeCard = created.board?.columns
+          .flatMap(column => column.cards)
+          .find(
+            card =>
+              card.workItemType === "NEW_EPISODE" && card.episodeNumber === "13"
+          );
+        const workItemId = episodeCard!.workItemId!;
+
+        const imported = await importEditorialSource({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          payload: source("stale-qc-r1", "เนื้อหาสะอาดไม่มี finding"),
+        });
+
+        // Clean draft: zero findings, QC passed (open=0).
+        const run = await runEditorialForeignChecker({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: imported.latestDraftId!,
+        });
+        expect(run.unresolvedCount).toBe(0);
+        expect(run.effectiveStatus).toBe("passed");
+
+        const draftBeforeEdit = await getEditorialDraftReadModel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+        });
+        const bodyParagraph = draftBeforeEdit.tabs[0].paragraphs.find(
+          (paragraph: any) => paragraph.text === "เนื้อหาสะอาดไม่มี finding"
+        );
+        expect(bodyParagraph).toBeTruthy();
+
+        // A later edit produces a new draftId: the old run (open=0) is stale.
+        const edited = await applyEditorialEditorEdit({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+          expectedDraftId: draftBeforeEdit.latestDraft!.id,
+          expectedDraftVersion: draftBeforeEdit.latestDraft!.version,
+          expectedDraftSha256: draftBeforeEdit.latestDraft!.draftSha256,
+          command: {
+            kind: "replace_paragraph",
+            paragraphKey: bodyParagraph.paragraphKey,
+            expectedParagraphFingerprint: bodyParagraph.paragraphFingerprint,
+            expectedText: bodyParagraph.text,
+            replacementText: "เนื้อหาแก้ไขหลัง run เดิม",
+          },
+          idempotencyKey: "approval-stale-qc-edit-v2",
+        });
+        expect(edited.draft.id).not.toBe(draftBeforeEdit.latestDraft!.id);
+
+        // The approval read model must fail closed: no usable evidence, no
+        // ready, and stale — open=0 from the old run must not look current.
+        const afterEdit = await getEditorialApprovalReadModel({
+          actorUserId: owner.id,
+          workspaceId: workspace.workspaceId,
+          workItemId,
+        });
+        expect(afterEdit.qc.ready).toBe(false);
+        expect(afterEdit.qc.reason).toBe("CHECKER_STALE");
+        expect(afterEdit.qc.unresolvedCount).toBeNull();
+        expect(afterEdit.qc.findings).toEqual([]);
+        expect(afterEdit.readyToPublish).toBe(false);
+      } finally {
+        if (boardId) {
+          await db
+            .delete(workspaceKanbanCards)
+            .where(eq(workspaceKanbanCards.boardId, boardId));
+        }
+        await db
+          .delete(workspaceWorkspaces)
+          .where(eq(workspaceWorkspaces.id, workspace.workspaceId));
+        await db.delete(novels).where(eq(novels.id, novel.id));
+        await db.delete(users).where(eq(users.id, owner.id));
+      }
+    });
+
     it("binds approval to exact Draft/QC, stages unpublished Episode, invalidates after edit, then safely restages same Episode", async () => {
       if (!process.env.TEST_DATABASE_URL) return;
       assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);

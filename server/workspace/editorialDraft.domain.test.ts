@@ -5,6 +5,7 @@ import {
   normalizeChapterHeading,
   normalizeEditorialText,
   paragraphFingerprint,
+  reindexEditorialDraftDocument,
   runEditorialPreparationPipeline,
   sourcePayloadSha256,
   thaiDigitsToArabic,
@@ -193,6 +194,80 @@ describe("editorial draft Production-derived preparation", () => {
         "blank_line_cleanup",
         "ending_cleanup",
       ])
+    );
+  });
+
+  it("IPE-058-A (A): stores silent null chapter metadata for a content tab without a chapter-shaped heading", () => {
+    const versions = runEditorialPreparationPipeline(
+      payload(["ชื่อตอนธรรมดา", "ย่อหน้าแรกของเนื้อหา", "ย่อหน้าที่สอง"])
+    );
+    const tab = versions.at(-1)!.document.tabs[0];
+    expect(tab.paragraphs.length).toBeGreaterThan(0);
+    expect(tab.chapterNumber).toBeNull();
+    expect(tab.chapterTitle).toBeNull();
+    // The draft layer does not warn here; the approval batch layer is the one
+    // that fails closed with TAB_NUMBER_MISSING (see approval domain tests).
+    expect(tab.warnings).toEqual([]);
+  });
+
+  it("IPE-058-A (C): stores a range-shaped heading string as tab chapterNumber (draft parser tolerates it)", () => {
+    const versions = runEditorialPreparationPipeline(
+      payload(["บทที่ 001-030 ช่วงพิเศษ", "เนื้อหาย่อหน้าแรก"])
+    );
+    const tab = versions.at(-1)!.document.tabs[0];
+    expect(tab.chapterNumber).toBe("001-030");
+    expect(tab.chapterTitle).toBe("ช่วงพิเศษ");
+  });
+
+  it("IPE-058-A: reindex preserves paragraphKey and recomputes paragraphFingerprint after an in-place text edit", () => {
+    const versions = runEditorialPreparationPipeline(
+      payload(["บทที่ 1 เริ่มต้น", "ย่อหน้าเนื้อหาเดิม"])
+    );
+    const doc = versions.at(-1)!.document;
+    const original = doc.tabs[0].paragraphs[1];
+    const edited = reindexEditorialDraftDocument({
+      ...doc,
+      tabs: doc.tabs.map((tab, tabIndex) =>
+        tabIndex === 0
+          ? {
+              ...tab,
+              paragraphs: tab.paragraphs.map(paragraph =>
+                paragraph.paragraphKey === original.paragraphKey
+                  ? { ...paragraph, text: "ย่อหน้าเนื้อหาที่แก้ไขแล้ว" }
+                  : paragraph
+              ),
+            }
+          : tab
+      ),
+    });
+    const after = edited.tabs[0].paragraphs.find(
+      paragraph => paragraph.paragraphOrder === original.paragraphOrder
+    )!;
+    expect(after.paragraphKey).toBe(original.paragraphKey);
+    expect(after.paragraphFingerprint).not.toBe(original.paragraphFingerprint);
+    expect(edited.tabs[0].structuralSha256).not.toBe(
+      doc.tabs[0].structuralSha256
+    );
+  });
+
+  it("IPE-058-A: quote/bracket split re-keys pieces under the split domain, so piece keys never equal intake keys", () => {
+    const split = runEditorialPreparationPipeline(payload(["“หนึ่ง” “สอง”"]));
+    const single = runEditorialPreparationPipeline(payload(["“หนึ่ง”"]));
+    const splitParagraphs = split.at(-1)!.document.tabs[0].paragraphs;
+    const singleParagraphs = single.at(-1)!.document.tabs[0].paragraphs;
+    // Both pipelines append the generated จบตอน end marker; compare pieces only.
+    expect(splitParagraphs.map(p => p.text).slice(0, 2)).toEqual([
+      "“หนึ่ง”",
+      "“สอง”",
+    ]);
+    expect(splitParagraphs[0].paragraphKey).not.toBe(
+      singleParagraphs[0].paragraphKey
+    );
+    expect(splitParagraphs[0].paragraphKey).not.toBe(
+      splitParagraphs[1].paragraphKey
+    );
+    expect(singleParagraphs[0].paragraphKey).not.toBe(
+      splitParagraphs[0].paragraphKey
     );
   });
 });

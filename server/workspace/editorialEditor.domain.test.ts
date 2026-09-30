@@ -193,6 +193,45 @@ describe("Workspace Editorial editor domain", () => {
   });
 
 
+  it("IPE-058-A: a whole-tab rewrite re-keys shifted paragraphs — identity is not stable across tab replacement", () => {
+    const input = document("ย่อหน้าเดิม");
+    input.tabs[0].paragraphs.push({
+      ...input.tabs[0].paragraphs[0],
+      paragraphKey: "p-key-2",
+      sourceParagraphIndex: 2,
+      paragraphOrder: 2,
+      text: "ย่อหน้าที่สอง",
+      sourceParagraphFingerprint: paragraphFingerprint("ย่อหน้าที่สอง"),
+      paragraphFingerprint: paragraphFingerprint("ย่อหน้าที่สอง"),
+    });
+    const normalized = reindexEditorialDraftDocument(input);
+    const result = applyEditorialDraftEdit(normalized, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: normalized.tabs[0].structuralSha256,
+      expectedText: `ย่อหน้าเดิม
+
+ย่อหน้าที่สอง`,
+      // An insertion between the two original paragraphs shifts the
+      // positional pairing: paragraph 1 keeps its key, the rest are re-keyed.
+      replacementText: `ย่อหน้าเดิม
+
+ย่อหน้าใหม่แทรก
+
+ย่อหน้าที่สอง`,
+    });
+    const keys = result.document.tabs[0].paragraphs.map(p => p.paragraphKey);
+    expect(keys[0]).toBe("p-key-1");
+    // Documented contract finding: keys pair POSITIONALLY. The inserted text
+    // inherits p-key-2 even though its text is new, while the surviving
+    // "ย่อหน้าที่สอง" paragraph is re-keyed. A whole-tab rewrite is therefore
+    // NOT paragraphKey-stable — finding states keyed by paragraphKey can
+    // attach to the wrong paragraph. To be reconciled in IPE-058-B.
+    expect(keys[1]).toBe("p-key-2");
+    expect(keys[2]).not.toBe("p-key-1");
+    expect(keys[2]).not.toBe("p-key-2");
+  });
+
   it("fills an empty tab with a guarded whole-tab edit and reindexes paragraphs", () => {
     const empty = document("placeholder");
     empty.tabs[0].paragraphs = [];

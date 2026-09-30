@@ -869,4 +869,268 @@ describe("Episode Pack commerce plan", () => {
     expect(pack.content).toContain("บทที่ 138 หมายเหตุจากต้นฉบับ");
     expect(pack.content).toContain("บทที่ 153 หมายเหตุจากต้นฉบับ");
   });
+
+  it("IPE-058-A (A): fails closed with TAB_NUMBER_MISSING when a content tab has no readable chapter identity", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 002",
+        tabs: [
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 0,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: "ชื่อบท",
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: "ย่อหน้าแรกของเนื้อหา" },
+            ],
+          },
+          {
+            sourceTabId: "tab-unreadable",
+            tabOrder: 1,
+            title: "ชื่อตอนธรรมดา",
+            chapterNumber: null,
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "ชื่อตอนธรรมดา" },
+              { paragraphOrder: 1, text: "ย่อหน้าเนื้อหาที่มีจริง" },
+            ],
+          },
+        ],
+      })
+    );
+    expect(plan.ready).toBe(false);
+    expect(plan.blockers.map(blocker => blocker.code)).toContain(
+      "TAB_NUMBER_MISSING"
+    );
+    const unreadable = plan.blockers.find(
+      blocker => blocker.code === "TAB_NUMBER_MISSING"
+    );
+    expect(unreadable?.sourceTabId).toBe("tab-unreadable");
+  });
+
+  it("IPE-058-A (B): expected pack size comes from the work-item range and missing tabs fail closed, never guessed", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 005",
+        tabs: [1, 2, 3].map(episode => ({
+          sourceTabId: `tab-00${episode}`,
+          tabOrder: episode - 1,
+          title: `แท็บ ${episode}`,
+          chapterNumber: `00${episode}`,
+          chapterTitle: `ชื่อบท ${episode}`,
+          paragraphs: [
+            { paragraphOrder: 0, text: `บทที่ ${episode} ชื่อบท ${episode}` },
+            { paragraphOrder: 1, text: `เนื้อหาตอน ${episode} ${"ก".repeat(500)}` },
+          ],
+        })),
+      })
+    );
+    // "X/Y" in the UI: Y = range width from the work item, X = detected tabs.
+    expect(plan.expectedEpisodeNumbers).toHaveLength(5);
+    expect(plan.items).toHaveLength(3);
+    const codes = plan.blockers.map(blocker => blocker.code);
+    expect(codes).toContain("COUNT_MISMATCH");
+    expect(codes).toContain("EXPECTED_EPISODE_MISSING");
+    expect(
+      plan.blockers.filter(blocker => blocker.code === "EXPECTED_EPISODE_MISSING")
+    ).toHaveLength(2);
+    expect(plan.ready).toBe(false);
+  });
+
+  it("IPE-058-A (C): a range-shaped tab heading is refused by staging even though the draft layer stores it", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 005",
+        tabs: [
+          {
+            sourceTabId: "tab-range",
+            tabOrder: 0,
+            title: "ช่วงพิเศษ",
+            chapterNumber: "001-030",
+            chapterTitle: "ช่วงพิเศษ",
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 001-030 ช่วงพิเศษ" },
+              { paragraphOrder: 1, text: "เนื้อหาย่อหน้าแรก" },
+            ],
+          },
+        ],
+      })
+    );
+    expect(plan.ready).toBe(false);
+    // The draft tab keeps chapterNumber "001-030" (see draft domain test),
+    // but staging canonicalizes it to null and raises TAB_NUMBER_MISSING
+    // instead of mapping the pack range onto a single Episode identity.
+    expect(plan.blockers.map(blocker => blocker.code)).toContain(
+      "TAB_NUMBER_MISSING"
+    );
+    expect(plan.items).toHaveLength(0);
+  });
+
+  it("IPE-058-A (E): classifies empty, source-note and front-matter tabs deterministically", () => {
+    const emptyTab = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 002",
+        tabs: [
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 0,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 1" },
+            ],
+          },
+          {
+            sourceTabId: "tab-empty",
+            tabOrder: 1,
+            title: "แท็บว่าง",
+            chapterNumber: "002",
+            chapterTitle: null,
+            paragraphs: [],
+          },
+        ],
+      })
+    );
+    expect(emptyTab.blockers.map(blocker => blocker.code)).toContain("TAB_EMPTY");
+
+    const withNote = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 002",
+        tabs: [
+          {
+            sourceTabId: "tab-note",
+            tabOrder: 0,
+            title: "โน้ต",
+            chapterNumber: null,
+            chapterTitle: null,
+            paragraphs: [{ paragraphOrder: 0, text: "หมายเหตุจากต้นฉบับ" }],
+          },
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 1,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 1" },
+            ],
+          },
+          {
+            sourceTabId: "tab-002",
+            tabOrder: 2,
+            title: "แท็บ 2",
+            chapterNumber: "002",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 2 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 2" },
+            ],
+          },
+        ],
+      })
+    );
+    expect(withNote.ready).toBe(true);
+    expect(withNote.items).toHaveLength(2);
+    expect(withNote.excludedTabs).toHaveLength(1);
+    expect(withNote.excludedTabs[0]).toMatchObject({
+      sourceTabId: "tab-note",
+      kind: "front_matter",
+    });
+    // Unconfirmed source notes are excluded from the pack but are NOT
+    // listed as non-billable — only explicitly confirmed ones are.
+    expect(withNote.nonBillableSourceTabIds).toEqual([]);
+
+    const frontMatter = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 002",
+        tabs: [
+          {
+            sourceTabId: "tab-prologue",
+            tabOrder: 0,
+            title: "บทนำ",
+            chapterNumber: null,
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทนำ" },
+              { paragraphOrder: 1, text: "คำนำของผู้แต่ง" },
+            ],
+          },
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 1,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 1" },
+            ],
+          },
+          {
+            sourceTabId: "tab-002",
+            tabOrder: 2,
+            title: "แท็บ 2",
+            chapterNumber: "002",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 2 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 2" },
+            ],
+          },
+        ],
+      })
+    );
+    expect(frontMatter.ready).toBe(true);
+    expect(frontMatter.excludedTabs.map(tab => tab.sourceTabId)).toEqual([
+      "tab-prologue",
+    ]);
+    expect(frontMatter.items.map(item => item.episodeNumber)).toEqual([
+      "001",
+      "002",
+    ]);
+  });
+
+  it("IPE-058-A (E): fails closed on a heading-only tab with TAB_CONTENT_INVALID (structural checker reports heading_only_tab too)", () => {
+    const plan = analyzeEditorialEpisodeDraftBatch(
+      input({
+        episodeNumber: "001 - 002",
+        tabs: [
+          {
+            sourceTabId: "tab-001",
+            tabOrder: 0,
+            title: "แท็บ 1",
+            chapterNumber: "001",
+            chapterTitle: null,
+            paragraphs: [
+              { paragraphOrder: 0, text: "บทที่ 1 ชื่อบท" },
+              { paragraphOrder: 1, text: "เนื้อหาตอน 1" },
+            ],
+          },
+          {
+            sourceTabId: "tab-heading-only",
+            tabOrder: 1,
+            title: "แท็บ 2",
+            chapterNumber: "002",
+            chapterTitle: null,
+            paragraphs: [{ paragraphOrder: 0, text: "บทที่ 2 ชื่อบท" }],
+          },
+        ],
+      })
+    );
+    // Staging fails closed: content after the title line is required, and the
+    // structural anomaly layer independently reports heading_only_tab.
+    expect(plan.ready).toBe(false);
+    expect(plan.blockers).toHaveLength(1);
+    expect(plan.blockers[0]).toMatchObject({
+      code: "TAB_CONTENT_INVALID",
+      severity: "blocker",
+      sourceTabId: "tab-heading-only",
+    });
+    expect(plan.items).toHaveLength(1);
+  });
 });

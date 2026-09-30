@@ -905,6 +905,36 @@ describe("Editorial deterministic foreign-word checker", () => {
     );
   });
 
+  it("IPE-058-A (D): a passed run with zero findings (open=0) is still stale when the draft identity drifted", () => {
+    // A clean draft produces a "passed" run with an empty finding set.
+    const cleanRun = evaluateEditorialForeignDraft({
+      paragraphs: [paragraph("ข้อความภาษาไทยปกติ")],
+    });
+    expect(cleanRun.status).toBe("passed");
+    expect(cleanRun.findings).toEqual([]);
+
+    // open=0 must NOT equal QC current: the stale reason is independent of
+    // the finding count.
+    const base = {
+      currentDraftId: 42,
+      runDraftId: 42,
+      runEngineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
+      currentEngineVersion: EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION,
+      runAllowListSha256: editorialAllowListSha256([]),
+      currentAllowListSha256: editorialAllowListSha256([]),
+    };
+    expect(getEditorialCheckerStaleReason(base)).toBeNull();
+    expect(
+      getEditorialCheckerStaleReason({ ...base, currentDraftId: 43 })
+    ).toBe("DRAFT_CHANGED");
+    expect(
+      getEditorialCheckerStaleReason({
+        ...base,
+        runEngineVersion: "workspace-editorial-foreign-checker-v7",
+      })
+    ).toBe("ENGINE_CHANGED");
+  });
+
   it("treats allow-list drift as checker staleness even when Draft and engine are unchanged", () => {
     const base = {
       currentDraftId: 42,
