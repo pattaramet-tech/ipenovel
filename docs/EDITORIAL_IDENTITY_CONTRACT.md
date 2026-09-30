@@ -196,12 +196,33 @@ chips. States: `NOT_RUN`, `RUNNING`, `STALE`, `ERROR`,
   stale by draftId, old approval `DRAFT_CHANGED`, card projected to
   `editing`; a cancelled preview persists nothing.
 
-## Still open for IPE-058-F
+## IPE-058-F — Daily workflow UX on top of the canonical state machine
 
-- Durable checker ERROR run rows (requires schema enum/message column).
-- "แท็บ X/Y" bulk-checker summary still derives from checker structural summary (separate
-  taxonomy from pack reconciliation) — unify presentation if desired.
-- Native browser undo interplay for IME composition sessions (controlled
-  history covers programmatic ops; composition-heavy IME undo may not restore
-  intermediate composition states).
-- Final UX polish of the issue drawer / canvas (IPE-058-F scope).
+The UX layer is PRESENTATION ONLY — every status/action derives from the
+IPE-058-E canonical state (no count/timestamp/local shortcuts):
+
+- **Primary CTA**: deriveEditorialPrimaryAction
+  (workspaceEditorialActionState.ts) picks exactly ONE next action per state
+  (save_check / run_checker / fix_findings / confirm / stage / publish);
+  dirty and saving are legitimate client-local editor states and win first.
+- **Sticky toolbar** (WorkspaceEditorialToolbar.tsx): Prev/Next chapter,
+  unsaved indicator, checker/QC state chip, issue count, and the primary CTA
+  on one sticky row; no hashes/ids in the toolbar.
+- **Issue drawer**: collapsed by default with counts; Previous/Next + jump
+  actions unchanged; stale findings never jump.
+- **Stage diagnostics**: groupStageDiagnostics
+  (workspaceStageDiagnostics.ts) groups IPE-058-B blockers by root cause
+  (CHECKER_STALE / QC_NOT_READY / APPROVAL_STALE / METADATA_MISSING /
+  EPISODE_RANGE_INVALID / SOURCE_DRIFT / OWNERSHIP_MISMATCH) with affected
+  counts/tabs and a direct repair action (Run Checker / Confirm ใหม่ /
+  เปิด Editor); raw anomaly messages stay available below.
+- **Advanced section**: draft/approval hashes and structural sha moved into
+  collapsed Advanced details (title tooltips for tab hashes) — support data
+  remains accessible, not in the primary flow.
+- **Row → editor**: pack table rows have a direct เปิด Editor button; the
+  selected novel group auto-expands and the editor opens issue-first when
+  Draft tabs arrive. Table-first stays the default; Kanban optional.
+- **Checker ERROR durability**: unchanged — still a documented SCHEMA
+  BLOCKER from IPE-058-E; F renders the transient mutation error banner and
+  does NOT claim durable ERROR persistence (limitation carried to
+  IPE-058-G / a future migration milestone).

@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
+import { WorkspaceEditorialToolbar } from "./WorkspaceEditorialToolbar";
+import { groupStageDiagnostics } from "./workspaceStageDiagnostics";
 import {
   chapterEditorFindingRanges,
   chapterEditorIssues,
@@ -1377,6 +1379,43 @@ export default function WorkspacePage() {
     });
   };
 
+
+  // IPE-058-F: progression handlers shared by the sticky toolbar and the
+  // approval panel buttons — same mutations, same guards, no new authority.
+  const submitApprovalConfirm = () => {
+    const draft = editorialApprovalData?.latestDraft;
+    const qc = editorialApprovalData?.qc;
+    if (!selectedWorkspaceId || !selectedSourceWorkItemId || !draft || !qc?.checkerRunId || !qc?.qcEvidenceSha256) return;
+    approveEditorialDraft.mutate({
+      workspaceId: selectedWorkspaceId,
+      workItemId: selectedSourceWorkItemId,
+      expectedDraftId: draft.id,
+      expectedDraftVersion: draft.version,
+      expectedDraftSha256: draft.draftSha256,
+      expectedCheckerRunId: qc.checkerRunId,
+      expectedQcEvidenceSha256: qc.qcEvidenceSha256,
+      idempotencyKey: `editorial-approve:${draft.id}:${qc.qcEvidenceSha256}`,
+    });
+  };
+  const submitStageDraft = () => {
+    const draft = editorialApprovalData?.latestDraft;
+    const approval = editorialApprovalData?.approval;
+    if (!selectedWorkspaceId || !selectedSourceWorkItemId || !draft || !approval?.id) return;
+    stageEditorialEpisode.mutate({
+      workspaceId: selectedWorkspaceId,
+      workItemId: selectedSourceWorkItemId,
+      approvalId: approval.id,
+      expectedDraftId: draft.id,
+      expectedDraftVersion: draft.version,
+      expectedDraftSha256: draft.draftSha256,
+      idempotencyKey: `editorial-stage:${approval.id}:${draft.id}:${draft.draftSha256.slice(0, 16)}`,
+    });
+  };
+  const runCheckerForCurrentDraft = () => {
+    if (!selectedWorkspaceId || !selectedSourceWorkItemId || !latestEditorialDraft?.id) return;
+    runEditorialForeignCheckerOnceForDraft(latestEditorialDraft.id);
+  };
+
   const submitChapterEditorEdit = () => {
     if (
       !selectedWorkspaceId ||
@@ -1575,6 +1614,9 @@ export default function WorkspacePage() {
   const toggleEditorialSelection = (workItemId: number) => setSelectedEditorialWorkItemIds((current) => current.includes(workItemId) ? current.filter((id) => id !== workItemId) : [...current, workItemId]);
   const editorialDraftData = editorialSourceDraft.data as any;
   const latestEditorialDraft = editorialDraftData?.latestDraft;
+  // IPE-058-F: row → editor direct navigation. The table row sets this id;
+  // the effect below opens the editor as soon as the pack tabs arrive.
+  const [pendingEditorOpenWorkItemId, setPendingEditorOpenWorkItemId] = useState<number | null>(null);
   const editorialEditorData = editorialEditor.data as any;
   const editorialFullCheckerData = editorialFullChecker.data as any;
   const editorialApprovalData = editorialApproval.data as any;
@@ -1679,6 +1721,14 @@ export default function WorkspacePage() {
     }
     return undefined;
   })();
+  // IPE-058-F: issue-first tab picker for a freshly opened pack (used by the
+  // row → editor navigation effect before the editor target exists).
+  const nextIssueChapterTabForTabs = (tabs: any[]) => {
+    const withIssue = tabs.find(
+      tab => (chapterEditorStatusByTab.get(tab.sourceTabId)?.issueCount ?? 0) > 0
+    );
+    return withIssue ?? undefined;
+  };
   const currentChapterStatus = chapterEditorTarget
     ? chapterEditorStatusByTab.get(chapterEditorTarget.sourceTabId)
     : undefined;
@@ -1870,6 +1920,22 @@ export default function WorkspacePage() {
     setChapterEditorTarget(undefined);
     setChapterEditorParagraphs([]);
   };
+
+  // IPE-058-F: complete the row → editor click chain. The table row selects
+  // the work item; once the pack tabs load, open the first issue tab
+  // (next-issue behaviour) or the first tab directly.
+  useEffect(() => {
+    if (pendingEditorOpenWorkItemId === null || !latestEditorialDraft) return;
+    const draftTabs = (editorialDraftData?.tabs ?? []) as any[];
+    if (!draftTabs.length) return;
+    const targetTab =
+      nextIssueChapterTabForTabs(draftTabs) ?? draftTabs[0];
+    if (targetTab) {
+      openChapterEditor(targetTab);
+    }
+    setPendingEditorOpenWorkItemId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingEditorOpenWorkItemId, latestEditorialDraft?.id, editorialDraftData?.tabs?.length]);
 
   const chapterEditorIssueItems = chapterEditorTarget
     ? chapterEditorIssues({
@@ -3132,14 +3198,14 @@ export default function WorkspacePage() {
                 </div>
               ) : editorialNovelGroups.length ? (
                 <div className="space-y-3">{editorialNovelGroups.map((group: any) => (
-                  <details key={group.workspaceNovelId ?? group.novel?.id} className="overflow-hidden rounded-lg border bg-background">
+                  <details key={group.workspaceNovelId ?? group.novel?.id} className="overflow-hidden rounded-lg border bg-background" open={group.cards.some((groupCard: any) => groupCard.workItemId && groupCard.workItemId === selectedSourceWorkItemId) ? true : undefined}>
                     <summary className="cursor-pointer select-none bg-muted/20 px-4 py-3"><span className="font-semibold">{group.novel?.title ?? "Untitled novel"}</span><span className="ml-2 text-xs text-muted-foreground">{group.cards.length} pack(s) · Novel #{group.novel?.id ?? "—"}</span></summary>
                     <div className="overflow-x-auto"><table className="w-full min-w-[1240px] border-collapse text-sm">
                       <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="w-10 px-3 py-2"><span className="sr-only">เลือก</span></th><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 font-medium">การขาย</th><th className="px-3 py-2 text-center font-medium">3. ตรวจ</th><th className="px-3 py-2 text-center font-medium">ผลตรวจ</th><th className="px-3 py-2 text-center font-medium">4. ยืนยัน</th><th className="px-3 py-2 text-center font-medium">5. Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">6. เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
                       <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
                         <tr key={card.id} className={`border-b last:border-b-0 hover:bg-muted/10 ${selectedEditorialSet.has(card.workItemId) ? "bg-primary/5" : ""}`}>
                           <td className="px-3 py-3 align-top"><input type="checkbox" aria-label={`เลือก Episode Pack ${card.episodeNumber || card.workItemId}`} checked={selectedEditorialSet.has(card.workItemId)} disabled={!card.workItemId || bulkBusy} onChange={() => card.workItemId && toggleEditorialSelection(card.workItemId)} /></td>
-                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-1"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${card.evidence?.published ? "border-emerald-300 bg-emerald-50 text-emerald-700" : card.evidence?.readyToPublish ? "border-blue-300 bg-blue-50 text-blue-700" : card.evidence?.stage ? "border-violet-300 bg-violet-50 text-violet-700" : card.evidence?.approval ? "border-amber-300 bg-amber-50 text-amber-700" : card.evidence?.checker ? "border-cyan-300 bg-cyan-50 text-cyan-700" : "border-slate-300 bg-slate-50 text-slate-600"}`}>{card.evidence?.published ? "เผยแพร่แล้ว" : card.evidence?.readyToPublish ? "พร้อมลง" : card.evidence?.stage ? "Stage แล้ว" : card.evidence?.approval ? "ยืนยันแล้ว" : card.evidence?.checker ? "ตรวจแล้ว" : card.columnName}</span></div>{card.columnKey==="new"&&card.workItemId&&<div className="mt-2 flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไข</Button><Button type="button" size="sm" variant="outline" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</Button></div>}</td>
+                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-1"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${card.evidence?.published ? "border-emerald-300 bg-emerald-50 text-emerald-700" : card.evidence?.readyToPublish ? "border-blue-300 bg-blue-50 text-blue-700" : card.evidence?.stage ? "border-violet-300 bg-violet-50 text-violet-700" : card.evidence?.approval ? "border-amber-300 bg-amber-50 text-amber-700" : card.evidence?.checker ? "border-cyan-300 bg-cyan-50 text-cyan-700" : "border-slate-300 bg-slate-50 text-slate-600"}`}>{card.evidence?.published ? "เผยแพร่แล้ว" : card.evidence?.readyToPublish ? "พร้อมลง" : card.evidence?.stage ? "Stage แล้ว" : card.evidence?.approval ? "ยืนยันแล้ว" : card.evidence?.checker ? "ตรวจแล้ว" : card.columnName}</span></div>{card.columnKey==="new"&&card.workItemId&&<div className="mt-2 flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไข</Button><Button type="button" size="sm" variant="outline" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</Button></div>}{card.workItemId&&<div className="mt-2">{/* IPE-058-F: row -> editor in ONE click (opens next-issue tab). */}<Button type="button" size="sm" onClick={()=>{setSelectedSourceWorkItemId(card.workItemId);setPendingEditorOpenWorkItemId(card.workItemId);}}>เปิด Editor</Button></div>}</td>
                           <td className="px-3 py-3">
                             {card.isFree === true ? (
                               <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">ฟรี</span>
@@ -3346,9 +3412,10 @@ export default function WorkspacePage() {
                             ? `v${(editorialSourceDraft.data as any).latestDraft.version} · ${(editorialSourceDraft.data as any).latestDraft.transformCode}`
                             : "ยังไม่มี Draft"}
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          SHA {shortHash((editorialSourceDraft.data as any)?.latestDraft?.draftSha256)}
-                        </div>
+                        <details className="mt-1 text-xs text-muted-foreground Advanced">
+                          <summary className="cursor-pointer">Advanced</summary>
+                          <div className="mt-1">SHA {shortHash((editorialSourceDraft.data as any)?.latestDraft?.draftSha256)}</div>
+                        </details>
                       </div>
                       <div className="rounded-md border p-3 text-sm">
                         <div className="font-medium">Refresh safety</div>
@@ -3632,7 +3699,7 @@ export default function WorkspacePage() {
                           </div>
                           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
                             <span>Draft v{latestEditorialDraft?.version ?? "—"}</span>
-                            <span>SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
+                            <span title={latestEditorialDraft?.draftSha256 ?? ""} className="Advanced">SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
                             <span>แก้ไข {editorialEditorData?.history?.length ?? 0}</span>
                           </div>
                         </div>
@@ -3867,7 +3934,7 @@ export default function WorkspacePage() {
                                     );
                                   })()}
                                   <div className="mt-1 text-xs text-muted-foreground">
-                                    {tab.paragraphs.length} paragraphs · {shortHash(tab.structuralSha256)}
+                                    {tab.paragraphs.length} paragraphs · <span title={tab.structuralSha256} className="Advanced">{shortHash(tab.structuralSha256)}</span>
                                     {tab.chapterNumber
                                       ? ` · บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}`
                                       : ""}
@@ -4002,6 +4069,10 @@ export default function WorkspacePage() {
                               )}
                             </div>
                           </div>
+                          {/* IPE-058-F: sticky toolbar — Prev/Next, state chip,
+                              issue count and ONE primary CTA derived from the
+                              canonical state machine (no count shortcuts). */}
+                          <div className="sticky top-0 z-20 -mx-3 space-y-2 border-b bg-background/95 px-3 py-2 backdrop-blur">
                           <div className="flex flex-wrap items-center gap-2">
                             <Button
                               type="button"
@@ -4038,6 +4109,52 @@ export default function WorkspacePage() {
                               ปิด Editor
                             </Button>
                           </div>
+                          <WorkspaceEditorialToolbar
+                            dirty={chapterEditorDirty}
+                            saving={editEditorialDraft.isPending}
+                            checkerState={editorialCheckerState}
+                            unresolvedCount={editorialCheckerData?.unresolvedCount}
+                            issueCount={chapterEditorIssueItems.length}
+                            hasDraft={Boolean(latestEditorialDraft)}
+                            approvalValid={Boolean(
+                              editorialApprovalData?.approvalStatus?.valid
+                            )}
+                            readyToPublish={Boolean(
+                              editorialApprovalData?.readyToPublish
+                            )}
+                            positionLabel={
+                              chapterEditorCurrentIndex >= 0
+                                ? `${chapterEditorCurrentIndex + 1}/${chapterEditorTabs.length}`
+                                : "—"
+                            }
+                            onPrev={() =>
+                              previousChapterTab &&
+                              openChapterEditor(previousChapterTab)
+                            }
+                            onNext={() =>
+                              nextChapterTab && openChapterEditor(nextChapterTab)
+                            }
+                            prevDisabled={!previousChapterTab}
+                            nextDisabled={!nextChapterTab}
+                            onSaveCheck={submitChapterEditorEdit}
+                            onRunChecker={runCheckerForCurrentDraft}
+                            onConfirm={submitApprovalConfirm}
+                            onStage={submitStageDraft}
+                            confirmDisabled={
+                              !editorialApprovalData?.latestDraft ||
+                              !editorialApprovalData?.qc?.ready ||
+                              !editorialApprovalData?.qc?.checkerRunId ||
+                              !editorialApprovalData?.qc?.qcEvidenceSha256 ||
+                              Boolean(editorialApprovalData?.approvalStatus?.valid)
+                            }
+                            stageDisabled={
+                              !editorialApprovalData?.approvalStatus?.valid ||
+                              !editorialApprovalData?.approval?.id ||
+                              !editorialApprovalData?.stagePlan?.ready ||
+                              Boolean(editorialApprovalData?.stageStatus?.valid)
+                            }
+                          />
+                          </div>
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2 text-sm">
@@ -4055,7 +4172,7 @@ export default function WorkspacePage() {
                           </span>
                         </div>
 
-                        <details open className="rounded-lg border bg-background">
+                        <details className="rounded-lg border bg-background">
                           <summary className="cursor-pointer list-none px-3 py-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div>
@@ -4596,9 +4713,10 @@ export default function WorkspacePage() {
                     <div className="grid gap-2 md:grid-cols-4">
                       <div className="rounded border p-2 text-sm">
                         Draft v{editorialApprovalData?.latestDraft?.version ?? "—"}
-                        <div className="text-xs text-muted-foreground">
-                          {shortHash(editorialApprovalData?.latestDraft?.draftSha256)}
-                        </div>
+                        <details className="text-xs text-muted-foreground Advanced">
+                          <summary className="cursor-pointer">Advanced</summary>
+                          <div className="mt-1">draft sha {shortHash(editorialApprovalData?.latestDraft?.draftSha256)}</div>
+                        </details>
                       </div>
                       <div className="rounded border p-2 text-sm">
                         QC {editorialApprovalData?.qc?.ready ? "clean" : "not ready"}
@@ -4613,8 +4731,14 @@ export default function WorkspacePage() {
                         Approval {editorialApprovalData?.approvalStatus?.valid ? "valid" : "not current"}
                         <div className="text-xs text-muted-foreground">
                           {editorialApprovalData?.approval
-                            ? `#${editorialApprovalData.approval.id} · ${shortHash(editorialApprovalData.approval.approvedDraftSha256)}`
+                            ? `Approval #${editorialApprovalData.approval.id}`
                             : editorialApprovalData?.approvalStatus?.reason ?? "ยังไม่ยืนยัน"}
+                          {editorialApprovalData?.approval && (
+                            <details className="Advanced mt-1">
+                              <summary className="cursor-pointer">Advanced</summary>
+                              <div className="mt-1">approved sha {shortHash(editorialApprovalData.approval.approvedDraftSha256)}</div>
+                            </details>
+                          )}
                         </div>
                       </div>
                       <div className="rounded border p-2 text-sm">
@@ -4668,6 +4792,93 @@ export default function WorkspacePage() {
                             </div>
                           </details>
                         )}
+
+                        {/* IPE-058-F: Stage blockers grouped by ROOT CAUSE —
+                            stable code buckets with affected counts/tabs and a
+                            direct repair action, instead of raw backend
+                            error prose. Raw messages stay below. */}
+                        {(() => {
+                          const groups = groupStageDiagnostics({
+                            checkerState: editorialCheckerState,
+                            unresolvedCount: editorialApprovalData?.qc?.unresolvedCount,
+                            approvalStatusReason:
+                              editorialApprovalData?.approvalStatus?.reason,
+                            approvalValid: Boolean(
+                              editorialApprovalData?.approvalStatus?.valid
+                            ),
+                            anomalies:
+                              editorialApprovalData?.stagePlan?.anomalies ?? [],
+                          });
+                          if (!groups.length) return null;
+                          const openGroupTarget = (group: any) => {
+                            const action = group.action;
+                            if (action.kind === "run_checker") {
+                              runCheckerForCurrentDraft();
+                              return;
+                            }
+                            if (action.kind === "confirm_draft") {
+                              submitApprovalConfirm();
+                              return;
+                            }
+                            if (
+                              (action.kind === "open_editor" ||
+                                action.kind === "fix_metadata") &&
+                              action.sourceTabId
+                            ) {
+                              const tab = chapterEditorTabs.find(
+                                (candidate: any) =>
+                                  candidate.sourceTabId === action.sourceTabId
+                              );
+                              if (tab) {
+                                openChapterEditor(tab);
+                                return;
+                              }
+                            }
+                            document
+                              .getElementById("workspace-chapter-editor")
+                              ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                          };
+                          return (
+                            <div className="space-y-2 rounded border bg-muted/40 p-2 text-xs">
+                              <div className="font-medium">
+                                Stage blockers · grouped by root cause
+                              </div>
+                              {groups.map(group => (
+                                <div
+                                  key={group.code}
+                                  className="flex flex-wrap items-center justify-between gap-2 rounded border bg-background px-2 py-1"
+                                >
+                                  <div>
+                                    <span className="font-medium text-destructive">
+                                      {group.code}
+                                    </span>{" "}
+                                    · {group.label} · {group.affectedCount} จุด
+                                    <div className="text-muted-foreground">
+                                      {group.reason}
+                                      {group.affected.length
+                                        ? ` (${group.affected.slice(0, 5).join(", ")}${group.affected.length > 5 ? "…" : ""})`
+                                        : ""}
+                                    </div>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openGroupTarget(group)}
+                                  >
+                                    {group.action.kind === "run_checker"
+                                      ? "Run Checker"
+                                      : group.action.kind === "confirm_draft"
+                                        ? "Confirm ใหม่"
+                                        : group.action.kind === "fix_metadata"
+                                          ? "แก้เลขตอนใน Editor"
+                                          : "เปิด Editor"}
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
 
                         {editorialApprovalData.stagePlan.anomalies?.length > 0 && (
                           <div className="space-y-1 text-xs">
