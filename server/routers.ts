@@ -30,6 +30,7 @@ import { safeErrorSummary } from "../scripts/lib/safeErrorSummary.mjs";
 import { isDuplicateKeyError } from "./helpers/databaseErrorClassifier";
 import { fileRouter } from "./routers/fileRouter";
 import { ocrMetricsRouter } from "./routers/ocrMetricsRouter";
+import { novelExportRouter } from "./routers/novelExportRouter";
 import { r2Put, R2StorageError } from "./services/r2Storage";
 import { optimizeImageToWebp, ImageOptimizeError, SPORTS_MATCH_IMAGE_PRESET } from "./services/imageOptimizer";
 import * as readerService from "./services/readerService";
@@ -1345,6 +1346,7 @@ export const appRouter = router({
   admin: router({
     ocr: ocrMetricsRouter,
     nqa: nqaAdminRouter,
+    novelExport: novelExportRouter,
 
     payments: router({
       pending: adminProcedure.query(async () => {
