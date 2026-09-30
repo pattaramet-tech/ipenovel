@@ -193,7 +193,7 @@ describe("Workspace Editorial editor domain", () => {
   });
 
 
-  it("IPE-058-A: a whole-tab rewrite re-keys shifted paragraphs — identity is not stable across tab replacement", () => {
+  it("IPE-058-C: a whole-tab rewrite no longer steals keys — insertions are new identities", () => {
     const input = document("ย่อหน้าเดิม");
     input.tabs[0].paragraphs.push({
       ...input.tabs[0].paragraphs[0],
@@ -212,8 +212,6 @@ describe("Workspace Editorial editor domain", () => {
       expectedText: `ย่อหน้าเดิม
 
 ย่อหน้าที่สอง`,
-      // An insertion between the two original paragraphs shifts the
-      // positional pairing: paragraph 1 keeps its key, the rest are re-keyed.
       replacementText: `ย่อหน้าเดิม
 
 ย่อหน้าใหม่แทรก
@@ -222,14 +220,284 @@ describe("Workspace Editorial editor domain", () => {
     });
     const keys = result.document.tabs[0].paragraphs.map(p => p.paragraphKey);
     expect(keys[0]).toBe("p-key-1");
-    // Documented contract finding: keys pair POSITIONALLY. The inserted text
-    // inherits p-key-2 even though its text is new, while the surviving
-    // "ย่อหน้าที่สอง" paragraph is re-keyed. A whole-tab rewrite is therefore
-    // NOT paragraphKey-stable — finding states keyed by paragraphKey can
-    // attach to the wrong paragraph. To be reconciled in IPE-058-B.
-    expect(keys[1]).toBe("p-key-2");
-    expect(keys[2]).not.toBe("p-key-1");
-    expect(keys[2]).not.toBe("p-key-2");
+    // Fixed (was the IPE-058-A known defect): identity follows the logical
+    // paragraph. The inserted paragraph is a NEW identity; the surviving
+    // "ย่อหน้าที่สอง" paragraph keeps p-key-2.
+    expect(keys[1]).not.toBe("p-key-1");
+    expect(keys[1]).not.toBe("p-key-2");
+    expect(keys[2]).toBe("p-key-2");
+  });
+
+  it("IPE-058-C: explicit replacement paragraph keys preserve identity through edit/insert/delete/split/merge", () => {
+    const input = document("หนึ่ง");
+    input.tabs[0].paragraphs.push({
+      ...input.tabs[0].paragraphs[0],
+      paragraphKey: "p-key-2",
+      sourceParagraphIndex: 2,
+      paragraphOrder: 2,
+      text: "สอง",
+      sourceParagraphFingerprint: paragraphFingerprint("สอง"),
+      paragraphFingerprint: paragraphFingerprint("สอง"),
+    });
+    const normalized = reindexEditorialDraftDocument(input);
+
+    // Edit in place: same key, changed text.
+    const edited = applyEditorialDraftEdit(normalized, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: normalized.tabs[0].structuralSha256,
+      expectedText: "หนึ่ง\n\nสอง",
+      replacementText: "หนึ่งที่แก้\n\nสอง",
+      replacementParagraphKeys: ["p-key-1", "p-key-2"],
+    });
+    expect(
+      edited.document.tabs[0].paragraphs.map(p => [
+        p.paragraphKey,
+        p.text,
+      ])
+    ).toEqual([
+      ["p-key-1", "หนึ่งที่แก้"],
+      ["p-key-2", "สอง"],
+    ]);
+
+    // Insert between: new paragraph gets a minted key, no steal; delete: the
+    // removed key disappears; survivors keep theirs.
+    const afterEdit = edited.document.tabs[0];
+    const inserted = applyEditorialDraftEdit(edited.document, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: afterEdit.structuralSha256,
+      expectedText: "หนึ่งที่แก้\n\nสอง",
+      replacementText: "หนึ่งที่แก้\n\nแทรก\n\nสอง",
+      replacementParagraphKeys: ["p-key-1", "", "p-key-2"],
+    });
+    const insertedKeys = inserted.document.tabs[0].paragraphs.map(
+      p => p.paragraphKey
+    );
+    expect(insertedKeys).toHaveLength(3);
+    expect(insertedKeys[0]).toBe("p-key-1");
+    expect(insertedKeys[1]).not.toBe("p-key-1");
+    expect(insertedKeys[1]).not.toBe("p-key-2");
+    expect(insertedKeys[2]).toBe("p-key-2");
+
+    // Split via explicit keys: first piece keeps the key, second is new.
+    const afterInsert = inserted.document.tabs[0];
+    const split = applyEditorialDraftEdit(inserted.document, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: afterInsert.structuralSha256,
+      expectedText: "หนึ่งที่แก้\n\nแทรก\n\nสอง",
+      replacementText: "ABC\n\nDEF\n\nแทรก\n\nสอง",
+      replacementParagraphKeys: ["p-key-1", "", "", "p-key-2"],
+    });
+    const splitKeys = split.document.tabs[0].paragraphs.map(
+      p => p.paragraphKey
+    );
+    expect(splitKeys[0]).toBe("p-key-1");
+    expect(splitKeys[1]).not.toBe("p-key-1");
+    expect(splitKeys[1]).not.toBe("p-key-2");
+    expect(splitKeys[3]).toBe("p-key-2");
+
+    // Merge via explicit keys: merged paragraph keeps the FIRST node's key.
+    const afterSplit = split.document.tabs[0];
+    const insertKey =
+      afterSplit.paragraphs.find(paragraph => paragraph.text === "แทรก")
+        ?.paragraphKey ?? "";
+    expect(insertKey).toBeTruthy();
+    const merged = applyEditorialDraftEdit(split.document, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: afterSplit.structuralSha256,
+      expectedText: "ABC\n\nDEF\n\nแทรก\n\nสอง",
+      replacementText: "ABCDEF\n\nแทรก\n\nสอง",
+      replacementParagraphKeys: ["p-key-1", insertKey, "p-key-2"],
+    });
+    expect(
+      merged.document.tabs[0].paragraphs.map(paragraph => [
+        paragraph.paragraphKey,
+        paragraph.text,
+      ])
+    ).toEqual([
+      ["p-key-1", "ABCDEF"],
+      [insertKey, "แทรก"],
+      ["p-key-2", "สอง"],
+    ]);
+  });
+
+  it("IPE-058-C review fix: a recreated paragraph never reuses a deleted paragraph's key across revisions", () => {
+    // Save 1: insert NEW after A (seed = revision 1 mutation identity).
+    const base = document("A");
+    const save1 = applyEditorialDraftEdit(
+      base,
+      {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256: base.tabs[0].structuralSha256,
+        expectedText: "A",
+        replacementText: "A\n\nNEW",
+        replacementParagraphKeys: ["p-key-1", ""],
+      },
+      { identitySeed: "seed-revision-1" }
+    );
+    const newKey1 =
+      save1.document.tabs[0].paragraphs.find(p => p.text === "NEW")
+        ?.paragraphKey ?? "";
+    expect(newKey1).toHaveLength(64);
+
+    // Save 2: delete NEW (seed = revision 2 mutation identity).
+    const save2 = applyEditorialDraftEdit(
+      save1.document,
+      {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256:
+          save1.document.tabs[0].structuralSha256,
+        expectedText: "A\n\nNEW",
+        replacementText: "A",
+        replacementParagraphKeys: ["p-key-1"],
+      },
+      { identitySeed: "seed-revision-2" }
+    );
+
+    // Save 3: recreate the same text at the same position (seed = revision 3
+    // mutation identity). The minted key MUST differ from the deleted one.
+    const save3 = applyEditorialDraftEdit(
+      save2.document,
+      {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256:
+          save2.document.tabs[0].structuralSha256,
+        expectedText: "A",
+        replacementText: "A\n\nNEW",
+        replacementParagraphKeys: ["p-key-1", ""],
+      },
+      { identitySeed: "seed-revision-3" }
+    );
+    const newKey3 =
+      save3.document.tabs[0].paragraphs.find(p => p.text === "NEW")
+        ?.paragraphKey ?? "";
+    expect(newKey3).not.toBe(newKey1);
+
+    // Retry of the EXACT same mutation context is deterministic: same seed +
+    // same input -> same minted key.
+    const save3Retry = applyEditorialDraftEdit(
+      save2.document,
+      {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256:
+          save2.document.tabs[0].structuralSha256,
+        expectedText: "A",
+        replacementText: "A\n\nNEW",
+        replacementParagraphKeys: ["p-key-1", ""],
+      },
+      { identitySeed: "seed-revision-3" }
+    );
+    expect(
+      save3Retry.document.tabs[0].paragraphs.find(p => p.text === "NEW")
+        ?.paragraphKey
+    ).toBe(newKey3);
+  });
+
+  it("IPE-058-C review fix: two identical new paragraphs in one save get distinct keys; inherited keys stay", () => {
+    const input = document("A");
+    input.tabs[0].paragraphs.push({
+      ...input.tabs[0].paragraphs[0],
+      paragraphKey: "p-key-2",
+      sourceParagraphIndex: 2,
+      paragraphOrder: 2,
+      text: "B",
+      sourceParagraphFingerprint: paragraphFingerprint("B"),
+      paragraphFingerprint: paragraphFingerprint("B"),
+    });
+    const normalized = reindexEditorialDraftDocument(input);
+    const result = applyEditorialDraftEdit(
+      normalized,
+      {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256: normalized.tabs[0].structuralSha256,
+        expectedText: "A\n\nB",
+        replacementText: "NEW\n\nNEW\n\nA\n\nB",
+        replacementParagraphKeys: ["", "", "p-key-1", "p-key-2"],
+      },
+      { identitySeed: "seed-x" }
+    );
+    const keys = result.document.tabs[0].paragraphs.map(p => p.paragraphKey);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(keys[2]).toBe("p-key-1");
+    expect(keys[3]).toBe("p-key-2");
+  });
+
+  it("IPE-058-C: rejects duplicate or count-mismatched replacement paragraph keys", () => {
+    const input = document("หนึ่ง\n\nสอง");
+    expect(() =>
+      applyEditorialDraftEdit(input, {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256: input.tabs[0].structuralSha256,
+        expectedText: "หนึ่ง\n\nสอง",
+        replacementText: "หนึ่ง\n\nสองใหม่",
+        replacementParagraphKeys: ["p-key-1", "p-key-1"],
+      })
+    ).toThrow("Duplicate replacement paragraph identity");
+    expect(() =>
+      applyEditorialDraftEdit(input, {
+        kind: "replace_tab",
+        sourceTabId: "tab-1",
+        expectedTabStructuralSha256: input.tabs[0].structuralSha256,
+        expectedText: "หนึ่ง\n\nสอง",
+        replacementText: "หนึ่ง\n\nสองใหม่",
+        replacementParagraphKeys: ["p-key-1"],
+      })
+    ).toThrow("identity count does not match");
+  });
+
+  it("IPE-058-C: legacy replace_tab without explicit keys uses occurrence matching", () => {
+    const input = document("หนึ่ง");
+    input.tabs[0].paragraphs.push({
+      ...input.tabs[0].paragraphs[0],
+      paragraphKey: "p-key-2",
+      sourceParagraphIndex: 2,
+      paragraphOrder: 2,
+      text: "สอง",
+      sourceParagraphFingerprint: paragraphFingerprint("สอง"),
+      paragraphFingerprint: paragraphFingerprint("สอง"),
+    });
+    const normalized = reindexEditorialDraftDocument(input);
+    // Delete the middle paragraph of three without explicit keys.
+    const three = applyEditorialDraftEdit(normalized, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: normalized.tabs[0].structuralSha256,
+      expectedText: "หนึ่ง\n\nสอง",
+      replacementText: "หนึ่ง\n\nแทรก\n\nสอง",
+    });
+    const keys = three.document.tabs[0].paragraphs.map(p => p.paragraphKey);
+    expect(keys[0]).toBe("p-key-1");
+    expect(keys[1]).not.toBe("p-key-1");
+    expect(keys[1]).not.toBe("p-key-2");
+    expect(keys[2]).toBe("p-key-2");
+  });
+
+  it("IPE-058-C: a whole-tab save changes the Draft hash (checker currentness transitions)", () => {
+    const input = document("ย่อหน้าเดิม");
+    const beforeSha256 = editorialDraftSha256(
+      reindexEditorialDraftDocument(input)
+    );
+    const result = applyEditorialDraftEdit(input, {
+      kind: "replace_tab",
+      sourceTabId: "tab-1",
+      expectedTabStructuralSha256: input.tabs[0].structuralSha256,
+      expectedText: "ย่อหน้าเดิม",
+      replacementText: "ย่อหน้าใหม่",
+    });
+    expect(result.afterSha256).not.toBe(beforeSha256);
+    expect(result.beforeSha256).toBe(beforeSha256);
+    expect(result.details.afterTabStructuralSha256).not.toBe(
+      input.tabs[0].structuralSha256
+    );
   });
 
   it("fills an empty tab with a guarded whole-tab edit and reindexes paragraphs", () => {

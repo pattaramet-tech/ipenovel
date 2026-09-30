@@ -41,20 +41,62 @@ Staged Episode (stage row keyed (approvalId, canonical episodeNumber);
 | QC evidence | production `editorialQcEvidenceSha256` binds run identity PLUS the per-finding/anomaly disposition set. `editorialCheckerRunIdentity` in the contract module is the run/currentness identity component only | equated with the full evidence hash |
 | staged episode | stageId + episodeId (row identities) | mutable display title |
 
-### Known paragraph-identity defect (whole-tab rewrite)
+### Paragraph identity under whole-tab rewrite — FIXED in IPE-058-C
 
-`applyEditorialTabEdit` (editorialEditor.domain.ts) pairs replacement
-paragraphs to previous paragraphs PURELY BY POSITION and carries
-`previous?.paragraphKey` forward **without checking text equality**. When a
-paragraph is inserted mid-tab: the NEW text at that position INHERITS the old
-paragraph's key, and the old (shifted) paragraph is re-keyed. `paragraphKey`
-is position-stable but NOT text-stable across a whole-tab rewrite — finding
-states and anomaly confirmations keyed by `paragraphKey` can attach to the
-wrong paragraph. This is locked by a regression test
-(`editorialEditor.domain.test.ts`, "identity is not stable across tab
-replacement") and MUST be reconciled in IPE-058-B (or a dedicated milestone)
-before any consumer relies on paragraphKey across a tab rewrite. No
-production editor behavior was changed in IPE-058-A.
+IPE-058-A documented a known defect: `applyEditorialTabEdit` paired
+replacement paragraphs to previous paragraphs PURELY BY POSITION, so a
+mid-tab insertion made the NEW text inherit the old paragraph's key while the
+shifted paragraph was re-keyed. IPE-058-C fixes this in
+`editorialEditor.domain.ts`:
+
+- **Canvas path (explicit identity)**: the single-canvas editor sends
+  `replacementParagraphKeys` — one entry per replacement paragraph. A
+  non-empty key that exists in the tab declares "this replacement paragraph
+  IS that logical paragraph" (text may be edited — identity preserved). An
+  empty string declares a NEW paragraph; the server mints a fresh key under a
+  dedicated `workspace-editorial-tab-paragraph-v3` domain:
+  `sha256(v3, sourceTabId, identitySeed, perSaveOrdinal, text)`. The
+  **identity seed authority is the edit idempotency payload SHA** (computed
+  by `editorialEditor.service.ts` from editorVersion + expectedDraftId +
+  expectedDraftVersion + expectedDraftSha256 + command + findingKey): it is
+  identical for an exact mutation retry (idempotent) and different across
+  Draft revisions, so a paragraph recreated after deletion can NEVER resurrect
+  the deleted paragraph's key (stale QC evidence can never retarget it).
+  Duplicate keys or a count mismatch are rejected (`TAB_CONFLICT`) — fail
+  closed.
+- **Legacy path (no explicit keys)**: deterministic occurrence matching — the
+  k-th replacement paragraph with a given text inherits the k-th previous
+  paragraph with identical text, so insertions never steal neighbouring keys
+  and deleted paragraphs' keys simply disappear.
+- **Unmatched-piece pairing (canvas model)**: after exact-text occurrence
+  matching, still-unmatched new pieces pair with still-unmatched previous
+  nodes in ORIGINAL document order (`previous.filter(not matched)` — never
+  `Map.values()` order, which scrambles duplicates by first-seen text key).
+
+### Single-canvas editing layer (IPE-058-C)
+
+The Chapter Editor is now ONE continuous editing surface
+(`ChapterEditorCanvas` in WorkspacePage.tsx) over the flat canvas text. The
+canonical persistence boundary is UNCHANGED: paragraph-aware plain text via
+the guarded `replace_tab` Draft command (structuralSha256 + expectedText +
+draftSha256 optimistic locks, immutable Draft revision, checker recheck after
+save). See `client/src/pages/workspaceChapterCanvas.ts` for the model:
+
+- paragraphs --join `"\n\n"`--> canvas text; canvas text --split on blank
+  lines--> paragraphs (the server's blank-line split is the same contract).
+- Reconciliation rules (deterministic, O(n), locked by
+  `workspaceChapterCanvas.test.ts`): unchanged keeps key; text edit keeps
+  key; split keeps the FIRST piece's key (other pieces new); merge keeps the
+  FIRST node's key; delete drops the key; insert is a new identity; reorder
+  follows the logical paragraph.
+- Soft break: Shift+Enter inserts a single `"\n"` INSIDE the paragraph node;
+  the canonical boundary is a BLANK line. Single `\n` survives the server
+  split and the round trip.
+- Offsets stay JavaScript UTF-16 code units end to end —
+  `chapterCanvasFindingRange` maps (paragraphKey, offsets) onto the canvas;
+  a stale paragraphKey returns null and fails safely (no wrong highlight).
+- Undo/redo is a controlled client history (never crosses a server save or a
+  chapter switch — reset on save/open/close).
 
 ## Known identity-mismatch origins (reproduced as deterministic fixtures)
 
@@ -96,14 +138,23 @@ production editor behavior was changed in IPE-058-A.
 - **Item-key parser consolidation**: editorialPublish.service and ipenovelPublish.provider
   now build/parse via the contract functions; persisted format unchanged
   ("editorial-stage:{stageId}:episode:{episodeId}"), strict positive-integer semantics kept.
-- **ParagraphKey whole-tab-rewrite defect**: DEFERRED. Stage mapping uses canonical chapter
-  identity, not paragraphKey, so the defect does not affect stage correctness; the
-  regression test locking the behavior stays and the fix moves to the editor milestone
-  (IPE-058-C) to keep this change scope-safe.
+- **ParagraphKey whole-tab-rewrite defect**: DEFERRED to IPE-058-C (DONE there — see the
+  "FIXED in IPE-058-C" section above).
 
-## Still open for IPE-058-C
+## IPE-058-C status
 
-- ParagraphKey positional-carry defect under whole-tab rewrite (re-key or text-aware carry).
-- Single-canvas paragraph-aware editor redesign.
+- Single-canvas paragraph-aware editor: DONE (presentation/editing layer only;
+  canonical persistence stays paragraph-aware plain text through `replace_tab`).
+- ParagraphKey positional-carry defect: FIXED (explicit canvas identity +
+  legacy occurrence matching).
+
+## Still open for IPE-058-D/E
+
+- Full Checker UX parity inside the canvas (inline finding rendering depth,
+  transform preview) — the existing Issue Queue / QC controls remain the
+  surface for now and still work against the canvas.
 - "แท็บ X/Y" bulk-checker summary still derives from checker structural summary (separate
   taxonomy from pack reconciliation) — unify presentation if desired.
+- Native browser undo interplay for IME composition sessions (controlled
+  history covers programmatic ops; composition-heavy IME undo may not restore
+  intermediate composition states).

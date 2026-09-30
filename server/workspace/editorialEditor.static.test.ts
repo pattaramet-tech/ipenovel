@@ -108,9 +108,11 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("Chapter Editor");
     expect(page).toContain("เติมเนื้อหา");
     expect(page).toContain('kind: "replace_tab"');
-    expect(page).toContain("ChapterEditorParagraphBlock");
-    expect(page).toContain("pasteChapterEditorParagraphs");
-    expect(page).toContain("วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ");
+    // IPE-058-C: single continuous canvas replaces per-paragraph textareas.
+    expect(page).toContain("ChapterEditorCanvas");
+    expect(page).toContain("workspace-chapter-editor-canvas");
+    expect(page).not.toContain("ChapterEditorParagraphBlock");
+    expect(page).toContain("วางจาก ChatGPT/Google Docs จะจัดย่อหน้าอัตโนมัติ");
     expect(page).toContain("ไฮไลต์คำต่างประเทศ");
     expect(page).toContain("chapterEditorTabStatus");
     expect(page).toContain("ก่อนหน้า");

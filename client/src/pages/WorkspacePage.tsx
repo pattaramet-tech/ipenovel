@@ -14,8 +14,20 @@ import {
   chapterEditorStructuralRepairGuidance,
   chapterEditorTabStatus,
   parseChapterEditorPasteText,
-  serializeChapterEditorParagraphs,
 } from "./workspaceChapterEditor";
+import {
+  applyChapterCanvasChange,
+  chapterCanvasFindingRange,
+  chapterCanvasParagraphStartOffset,
+  createChapterCanvasHistory,
+  pushChapterCanvasHistory,
+  redoChapterCanvas,
+  serializeChapterCanvasForSave,
+  serializeChapterCanvasText,
+  undoChapterCanvas,
+  type ChapterCanvasHistory,
+  type ChapterCanvasParagraph,
+} from "./workspaceChapterCanvas";
 import {
   Activity,
   BookOpen,
@@ -121,11 +133,8 @@ function editorialTabText(tab: any) {
   return (tab?.paragraphs ?? []).map((paragraph: any) => String(paragraph.text ?? "")).join("\n\n");
 }
 
-type ChapterEditorParagraphState = {
-  id: string;
-  paragraphKey?: string;
-  text: string;
-};
+// IPE-058-C: the editor state IS the canvas paragraph model now.
+type ChapterEditorParagraphState = ChapterCanvasParagraph;
 
 function chapterEditorClipboardParagraphs(data: DataTransfer) {
   const html = data.getData("text/html");
@@ -143,33 +152,37 @@ function chapterEditorClipboardParagraphs(data: DataTransfer) {
   return parseChapterEditorPasteText(data.getData("text/plain"));
 }
 
-function ChapterEditorParagraphBlock({
-  paragraphId,
+/**
+ * IPE-058-C: single continuous editing surface. ONE textarea over the flat
+ * canvas text with an overlay <pre> for finding highlights — no per-paragraph
+ * textareas. The paragraph-aware model lives in workspaceChapterCanvas.ts and
+ * is applied on every change; the save boundary stays the replace_tab Draft
+ * command with explicit paragraph identity.
+ */
+function ChapterEditorCanvas({
   value,
-  findings,
+  flatFindings,
   highlight,
   disabled,
   placeholder,
+  textareaRef,
   onChange,
-  onSplit,
-  onMergePrevious,
-  onPasteParagraphs,
+  onKeyDown,
+  onPaste,
 }: {
-  paragraphId: string;
   value: string;
-  findings: any[];
+  flatFindings: Array<{ startOffset: number; endOffset: number; token: string }>;
   highlight: boolean;
   disabled: boolean;
   placeholder?: string;
-  onChange: (value: string) => void;
-  onSplit: (start: number, end: number) => void;
-  onMergePrevious: () => void;
-  onPasteParagraphs: (paragraphs: string[], start: number, end: number) => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  onChange: (value: string, caret: number) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onPaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
 }) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const ranges = useMemo(
-    () => (highlight ? chapterEditorFindingRanges(value, findings) : []),
-    [highlight, value, findings]
+    () => (highlight ? chapterEditorFindingRanges(value, flatFindings) : []),
+    [highlight, value, flatFindings]
   );
   const parts: React.ReactNode[] = [];
   let cursor = 0;
@@ -189,57 +202,28 @@ function ChapterEditorParagraphBlock({
   });
   parts.push(value.slice(cursor));
 
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "0px";
-    textarea.style.height = `${Math.max(40, textarea.scrollHeight)}px`;
-  }, [value]);
-
   return (
-    <div className="relative">
+    <div className="relative min-h-[28rem]">
       <pre
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-1 py-1 font-sans text-base leading-8 text-transparent"
+        className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-3 py-3 font-sans text-base leading-8 text-transparent"
       >
         {parts}
         {"\n"}
       </pre>
       <textarea
         ref={textareaRef}
-        id={`chapter-editor-paragraph-${paragraphId}`}
-        aria-label="Chapter editor paragraph"
-        rows={1}
+        id="workspace-chapter-editor-canvas"
+        aria-label="Chapter editor — พื้นที่แก้ไขบทต่อเนื่อง หนึ่งย่อหน้าต่อหนึ่งย่อหน้าข้อความ"
+        rows={14}
         spellCheck={false}
-        className="relative z-10 block w-full resize-none overflow-hidden bg-transparent px-1 py-1 font-sans text-base leading-8 outline-none focus:bg-muted/20"
+        className="relative z-10 block min-h-[28rem] w-full resize-none bg-transparent px-3 py-3 font-sans text-base leading-8 outline-none focus:bg-muted/20"
         value={value}
         disabled={disabled}
         placeholder={placeholder}
-        onChange={event => onChange(event.target.value)}
-        onKeyDown={event => {
-          if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            onSplit(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-            return;
-          }
-          if (
-            event.key === "Backspace" &&
-            event.currentTarget.selectionStart === 0 &&
-            event.currentTarget.selectionEnd === 0
-          ) {
-            onMergePrevious();
-          }
-        }}
-        onPaste={event => {
-          const paragraphs = chapterEditorClipboardParagraphs(event.clipboardData);
-          if (!paragraphs.length) return;
-          event.preventDefault();
-          onPasteParagraphs(
-            paragraphs,
-            event.currentTarget.selectionStart,
-            event.currentTarget.selectionEnd
-          );
-        }}
+        onChange={event => onChange(event.target.value, event.target.selectionStart)}
+        onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
     </div>
   );
@@ -335,17 +319,29 @@ export default function WorkspacePage() {
   const [chapterEditorParagraphs, setChapterEditorParagraphs] = useState<ChapterEditorParagraphState[]>([]);
   const chapterEditorParagraphSequence = useRef(0);
   const chapterEditorScrollRef = useRef<HTMLDivElement>(null);
+  const chapterEditorCanvasRef = useRef<HTMLTextAreaElement | null>(null);
+  const chapterEditorHistoryRef = useRef<ChapterCanvasHistory>(
+    createChapterCanvasHistory()
+  );
   const [chapterEditorIssueIndex, setChapterEditorIssueIndex] = useState(0);
   const [chapterEditorTabFilter, setChapterEditorTabFilter] = useState<
     "all" | "issue" | "unedited" | "edited"
   >("all");
   const chapterEditorScrollByTab = useRef(new Map<string, number>());
+  // Canvas display text: raw join so typing whitespace is never snapped back.
   const chapterEditorText = useMemo(
-    () => serializeChapterEditorParagraphs(chapterEditorParagraphs.map(paragraph => paragraph.text)),
+    () => serializeChapterCanvasText(chapterEditorParagraphs),
+    [chapterEditorParagraphs]
+  );
+  // Save projection: trimmed paragraphs + aligned explicit identity list
+  // (IPE-058-C replace_tab identity contract).
+  const chapterEditorSaveProjection = useMemo(
+    () => serializeChapterCanvasForSave(chapterEditorParagraphs),
     [chapterEditorParagraphs]
   );
   const chapterEditorDirty = Boolean(
-    chapterEditorTarget && chapterEditorText !== chapterEditorTarget.expectedText
+    chapterEditorTarget &&
+      chapterEditorSaveProjection.text !== chapterEditorTarget.expectedText
   );
   const [chapterEditorHighlight, setChapterEditorHighlight] = useState(true);
   const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
@@ -1063,6 +1059,8 @@ export default function WorkspacePage() {
         variables.command.kind === "replace_tab" ? chapterEditorTarget : undefined;
       setEditorTarget(undefined);
       setEditorText("");
+      // Controlled canvas history never crosses a server save revision.
+      chapterEditorHistoryRef.current = createChapterCanvasHistory();
       if (!savedChapterTarget) {
         setChapterEditorTarget(undefined);
         setChapterEditorParagraphs([]);
@@ -1321,7 +1319,7 @@ export default function WorkspacePage() {
       !selectedSourceWorkItemId ||
       !chapterEditorTarget ||
       editEditorialDraft.isPending ||
-      chapterEditorText === chapterEditorTarget.expectedText
+      chapterEditorSaveProjection.text === chapterEditorTarget.expectedText
     ) {
       return;
     }
@@ -1337,7 +1335,10 @@ export default function WorkspacePage() {
         expectedTabStructuralSha256:
           chapterEditorTarget.expectedTabStructuralSha256,
         expectedText: chapterEditorTarget.expectedText,
-        replacementText: chapterEditorText,
+        replacementText: chapterEditorSaveProjection.text,
+        // IPE-058-C: explicit logical paragraph identity — "" = new paragraph.
+        replacementParagraphKeys:
+          chapterEditorSaveProjection.replacementParagraphKeys,
       },
       idempotencyKey: `editor-tab:${chapterEditorTarget.draftId}:${chapterEditorTarget.sourceTabId}:${Date.now()}`,
     });
@@ -1636,16 +1637,102 @@ export default function WorkspacePage() {
     chapterEditorParagraphSequence.current += 1;
     return `manual-${chapterEditorParagraphSequence.current}`;
   };
-  const focusChapterEditorParagraph = (paragraphId: string, offset: number) => {
+  // IPE-058-C: single-canvas caret helpers (UTF-16 offsets on the flat text).
+  const focusChapterCanvasOffset = (offset: number) => {
     window.requestAnimationFrame(() => {
-      const textarea = document.getElementById(
-        `chapter-editor-paragraph-${paragraphId}`
-      ) as HTMLTextAreaElement | null;
+      const textarea = chapterEditorCanvasRef.current;
       if (!textarea) return;
+      const clamped = Math.max(0, Math.min(offset, textarea.value.length));
+      // Selection first, then focus: browsers scroll the caret into view.
+      textarea.setSelectionRange(clamped, clamped);
       textarea.focus();
-      textarea.setSelectionRange(offset, offset);
     });
   };
+  const pushChapterEditorHistory = (caret: number) => {
+    chapterEditorHistoryRef.current = pushChapterCanvasHistory(
+      chapterEditorHistoryRef.current,
+      { paragraphs: chapterEditorParagraphs, caret }
+    );
+  };
+  const applyChapterEditorCanvasChange = (newText: string, restoreCaret: boolean) => {
+    if (!chapterEditorTarget) return;
+    pushChapterEditorHistory(chapterEditorCanvasRef.current?.selectionStart ?? 0);
+    const result = applyChapterCanvasChange({
+      previous: chapterEditorParagraphs,
+      oldText: chapterEditorText,
+      newText,
+      nextId: nextChapterEditorParagraphId,
+    });
+    setChapterEditorParagraphs(result.paragraphs);
+    if (restoreCaret) focusChapterCanvasOffset(result.caret);
+  };
+  const insertChapterEditorCanvasText = (inserted: string) => {
+    const textarea = chapterEditorCanvasRef.current;
+    if (!textarea || !chapterEditorTarget) return;
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? start;
+    const newText = `${textarea.value.slice(0, start)}${inserted}${textarea.value.slice(end)}`;
+    applyChapterEditorCanvasChange(newText, true);
+  };
+  const chapterEditorCanvasKeyDown = (
+    event: React.KeyboardEvent<HTMLTextAreaElement>
+  ) => {
+    const meta = event.ctrlKey || event.metaKey;
+    if (meta && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        const redone = redoChapterCanvas(chapterEditorHistoryRef.current, {
+          paragraphs: chapterEditorParagraphs,
+          caret: chapterEditorCanvasRef.current?.selectionStart ?? 0,
+        });
+        if (redone.entry) {
+          chapterEditorHistoryRef.current = redone.history;
+          setChapterEditorParagraphs(redone.entry.paragraphs);
+          focusChapterCanvasOffset(redone.entry.caret);
+        }
+      } else {
+        const undone = undoChapterCanvas(chapterEditorHistoryRef.current, {
+          paragraphs: chapterEditorParagraphs,
+          caret: chapterEditorCanvasRef.current?.selectionStart ?? 0,
+        });
+        if (undone.entry) {
+          chapterEditorHistoryRef.current = undone.history;
+          setChapterEditorParagraphs(undone.entry.paragraphs);
+          focusChapterCanvasOffset(undone.entry.caret);
+        }
+      }
+      return;
+    }
+    if (meta && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      const redone = redoChapterCanvas(chapterEditorHistoryRef.current, {
+        paragraphs: chapterEditorParagraphs,
+        caret: chapterEditorCanvasRef.current?.selectionStart ?? 0,
+      });
+      if (redone.entry) {
+        chapterEditorHistoryRef.current = redone.history;
+        setChapterEditorParagraphs(redone.entry.paragraphs);
+        focusChapterCanvasOffset(redone.entry.caret);
+      }
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !meta && !event.altKey) {
+      // Paragraph boundary: a blank line in the canonical model.
+      event.preventDefault();
+      insertChapterEditorCanvasText("\n\n");
+    }
+    // Shift+Enter falls through: the native "\n" stays INSIDE the paragraph
+    // (soft break) and the canvas model keeps it in the same node.
+  };
+  const chapterEditorCanvasPaste = (
+    event: React.ClipboardEvent<HTMLTextAreaElement>
+  ) => {
+    const paragraphs = chapterEditorClipboardParagraphs(event.clipboardData);
+    if (!paragraphs.length) return;
+    event.preventDefault();
+    insertChapterEditorCanvasText(paragraphs.join("\n\n"));
+  };
+
   const openChapterEditor = (tab: any) => {
     if (!latestEditorialDraft) return;
     if (
@@ -1659,7 +1746,9 @@ export default function WorkspacePage() {
     const text = editorialTabText(tab);
     const paragraphs: ChapterEditorParagraphState[] = (tab.paragraphs ?? []).map(
       (paragraph: any, index: number) => ({
-        id: String(paragraph.paragraphKey ?? `source-${tab.sourceTabId}-${index}`),
+        id: String(
+          paragraph.paragraphKey ?? `source-${tab.sourceTabId}-${index}`
+        ),
         paragraphKey: paragraph.paragraphKey ? String(paragraph.paragraphKey) : undefined,
         text: String(paragraph.text ?? ""),
       })
@@ -1670,6 +1759,8 @@ export default function WorkspacePage() {
     setEditorTarget(undefined);
     setEditorText("");
     setChapterEditorIssueIndex(0);
+    // Controlled canvas history never crosses chapter boundaries.
+    chapterEditorHistoryRef.current = createChapterCanvasHistory();
     setChapterEditorTarget({
       sourceTabId: tab.sourceTabId,
       title: tab.title,
@@ -1698,83 +1789,11 @@ export default function WorkspacePage() {
     }
     rememberChapterEditorScroll();
     setChapterEditorIssueIndex(0);
+    chapterEditorHistoryRef.current = createChapterCanvasHistory();
     setChapterEditorTarget(undefined);
     setChapterEditorParagraphs([]);
   };
-  const updateChapterEditorParagraph = (index: number, text: string) => {
-    setChapterEditorParagraphs(current =>
-      current.map((paragraph, paragraphIndex) =>
-        paragraphIndex === index ? { ...paragraph, text } : paragraph
-      )
-    );
-  };
-  const splitChapterEditorParagraph = (index: number, start: number, end: number) => {
-    const paragraph = chapterEditorParagraphs[index];
-    if (!paragraph) return;
-    const nextId = nextChapterEditorParagraphId();
-    setChapterEditorParagraphs([
-      ...chapterEditorParagraphs.slice(0, index),
-      { ...paragraph, text: paragraph.text.slice(0, start) },
-      { id: nextId, text: paragraph.text.slice(end) },
-      ...chapterEditorParagraphs.slice(index + 1),
-    ]);
-    focusChapterEditorParagraph(nextId, 0);
-  };
-  const mergeChapterEditorParagraphWithPrevious = (index: number) => {
-    if (index <= 0) return;
-    const previous = chapterEditorParagraphs[index - 1];
-    const paragraph = chapterEditorParagraphs[index];
-    if (!previous || !paragraph) return;
-    const previousLength = previous.text.length;
-    setChapterEditorParagraphs([
-      ...chapterEditorParagraphs.slice(0, index - 1),
-      { ...previous, text: `${previous.text}${paragraph.text}` },
-      ...chapterEditorParagraphs.slice(index + 1),
-    ]);
-    focusChapterEditorParagraph(previous.id, previousLength);
-  };
-  const pasteChapterEditorParagraphs = (
-    index: number,
-    paragraphs: string[],
-    start: number,
-    end: number
-  ) => {
-    const target = chapterEditorParagraphs[index];
-    if (!target || !paragraphs.length) return;
-    const before = target.text.slice(0, start);
-    const after = target.text.slice(end);
-    if (paragraphs.length === 1) {
-      setChapterEditorParagraphs(
-        chapterEditorParagraphs.map((paragraph, paragraphIndex) =>
-          paragraphIndex === index
-            ? { ...paragraph, text: `${before}${paragraphs[0]}${after}` }
-            : paragraph
-        )
-      );
-      focusChapterEditorParagraph(target.id, before.length + paragraphs[0]!.length);
-      return;
-    }
-    const inserted: ChapterEditorParagraphState[] = [
-      { ...target, text: `${before}${paragraphs[0]}` },
-      ...paragraphs.slice(1).map((text, paragraphIndex) => ({
-        id: nextChapterEditorParagraphId(),
-        text:
-          paragraphIndex === paragraphs.length - 2
-            ? `${text}${after}`
-            : text,
-      })),
-    ];
-    setChapterEditorParagraphs([
-      ...chapterEditorParagraphs.slice(0, index),
-      ...inserted,
-      ...chapterEditorParagraphs.slice(index + 1),
-    ]);
-    const lastInserted = inserted[inserted.length - 1]!;
-    focusChapterEditorParagraph(
-      lastInserted.id,
-      paragraphs[paragraphs.length - 1]!.length
-    );
-  };
+
   const chapterEditorIssueItems = chapterEditorTarget
     ? chapterEditorIssues({
         sourceTabId: chapterEditorTarget.sourceTabId,
@@ -1802,14 +1821,31 @@ export default function WorkspacePage() {
           finding.disposition === "open"
       )
     : [];
-  const chapterEditorFindingsByParagraphKey = new Map<string, any[]>();
-  for (const finding of chapterEditorFindings) {
-    const paragraphKey = String(finding.paragraphKey ?? "");
-    if (!paragraphKey) continue;
-    const bucket = chapterEditorFindingsByParagraphKey.get(paragraphKey) ?? [];
-    bucket.push(finding);
-    chapterEditorFindingsByParagraphKey.set(paragraphKey, bucket);
-  }
+  // IPE-058-C: project per-paragraph QC findings onto flat canvas ranges.
+  // Stale paragraphKeys produce null and are dropped (fail-safe: no wrong
+  // highlight) instead of being clamped onto another paragraph.
+  const chapterEditorCanvasFindings = useMemo(
+    () =>
+      chapterEditorFindings
+        .map(finding => ({
+          finding,
+          range: chapterCanvasFindingRange(chapterEditorParagraphs, finding),
+        }))
+        .filter(
+          (
+            entry
+          ): entry is {
+            finding: any;
+            range: { start: number; end: number };
+          } => entry.range !== null
+        )
+        .map(({ finding, range }) => ({
+          startOffset: range.start,
+          endOffset: range.end,
+          token: String(finding.token ?? ""),
+        })),
+    [chapterEditorFindings, chapterEditorParagraphs]
+  );
   useEffect(() => {
     setChapterEditorIssueIndex(current =>
       chapterEditorIssueItems.length
@@ -1852,26 +1888,31 @@ export default function WorkspacePage() {
     setChapterEditorIssueIndex(index);
     if (issue.kind === "finding") {
       const finding = issue.finding;
-      const paragraph = chapterEditorParagraphs.find(
-        candidate => candidate.paragraphKey === finding.paragraphKey
+      // IPE-058-C: map paragraphKey + UTF-16 offsets onto the flat canvas.
+      // A stale key (paragraph no longer exists) fails safely: no highlight,
+      // no focus jump to a wrong paragraph.
+      const range = chapterCanvasFindingRange(
+        chapterEditorParagraphs,
+        finding
       );
-      if (!paragraph) {
+      if (!range) {
         toast.error("หา paragraph ของ finding นี้ใน Draft ปัจจุบันไม่พบ");
         return;
       }
       window.requestAnimationFrame(() => {
-        const textarea = document.getElementById(
-          `chapter-editor-paragraph-${paragraph.id}`
-        ) as HTMLTextAreaElement | null;
+        const textarea = chapterEditorCanvasRef.current;
         if (!textarea) return;
-        textarea.scrollIntoView({ behavior: "smooth", block: "center" });
-        textarea.focus();
-        const start = Math.max(0, Math.min(Number(finding.startOffset ?? 0), textarea.value.length));
+        const start = Math.max(
+          0,
+          Math.min(range.start, textarea.value.length)
+        );
         const end = Math.max(
           start,
-          Math.min(Number(finding.endOffset ?? start), textarea.value.length)
+          Math.min(range.end, textarea.value.length)
         );
+        // Selection first, then focus: browsers scroll the caret into view.
         textarea.setSelectionRange(start, end);
+        textarea.focus();
       });
       return;
     }
@@ -1894,17 +1935,12 @@ export default function WorkspacePage() {
       anomaly.anomalyType === "end_only_tab" ||
       anomaly.anomalyType === "source_note_only"
     ) {
-      const paragraph =
+      focusChapterCanvasOffset(
         anomaly.anomalyType === "end_only_tab"
-          ? chapterEditorParagraphs[chapterEditorParagraphs.length - 1]
-          : chapterEditorParagraphs[0];
-      if (paragraph) {
-        focusChapterEditorParagraph(
-          paragraph.id,
-          anomaly.anomalyType === "end_only_tab" ? paragraph.text.length : 0
-        );
-        return;
-      }
+          ? chapterEditorText.length
+          : 0
+      );
+      return;
     }
     chapterEditorScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -4234,48 +4270,39 @@ export default function WorkspacePage() {
                             );
                           }}
                         >
-                          <div className="space-y-1">
-                            {chapterEditorParagraphs.map((paragraph, index) => (
-                              <ChapterEditorParagraphBlock
-                                key={paragraph.id}
-                                paragraphId={paragraph.id}
-                                value={paragraph.text}
-                                findings={
-                                  paragraph.paragraphKey
-                                    ? (chapterEditorFindingsByParagraphKey.get(paragraph.paragraphKey) ?? [])
-                                    : []
-                                }
-                                highlight={chapterEditorHighlight}
-                                disabled={editEditorialDraft.isPending}
-                                placeholder={
-                                  chapterEditorParagraphs.length === 1 && !paragraph.text
-                                    ? "เริ่มเขียนหรือวางเนื้อหาของบทนี้..."
-                                    : undefined
-                                }
-                                onChange={value => updateChapterEditorParagraph(index, value)}
-                                onSplit={(start, end) =>
-                                  splitChapterEditorParagraph(index, start, end)
-                                }
-                                onMergePrevious={() =>
-                                  mergeChapterEditorParagraphWithPrevious(index)
-                                }
-                                onPasteParagraphs={(paragraphs, start, end) =>
-                                  pasteChapterEditorParagraphs(index, paragraphs, start, end)
-                                }
-                              />
-                            ))}
-                          </div>
+                          {/* IPE-058-C: ONE continuous editing surface. The
+                              paragraph model lives in
+                              workspaceChapterCanvas.ts — no per-paragraph
+                              textareas. */}
+                          <ChapterEditorCanvas
+                            value={chapterEditorText}
+                            flatFindings={chapterEditorCanvasFindings}
+                            highlight={chapterEditorHighlight}
+                            disabled={editEditorialDraft.isPending}
+                            placeholder={
+                              chapterEditorParagraphs.length <= 1 &&
+                              !chapterEditorText
+                                ? "เริ่มเขียนหรือวางเนื้อหาของบทนี้..."
+                                : undefined
+                            }
+                            textareaRef={chapterEditorCanvasRef}
+                            onChange={(value, _caret) =>
+                              applyChapterEditorCanvasChange(value, false)
+                            }
+                            onKeyDown={chapterEditorCanvasKeyDown}
+                            onPaste={chapterEditorCanvasPaste}
+                          />
                         </div>
 
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="text-xs text-muted-foreground">
-                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · วางจาก ChatGPT/Google Docs จะตัดบรรทัดว่างออกอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
+                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · Ctrl/Cmd+Z / Ctrl+Y = เลิก/ทำซ้ำ · วางจาก ChatGPT/Google Docs จะจัดย่อหน้าอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
                           </div>
                           <Button
                             type="button"
                             disabled={
                               editEditorialDraft.isPending ||
-                              chapterEditorText === chapterEditorTarget.expectedText
+                              chapterEditorSaveProjection.text === chapterEditorTarget.expectedText
                             }
                             onClick={submitChapterEditorEdit}
                           >

@@ -610,7 +610,13 @@ export async function applyEditorialEditorEdit(input: {
     const document = await loadDraftDocument(tx, current.id);
     let edited: ReturnType<typeof applyEditorialDraftEdit>;
     try {
-      edited = applyEditorialDraftEdit(document, input.command);
+      // IPE-058-C review fix: the edit idempotency payload SHA is the
+      // mutation-identity seed for minted paragraph keys — identical for an
+      // exact mutation retry, different across Draft revisions, so a freshly
+      // recreated paragraph can never resurrect a deleted paragraph's key.
+      edited = applyEditorialDraftEdit(document, input.command, {
+        identitySeed: payloadSha256,
+      });
     } catch (error) {
       mapDomainError(error);
     }

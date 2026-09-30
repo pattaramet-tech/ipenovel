@@ -30,6 +30,17 @@ export type EditorialTabEditCommand = {
   expectedTabStructuralSha256: string;
   expectedText: string;
   replacementText: string;
+  /**
+   * IPE-058-C: explicit logical paragraph identity, one entry per replacement
+   * paragraph in order. A non-empty key that exists in the current tab
+   * declares "this replacement paragraph IS that logical paragraph" (text may
+   * be edited — identity is preserved). An empty string (or a key not present
+   * in the tab) declares a NEW paragraph; the server mints a fresh key.
+   * Omitted entirely = legacy callers: identity is reconciled by exact-text
+   * occurrence matching (k-th occurrence maps to the k-th previous paragraph
+   * with identical text), so insertions never steal neighbouring keys.
+   */
+  replacementParagraphKeys?: string[];
 };
 
 export type EditorialDraftEditCommand =
@@ -117,7 +128,8 @@ function tabEditorParagraphs(value: string) {
 
 function applyEditorialTabEdit(
   document: EditorialDraftDocument,
-  command: EditorialTabEditCommand
+  command: EditorialTabEditCommand,
+  mintOptions?: { identitySeed?: string }
 ) {
   const next = cloneDocument(document);
   const matches = next.tabs
@@ -162,8 +174,68 @@ function applyEditorialTabEdit(
   }
 
   const previousParagraphs = tab.paragraphs;
+  const previousKeys = new Set(
+    previousParagraphs.map(paragraph => paragraph.paragraphKey)
+  );
+  let inheritedKeys: Array<string | null>;
+  if (command.replacementParagraphKeys) {
+    // Canvas path: the editing surface declares logical identity explicitly.
+    const provided = command.replacementParagraphKeys;
+    if (provided.length !== replacementParagraphs.length) {
+      throw new EditorialEditorDomainError(
+        "TAB_CONFLICT",
+        "Replacement paragraph identity count does not match the replacement text."
+      );
+    }
+    const seen = new Set<string>();
+    for (const key of provided) {
+      if (!key) continue;
+      if (seen.has(key)) {
+        throw new EditorialEditorDomainError(
+          "TAB_CONFLICT",
+          "Duplicate replacement paragraph identity."
+        );
+      }
+      seen.add(key);
+    }
+    inheritedKeys = provided.map(key =>
+      key && previousKeys.has(key) ? key : null
+    );
+  } else {
+    // Legacy path: deterministic occurrence matching — the k-th replacement
+    // paragraph with a given text inherits the k-th previous paragraph with
+    // the identical text. Insertions therefore never steal neighbouring keys;
+    // deleted paragraphs' keys simply disappear.
+    const available = new Map<string, string[]>();
+    for (const paragraph of previousParagraphs) {
+      const queue = available.get(paragraph.text) ?? [];
+      queue.push(paragraph.paragraphKey);
+      available.set(paragraph.text, queue);
+    }
+    inheritedKeys = replacementParagraphs.map(text => {
+      const queue = available.get(text);
+      const key = queue?.shift();
+      return key ?? null;
+    });
+  }
+
+  let mintOrdinal = 0;
+  // IPE-058-C review fix: minted keys are scoped by an immutable
+  // mutation-identity seed so a fresh logical paragraph created in a LATER
+  // Draft revision can never reuse the paragraphKey of a deleted paragraph
+  // (stale QC evidence must never retarget a recreated paragraph). The
+  // service passes the edit idempotency payload SHA — identical for an exact
+  // mutation retry (idempotent), different across Draft revisions
+  // (expectedDraftId/Version/Sha are part of the payload). Direct domain
+  // callers without a seed get "" (deterministic within one save only).
+  const identitySeed = mintOptions?.identitySeed ?? "";
   tab.paragraphs = replacementParagraphs.map((text, index) => {
-    const previous = previousParagraphs[index];
+    const inheritedKey = inheritedKeys[index];
+    const previous = inheritedKey
+      ? previousParagraphs.find(
+          paragraph => paragraph.paragraphKey === inheritedKey
+        )
+      : undefined;
     const unchanged = previous?.text === text;
     const sourceParagraphIndex =
       previous && (unchanged || previous.sourceParagraphIndex > 0)
@@ -173,12 +245,22 @@ function applyEditorialTabEdit(
       previous && (unchanged || previous.sourceParagraphIndex > 0)
         ? previous.sourceParagraphFingerprint
         : paragraphFingerprint(text);
+    // Minted keys use a dedicated domain + mutation-identity seed + per-save
+    // ordinal: unique across Draft revisions (seed), unique within one save
+    // (ordinal), and stable for an exact mutation retry.
+    const paragraphKey =
+      inheritedKey ??
+      sha256(
+        [
+          "workspace-editorial-tab-paragraph-v3",
+          tab.sourceTabId,
+          identitySeed,
+          String((mintOrdinal += 1)),
+          text,
+        ].join("\0")
+      );
     return {
-      paragraphKey:
-        previous?.paragraphKey ??
-        sha256(
-          ["workspace-editorial-tab-paragraph-v1", tab.sourceTabId, String(index), text].join("\0")
-        ),
+      paragraphKey,
       sourceParagraphIndex,
       paragraphOrder: index + 1,
       text,
@@ -215,10 +297,11 @@ function applyEditorialTabEdit(
 
 export function applyEditorialDraftEdit(
   document: EditorialDraftDocument,
-  command: EditorialDraftEditCommand
+  command: EditorialDraftEditCommand,
+  mintOptions?: { identitySeed?: string }
 ) {
   if (command.kind === "replace_tab") {
-    return applyEditorialTabEdit(document, command);
+    return applyEditorialTabEdit(document, command, mintOptions);
   }
   const next = cloneDocument(document);
   const matches: Array<{

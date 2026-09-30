@@ -461,6 +461,12 @@ const editorialEditCommandInput = z.discriminatedUnion("kind", [
     expectedTabStructuralSha256: z.string().trim().length(64),
     expectedText: z.string().max(2_000_000),
     replacementText: z.string().max(2_000_000),
+    // IPE-058-C: explicit logical paragraph identity per replacement paragraph.
+    // "" = new paragraph (server mints a fresh key). Keys are 64-char hashes.
+    replacementParagraphKeys: z
+      .array(z.union([z.string().trim().length(64), z.literal("")]))
+      .max(10_000)
+      .optional(),
   }),
 ]);
 const legacyRetirementEvidenceInput = z.object({
