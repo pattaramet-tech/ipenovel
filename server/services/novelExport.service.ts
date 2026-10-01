@@ -29,6 +29,13 @@ import {
   serializeNovelExportTxt,
   sortExportItemsCanonical,
 } from "./novelExport.domain";
+import {
+  ThaiNovelExportOptions,
+  ThaiNovelPreviewEntry,
+  buildThaiNovelExportEntries,
+  buildThaiNovelExportZip,
+  buildThaiNovelPreviewRows,
+} from "./thaiNovelExport.domain";
 
 export { MAX_EXPORT_ITEMS, MAX_EXPORT_PER_ITEM_BYTES, MAX_EXPORT_TOTAL_BYTES, NovelExportError };
 
@@ -43,6 +50,13 @@ export interface ExportSkippedItem {
   episodeNumber: string;
   title: string;
   reason: "MISSING_CONTENT";
+}
+
+/** Bounded published-episode metadata for UI scope selectors (no content). */
+export interface ExportPublishedEpisodeSummary {
+  episodeId: number;
+  episodeNumber: string;
+  title: string;
 }
 
 export interface NovelExportPreview {
@@ -112,6 +126,7 @@ function mapEpisodeToExportItem(episode: ExportableEpisodeRow): NovelExportItem 
 export async function buildNovelExportPackage(selection: ExportSelection): Promise<{
   pkg: NovelExportPackage;
   skippedItems: ExportSkippedItem[];
+  publishedEpisodeSummaries: ExportPublishedEpisodeSummary[];
 }> {
   const novel = await db.getNovelById(selection.novelId, false);
   if (!novel) {
@@ -203,6 +218,11 @@ export async function buildNovelExportPackage(selection: ExportSelection): Promi
       items: exportable,
     },
     skippedItems,
+    publishedEpisodeSummaries: publishedEpisodes.map((episode) => ({
+      episodeId: episode.id,
+      episodeNumber: String(episode.episodeNumber ?? ""),
+      title: String(episode.title ?? ""),
+    })),
   };
 }
 
@@ -254,6 +274,60 @@ export async function buildNovelZipExport(
   const { pkg, skippedItems } = await buildNovelExportPackage(selection);
   const serialized = buildNovelExportZip(pkg);
   logExportAudit("zip", selection.novelId, serialized.itemCount, serialized.content.length);
+  return {
+    ...serialized,
+    novelTitle: pkg.novelTitle,
+    skippedItems,
+  };
+}
+
+// ============ IPE-059-B: Thai-Novel upload export ============
+// Same canonical published source authority and selection semantics as A;
+// only the serialization target differs (flat upload-ready TXT files).
+
+export interface ThaiNovelExportPreview {
+  novelId: number;
+  novelTitle: string;
+  mode: "whole_novel" | "explicit_subset";
+  sourceEpisodes: ExportPublishedEpisodeSummary[];
+  entries: ThaiNovelPreviewEntry[];
+  skippedItems: ExportSkippedItem[];
+  limits: {
+    maxItems: number;
+    maxPerItemBytes: number;
+    maxTotalBytes: number;
+  };
+}
+
+export async function buildThaiNovelExportPreview(
+  selection: ExportSelection,
+  options?: ThaiNovelExportOptions
+): Promise<ThaiNovelExportPreview> {
+  const { pkg, skippedItems, publishedEpisodeSummaries } = await buildNovelExportPackage(selection);
+  const entries = buildThaiNovelExportEntries(pkg, options);
+
+  return {
+    novelId: pkg.novelId,
+    novelTitle: pkg.novelTitle,
+    mode: selection.episodeIds && selection.episodeIds.length > 0 ? "explicit_subset" : "whole_novel",
+    sourceEpisodes: publishedEpisodeSummaries,
+    entries: buildThaiNovelPreviewRows(entries),
+    skippedItems,
+    limits: {
+      maxItems: MAX_EXPORT_ITEMS,
+      maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,
+      maxTotalBytes: MAX_EXPORT_TOTAL_BYTES,
+    },
+  };
+}
+
+export async function buildThaiNovelZipExport(
+  selection: ExportSelection,
+  options?: ThaiNovelExportOptions
+): Promise<ReturnType<typeof buildThaiNovelExportZip> & { novelTitle: string; skippedItems: ExportSkippedItem[] }> {
+  const { pkg, skippedItems } = await buildNovelExportPackage(selection);
+  const serialized = buildThaiNovelExportZip(pkg, options);
+  logExportAudit("thainovel-zip", selection.novelId, serialized.itemCount, serialized.content.length);
   return {
     ...serialized,
     novelTitle: pkg.novelTitle,

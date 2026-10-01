@@ -19,6 +19,8 @@ import {
   buildNovelExportPreview,
   buildNovelTxtExport,
   buildNovelZipExport,
+  buildThaiNovelExportPreview,
+  buildThaiNovelZipExport,
 } from "../services/novelExport.service";
 
 function toTrpcError(error: unknown): TRPCError {
@@ -44,6 +46,15 @@ const exportSelectionInput = z.object({
   novelId: z.number().int().positive(),
   episodeIds: z.array(z.number().int().positive()).optional(),
 });
+
+/** IPE-059-B Thai-Novel upload options (see thaiNovelExport.domain). */
+const thaiNovelOptionsInput = z.object({
+  startEpisodeNumber: z.number().int().min(1).max(1_000_000).optional(),
+  titlePrefix: z.string().max(300).optional(),
+  appendFilenameToTitle: z.boolean().optional(),
+});
+
+const thaiNovelExportInput = exportSelectionInput.merge(thaiNovelOptionsInput);
 
 export const novelExportRouter = router({
   /**
@@ -99,4 +110,37 @@ export const novelExportRouter = router({
     maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,
     maxTotalBytes: MAX_EXPORT_TOTAL_BYTES,
   })),
+
+  // ============ IPE-059-B: Thai-Novel upload export ============
+
+  /**
+   * Preview for the Thai-Novel upload mode: source episode -> generated
+   * filename/title mapping derived from the SAME serializer the download
+   * uses. Also returns bounded published-episode metadata for the UI scope
+   * selector. No TXT content over the wire.
+   */
+  thaiNovelPreview: adminProcedure.input(thaiNovelExportInput).query(async ({ input }) => {
+    try {
+      return await buildThaiNovelExportPreview(input, input);
+    } catch (error) {
+      throw toTrpcError(error);
+    }
+  }),
+
+  /** Flat-root ZIP of upload-ready TXT files (no manifest, no contents/). */
+  thaiNovelDownloadZip: adminProcedure.input(thaiNovelExportInput).mutation(async ({ input }) => {
+    try {
+      const result = await buildThaiNovelZipExport(input, input);
+      return {
+        filename: result.filename,
+        mimeType: "application/zip" as const,
+        contentBase64: result.content.toString("base64"),
+        byteCount: result.content.length,
+        itemCount: result.itemCount,
+        entryFilenames: result.entryFilenames,
+      };
+    } catch (error) {
+      throw toTrpcError(error);
+    }
+  }),
 });

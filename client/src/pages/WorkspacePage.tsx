@@ -8,6 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { summarizeEditorialDraftTabs } from "./workspaceEditorialDraftSummary";
 import { WorkspaceEditorialToolbar } from "./WorkspaceEditorialToolbar";
+import { WorkspaceNovelExportDialog } from "./WorkspaceNovelExportDialog";
 import { groupStageDiagnostics } from "./workspaceStageDiagnostics";
 import {
   chapterEditorFindingRanges,
@@ -254,6 +255,7 @@ export default function WorkspacePage() {
   const [name, setName] = useState("");
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number>();
   const [novelId, setNovelId] = useState("");
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [existingNovelSearch, setExistingNovelSearch] = useState("");
   const [newNovelTitle, setNewNovelTitle] = useState("");
   const [episodeWorkspaceNovelId, setEpisodeWorkspaceNovelId] = useState("");
@@ -386,6 +388,9 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
+  // IPE-059-B: novels bound to the selected workspace, for the export dialog.
+  const workspaceBoundNovels = ((bindings.data as any[] | undefined) ?? [])
+    .map(({ novel }: any) => ({ novelId: novel.id as number, novelTitle: String(novel.title ?? "") }));
   const availableNovels = trpc.workspace.bindings.availablePublicationNovels.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
@@ -2229,7 +2234,25 @@ export default function WorkspacePage() {
             ลบ Workspace
           </Button>
         )}
+        {selectedWorkspaceId && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="workspace-novel-export-trigger"
+            disabled={!workspaceBoundNovels.length}
+            onClick={() => setExportDialogOpen(true)}
+          >
+            ส่งออก
+          </Button>
+        )}
       </div>
+
+      <WorkspaceNovelExportDialog
+        open={exportDialogOpen}
+        onOpenChange={setExportDialogOpen}
+        novels={workspaceBoundNovels}
+      />
 
       <section className="space-y-6">
         <Card className={workspaces.data?.length ? "hidden" : "space-y-4 p-5"}>

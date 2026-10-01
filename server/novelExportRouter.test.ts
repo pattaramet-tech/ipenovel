@@ -123,3 +123,83 @@ describe("admin.novelExport - authorization", () => {
     expect(previewSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("admin.novelExport.thaiNovel* - authorization (IPE-059-B)", () => {
+  it("anonymous caller -> FORBIDDEN, the Thai-Novel service is never invoked", async () => {
+    const previewSpy = vi.spyOn(novelExportService, "buildThaiNovelExportPreview");
+    const zipSpy = vi.spyOn(novelExportService, "buildThaiNovelZipExport");
+    const caller = appRouter.createCaller(contextFor(null));
+    await expect(caller.admin.novelExport.thaiNovelPreview(PREVIEW_INPUT)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.novelExport.thaiNovelDownloadZip(PREVIEW_INPUT)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    expect(previewSpy).not.toHaveBeenCalled();
+    expect(zipSpy).not.toHaveBeenCalled();
+  });
+
+  it("non-admin caller -> FORBIDDEN, the Thai-Novel service is never invoked", async () => {
+    const previewSpy = vi.spyOn(novelExportService, "buildThaiNovelExportPreview");
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "user" })));
+    await expect(caller.admin.novelExport.thaiNovelPreview(PREVIEW_INPUT)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.novelExport.thaiNovelDownloadZip(PREVIEW_INPUT)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    expect(previewSpy).not.toHaveBeenCalled();
+  });
+
+  it("admin caller reaches the Thai-Novel preview with validated options", async () => {
+    const previewSpy = vi.spyOn(novelExportService, "buildThaiNovelExportPreview").mockResolvedValue({
+      novelId: 1,
+      novelTitle: "เรื่องทดสอบ",
+      mode: "whole_novel",
+      sourceEpisodes: [{ episodeId: 10, episodeNumber: "1", title: "ตอนที่ 1" }],
+      entries: [{ episodeId: 10, sourceEpisodeNumber: "1", generatedNumber: "001", filename: "001.txt", title: "ตอนที่ 1", byteLength: 10 }],
+      skippedItems: [],
+      limits: { maxItems: 500, maxPerItemBytes: 8 * 1024 * 1024, maxTotalBytes: 40 * 1024 * 1024 },
+    });
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
+    const result = await caller.admin.novelExport.thaiNovelPreview({
+      novelId: 1,
+      startEpisodeNumber: 101,
+      titlePrefix: "ตอนที่",
+      appendFilenameToTitle: true,
+    });
+    expect(result.entries[0].filename).toBe("001.txt");
+    expect(previewSpy).toHaveBeenCalledWith(
+      { novelId: 1, startEpisodeNumber: 101, titlePrefix: "ตอนที่", appendFilenameToTitle: true },
+      { novelId: 1, startEpisodeNumber: 101, titlePrefix: "ตอนที่", appendFilenameToTitle: true }
+    );
+  });
+
+  it("admin Thai-Novel ZIP download returns the base64 transport contract", async () => {
+    vi.spyOn(novelExportService, "buildThaiNovelZipExport").mockResolvedValue({
+      filename: "เรื่องทดสอบ-thainovel.zip",
+      mimeType: "application/zip",
+      content: Buffer.from("fake-thai-zip"),
+      entries: [],
+      entryFilenames: ["001.txt"],
+      itemCount: 1,
+      totalPlaintextBytes: 13,
+      novelTitle: "เรื่องทดสอบ",
+      skippedItems: [],
+    } as any);
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
+    const result = await caller.admin.novelExport.thaiNovelDownloadZip(PREVIEW_INPUT);
+    expect(result.mimeType).toBe("application/zip");
+    expect(result.contentBase64).toBe(Buffer.from("fake-thai-zip").toString("base64"));
+    expect(result.byteCount).toBe(13);
+    expect(result.entryFilenames).toEqual(["001.txt"]);
+  });
+
+  it("rejects invalid Thai-Novel option input before reaching the service", async () => {
+    const previewSpy = vi.spyOn(novelExportService, "buildThaiNovelExportPreview");
+    const caller = appRouter.createCaller(contextFor(fakeUser({ role: "admin" })));
+    await expect(
+      caller.admin.novelExport.thaiNovelPreview({ novelId: 1, startEpisodeNumber: 0 })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.admin.novelExport.thaiNovelDownloadZip({ novelId: 1, titlePrefix: "x".repeat(301) })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(previewSpy).not.toHaveBeenCalled();
+  });
+});
