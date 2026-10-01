@@ -1,35 +1,35 @@
 /**
- * IPE-059-B — Thai-Novel upload export domain (PURE module).
+ * IPE-059-C source fix — Thai-Novel upload export domain (PURE module).
  *
- * Builds upload-ready flat TXT files for the Thai-Novel portal, where the
- * portal derives episode order from FILENAME ordering (001.txt, 002.txt, ...)
- * and each file's first physical line is the episode title.
+ * The attached, known-good Naruto bulk TXT archive is the source-of-truth
+ * contract for Thai-Novel output:
  *
- * Proven portal-compatible TXT contract (preserved from the legacy working
- * exporter — do not "fix" the blank line without evidence):
+ * - one logical chapter per TXT file;
+ * - the TXT filename is the sanitized first-line chapter heading;
+ * - the first physical line inside the TXT is the original chapter heading;
+ * - exactly one blank separator line follows the heading;
+ * - pack wrapper lines such as "แพ็กตอน 141 - 190 001" never appear in an
+ *   exported chapter file;
+ * - flat ZIP root, UTF-8 without BOM, LF newlines, no manifest.csv.
  *
- *   <episode title>\n
- *   \n
- *   <body>\n
- *
- * i.e. title + "\n\n" + normalized content. No manifest.csv, no contents/
- * folder: the ZIP is a convenience container of flat `NNN.txt` files only.
- *
- * Pure module: no database, no side effects. Reuses the IPE-059-A export
- * domain for source limits, canonical ordering, text normalization and
- * filename safety so both export modes share one authority.
+ * Range/pack Episodes are therefore expanded into their embedded "บทที่ N"
+ * sections before serialization. The expansion is fail-closed: a range must
+ * contain the exact contiguous chapter sequence declared by episodeNumber.
  */
 
 import AdmZip from "adm-zip";
 import {
   FIXED_ZIP_TIMESTAMP,
+  MAX_EXPORT_ITEMS,
   MAX_EXPORT_PER_ITEM_BYTES,
+  MAX_EXPORT_TOTAL_BYTES,
   MAX_EXPORT_ZIP_BYTES,
   NovelExportError,
   NovelExportItem,
   NovelExportPackage,
   flattenExportManifestField,
   normalizeExportText,
+  parseExportEpisodeIdentity,
   sanitizeExportFilenameComponent,
   sortExportItemsCanonical,
   validateExportPackage,
@@ -37,29 +37,44 @@ import {
 
 /** Filename suffix distinguishing Thai-Novel upload packages from A backups. */
 export const THAI_NOVEL_ZIP_SUFFIX = "-thainovel";
-/** Proven separator between title line and body (legacy exporter behavior). */
+/** Proven separator between title line and body. */
 export const THAI_NOVEL_TITLE_SEPARATOR = "\n\n";
-/** Minimum zero-padding width for generated filenames; never truncates. */
+/** Minimum zero-padding width retained for optional generated numbering. */
 export const THAI_NOVEL_FILENAME_PAD = 3;
 
+const THAI_NOVEL_CHAPTER_HEADING_RE = /^บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/gm;
+const THAI_NOVEL_SINGLE_CHAPTER_HEADING_RE = /^บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/;
+const THAI_NOVEL_PACK_HEADER_RE = /^แพ็กตอน[ \t]+(\d+)[ \t]*-[ \t]*(\d+)(?:[ \t]+\d+)?$/;
+
 export interface ThaiNovelExportOptions {
-  /** First generated episode number (default 1). */
+  /**
+   * Optional sequential chapter-number override. When omitted, embedded
+   * chapter numbers are preserved exactly as in the source heading.
+   */
   startEpisodeNumber?: number;
   /** Prepended to the title line, joined with a single space (default none). */
   titlePrefix?: string;
-  /** Append the generated filename stem to the title line (default false). */
+  /** Append the generated chapter-number token to the title (default false). */
   appendFilenameToTitle?: boolean;
+}
+
+export interface NormalizedThaiNovelExportOptions {
+  startEpisodeNumber: number | null;
+  titlePrefix: string;
+  appendFilenameToTitle: boolean;
 }
 
 export interface ThaiNovelExportEntry {
   episodeId: number;
-  /** Raw canonical episodeNumber as stored (e.g. "391", "001-050"). */
+  /** Raw canonical Episode identity as stored (e.g. "141 - 190"). */
   sourceEpisodeNumber: string;
-  /** Generated sequential number after start-override renumbering ("001"). */
+  /** Logical chapter number after expanding a pack, e.g. "141". */
+  sourceChapterNumber: string;
+  /** Sequential/preserved numeric token, zero-padded to 3 digits minimum. */
   generatedNumber: string;
-  /** Flat ZIP-root filename ("001.txt"). */
+  /** Flat ZIP-root filename derived from the first-line title. */
   filename: string;
-  /** Final first-line title after prefix/append options. */
+  /** Final first-line title after optional renumber/prefix/append transforms. */
   title: string;
   /** Full TXT bytes content as string (UTF-8 when encoded). */
   text: string;
@@ -70,16 +85,26 @@ export interface ThaiNovelExportEntry {
 export interface ThaiNovelPreviewEntry {
   episodeId: number;
   sourceEpisodeNumber: string;
+  sourceChapterNumber: string;
   generatedNumber: string;
   filename: string;
   title: string;
   byteLength: number;
 }
 
-export function normalizeThaiNovelOptions(options: ThaiNovelExportOptions | undefined): Required<ThaiNovelExportOptions> {
+interface ThaiNovelLogicalChapter {
+  item: NovelExportItem;
+  sourceChapterNumber: string;
+  sourceTitle: string;
+  body: string;
+}
+
+export function normalizeThaiNovelOptions(
+  options: ThaiNovelExportOptions | undefined
+): NormalizedThaiNovelExportOptions {
   const raw = options ?? {};
-  const start = raw.startEpisodeNumber ?? 1;
-  if (!Number.isInteger(start) || start < 1) {
+  const start = raw.startEpisodeNumber ?? null;
+  if (start !== null && (!Number.isInteger(start) || start < 1)) {
     throw new NovelExportError(
       "EXPORT_INVALID_SALE_METADATA",
       `เริ่มตอนที่ต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป (พบ "${String(raw.startEpisodeNumber)}")`,
@@ -93,16 +118,17 @@ export function normalizeThaiNovelOptions(options: ThaiNovelExportOptions | unde
   };
 }
 
-/**
- * Sequential generated number: zero-padded to 3 digits minimum, never
- * truncated (1000th item -> "1000"). Deterministic.
- */
+/** Zero-pad to 3 digits minimum; never truncate larger numbers. */
 export function resolveThaiNovelGeneratedNumber(startNumber: number, index: number): string {
   return String(startNumber + index).padStart(THAI_NOVEL_FILENAME_PAD, "0");
 }
 
-export function resolveThaiNovelFilename(generatedNumber: string): string {
-  return `${generatedNumber}.txt`;
+/**
+ * Known-good Naruto contract: filename stem mirrors the first physical line,
+ * with only filesystem-unsafe characters sanitized.
+ */
+export function resolveThaiNovelFilename(title: string, fallbackStem = "chapter"): string {
+  return `${sanitizeExportFilenameComponent(title, fallbackStem)}.txt`;
 }
 
 function titleAlreadyHasPrefix(title: string, prefix: string): boolean {
@@ -113,18 +139,27 @@ function titleAlreadyEndsWithToken(title: string, token: string): boolean {
   return title === token || title.endsWith(` ${token}`);
 }
 
+function rewriteLeadingThaiChapterNumber(title: string, chapterNumber: number): string {
+  return title.replace(/^บทที่[ \t]+\d+(?=[ \t]|$)/, `บทที่ ${chapterNumber}`);
+}
+
 /**
- * Final first-line title. The title must stay a single physical line (the
- * portal contract reads it as line 1), so it is single-line flattened like
- * manifest cells. Prefix/filename are never duplicated when already present.
+ * Final first-line title. By default source chapter headings are preserved
+ * verbatim. An explicit startEpisodeNumber may renumber a leading "บทที่ N"
+ * token; prefix/append remain opt-in compatibility features.
  */
 export function resolveThaiNovelTitle(
-  item: Pick<NovelExportItem, "episodeTitle">,
+  sourceTitle: string,
   generatedNumber: string,
-  options: Required<ThaiNovelExportOptions>
+  options: NormalizedThaiNovelExportOptions,
+  explicitChapterNumber?: number
 ): string {
-  let title = flattenExportManifestField(item.episodeTitle);
+  let title = flattenExportManifestField(sourceTitle);
   if (!title) title = generatedNumber;
+
+  if (explicitChapterNumber !== undefined) {
+    title = rewriteLeadingThaiChapterNumber(title, explicitChapterNumber);
+  }
 
   const prefix = options.titlePrefix;
   if (prefix && !titleAlreadyHasPrefix(title, prefix)) {
@@ -136,44 +171,169 @@ export function resolveThaiNovelTitle(
   return title;
 }
 
-/**
- * Full TXT body for one entry: proven portal contract
- * title + "\n\n" + canonical normalized content (LF, UTF-8, no BOM).
- */
-export function buildThaiNovelTxt(item: NovelExportItem, title: string): string {
-  return `${title}${THAI_NOVEL_TITLE_SEPARATOR}${normalizeExportText(item.content)}`;
+/** Full TXT: title + blank line + canonical LF-normalized body. */
+export function buildThaiNovelTxt(body: string, title: string): string {
+  return `${title}${THAI_NOVEL_TITLE_SEPARATOR}${normalizeExportText(body)}`;
+}
+
+function stripOuterNewlines(text: string): string {
+  return text.replace(/^\n+/, "").replace(/\n+$/, "");
+}
+
+function invalidPack(item: NovelExportItem, message: string): never {
+  throw new NovelExportError(
+    "EXPORT_INVALID_EPISODE_IDENTITY",
+    `${message} (episodeId ${item.episodeId}, episodeNumber "${item.episodeNumber}")`,
+    { episodeId: item.episodeId }
+  );
+}
+
+function expandRangePack(item: NovelExportItem, start: number, end: number): ThaiNovelLogicalChapter[] {
+  if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) {
+    return invalidPack(item, "ช่วงตอนของแพ็กต้องเป็นจำนวนเต็มเรียงจากน้อยไปมาก");
+  }
+
+  const normalized = normalizeExportText(item.content);
+  const matches: RegExpExecArray[] = [];
+  THAI_NOVEL_CHAPTER_HEADING_RE.lastIndex = 0;
+  let headingMatch: RegExpExecArray | null;
+  while ((headingMatch = THAI_NOVEL_CHAPTER_HEADING_RE.exec(normalized)) !== null) {
+    matches.push(headingMatch);
+  }
+  if (matches.length === 0) {
+    return invalidPack(item, "ไม่พบหัวบท 'บทที่ N' ภายในตอนแบบแพ็ก");
+  }
+
+  const firstIndex = matches[0].index ?? 0;
+  const preamble = normalized.slice(0, firstIndex).trim();
+  if (preamble) {
+    const header = preamble.match(THAI_NOVEL_PACK_HEADER_RE);
+    if (!header || Number(header[1]) !== start || Number(header[2]) !== end) {
+      return invalidPack(item, "พบบรรทัดก่อนหัวบทที่ไม่ใช่ pack header ที่ตรงกับช่วงตอน");
+    }
+  }
+
+  const expectedCount = end - start + 1;
+  if (matches.length !== expectedCount) {
+    return invalidPack(item, `จำนวนหัวบทในแพ็กไม่ตรงช่วงที่ประกาศ (พบ ${matches.length}, คาด ${expectedCount})`);
+  }
+
+  const numbers = matches.map((match) => Number(match[1]));
+  for (let index = 0; index < numbers.length; index += 1) {
+    const expected = start + index;
+    if (numbers[index] !== expected) {
+      return invalidPack(item, `ลำดับหัวบทในแพ็กไม่ต่อเนื่อง (พบ ${numbers[index]}, คาด ${expected})`);
+    }
+  }
+
+  return matches.map((match, index) => {
+    const matchIndex = match.index ?? 0;
+    const bodyStart = matchIndex + match[0].length;
+    const bodyEnd = index + 1 < matches.length ? (matches[index + 1].index ?? normalized.length) : normalized.length;
+    return {
+      item,
+      sourceChapterNumber: match[1],
+      sourceTitle: match[0].trim(),
+      body: stripOuterNewlines(normalized.slice(bodyStart, bodyEnd)),
+    };
+  });
+}
+
+function expandSingleEpisode(item: NovelExportItem, sourceNumber: number): ThaiNovelLogicalChapter[] {
+  const normalized = normalizeExportText(item.content);
+  const withoutLeadingBlankLines = normalized.replace(/^\n+/, "");
+  const firstBreak = withoutLeadingBlankLines.indexOf("\n");
+  const firstLine = firstBreak >= 0 ? withoutLeadingBlankLines.slice(0, firstBreak) : withoutLeadingBlankLines;
+  const heading = firstLine.match(THAI_NOVEL_SINGLE_CHAPTER_HEADING_RE);
+
+  if (heading && Number(heading[1]) === sourceNumber) {
+    const body = firstBreak >= 0 ? withoutLeadingBlankLines.slice(firstBreak + 1) : "";
+    return [{
+      item,
+      sourceChapterNumber: heading[1],
+      sourceTitle: firstLine.trim(),
+      body: stripOuterNewlines(body),
+    }];
+  }
+
+  return [{
+    item,
+    sourceChapterNumber: String(sourceNumber),
+    sourceTitle: flattenExportManifestField(item.episodeTitle) || String(sourceNumber),
+    body: normalized,
+  }];
 }
 
 /**
- * Deterministic entries for the package: canonical source ordering first,
- * then sequential renumbering from the start number — a selected subset
- * (5, 7, 10 with start=1) becomes 001/002/003 in canonical source order.
+ * Expand canonical source Episodes into logical Thai-Novel chapters.
+ * Range identities MUST split exactly to every declared chapter.
+ */
+export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNovelLogicalChapter[] {
+  validateExportPackage(pkg);
+
+  const chapters = sortExportItemsCanonical(pkg.items).flatMap((item) => {
+    const identity = parseExportEpisodeIdentity(item.episodeNumber);
+    if (!identity) {
+      return invalidPack(item, "episodeNumber ไม่มีเลขตอนที่อ่านได้");
+    }
+    return identity.kind === "range"
+      ? expandRangePack(item, identity.start, identity.end)
+      : expandSingleEpisode(item, identity.start);
+  });
+
+  if (chapters.length > MAX_EXPORT_ITEMS) {
+    throw new NovelExportError(
+      "EXPORT_LIMIT_ITEMS",
+      `จำนวนบทหลังแยกแพ็กเกินกำหนด (${chapters.length} > ${MAX_EXPORT_ITEMS})`,
+      { itemCount: chapters.length, maxItems: MAX_EXPORT_ITEMS }
+    );
+  }
+
+  return chapters;
+}
+
+/**
+ * Deterministic entries. Default behavior preserves embedded chapter numbers
+ * and source headings, matching the attached Naruto bulk TXT example.
  */
 export function buildThaiNovelExportEntries(
   pkg: NovelExportPackage,
   options?: ThaiNovelExportOptions
 ): ThaiNovelExportEntry[] {
-  validateExportPackage(pkg);
   const opts = normalizeThaiNovelOptions(options);
+  const chapters = expandThaiNovelLogicalChapters(pkg);
+  let totalBytes = 0;
 
-  return sortExportItemsCanonical(pkg.items).map((item, index) => {
-    const generatedNumber = resolveThaiNovelGeneratedNumber(opts.startEpisodeNumber, index);
-    const filename = resolveThaiNovelFilename(generatedNumber);
-    const title = resolveThaiNovelTitle(item, generatedNumber, opts);
-    const text = buildThaiNovelTxt(item, title);
+  const entries = chapters.map((chapter, index) => {
+    const sourceChapterNumber = Number(chapter.sourceChapterNumber);
+    const explicitChapterNumber = opts.startEpisodeNumber === null
+      ? undefined
+      : opts.startEpisodeNumber + index;
+    const numericForToken = explicitChapterNumber ?? sourceChapterNumber;
+    const generatedNumber = String(numericForToken).padStart(THAI_NOVEL_FILENAME_PAD, "0");
+    const title = resolveThaiNovelTitle(
+      chapter.sourceTitle,
+      generatedNumber,
+      opts,
+      explicitChapterNumber
+    );
+    const filename = resolveThaiNovelFilename(title, generatedNumber);
+    const text = buildThaiNovelTxt(chapter.body, title);
     const byteLength = Buffer.byteLength(text, "utf8");
 
     if (byteLength > MAX_EXPORT_PER_ITEM_BYTES) {
       throw new NovelExportError(
         "EXPORT_LIMIT_ENTRY_BYTES",
-        `ไฟล์ TXT ใหญ่เกินกำหนด (episodeId ${item.episodeId}, ${byteLength} bytes > ${MAX_EXPORT_PER_ITEM_BYTES})`,
-        { episodeId: item.episodeId, entryBytes: byteLength, maxEntryBytes: MAX_EXPORT_PER_ITEM_BYTES }
+        `ไฟล์ TXT ใหญ่เกินกำหนด (episodeId ${chapter.item.episodeId}, ${byteLength} bytes > ${MAX_EXPORT_PER_ITEM_BYTES})`,
+        { episodeId: chapter.item.episodeId, entryBytes: byteLength, maxEntryBytes: MAX_EXPORT_PER_ITEM_BYTES }
       );
     }
+    totalBytes += byteLength;
 
     return {
-      episodeId: item.episodeId,
-      sourceEpisodeNumber: item.episodeNumber,
+      episodeId: chapter.item.episodeId,
+      sourceEpisodeNumber: chapter.item.episodeNumber,
+      sourceChapterNumber: chapter.sourceChapterNumber,
       generatedNumber,
       filename,
       title,
@@ -181,9 +341,19 @@ export function buildThaiNovelExportEntries(
       byteLength,
     };
   });
+
+  if (totalBytes > MAX_EXPORT_TOTAL_BYTES) {
+    throw new NovelExportError(
+      "EXPORT_LIMIT_TOTAL_BYTES",
+      `ขนาด TXT รวมหลังแยกแพ็กเกินกำหนด (${totalBytes} bytes > ${MAX_EXPORT_TOTAL_BYTES})`,
+      { totalBytes, maxTotalBytes: MAX_EXPORT_TOTAL_BYTES }
+    );
+  }
+
+  return entries;
 }
 
-/** Preview rows derived from the exact same serializer output as the download. */
+/** Preview rows derived from the exact same entries as the download. */
 export function buildThaiNovelPreviewRows(entries: ThaiNovelExportEntry[]): ThaiNovelPreviewEntry[] {
   return entries.map(({ text: _text, ...preview }) => preview);
 }
@@ -203,11 +373,7 @@ export interface ThaiNovelZipExport {
   totalPlaintextBytes: number;
 }
 
-/**
- * Flat-root ZIP of upload-ready TXT files: `001.txt`, `002.txt`, ... at the
- * archive root — NO manifest.csv, NO contents/ folder. Deterministic bytes:
- * canonical entry order + fixed entry timestamps (same infrastructure as A).
- */
+/** Flat-root ZIP of one-chapter-per-TXT files. */
 export function buildThaiNovelExportZip(
   pkg: NovelExportPackage,
   options?: ThaiNovelExportOptions
@@ -217,8 +383,6 @@ export function buildThaiNovelExportZip(
 
   const seenEntryPaths = new Set<string>();
   for (const entry of entries) {
-    // Defense in depth: filenames are generated numerically here, but the
-    // guard is cheap and keeps the "never overwrite an entry silently" rule.
     if (!entry.filename || entry.filename.includes("\0") || entry.filename.includes("/") || entry.filename.includes("\\")) {
       throw new NovelExportError("EXPORT_UNSAFE_PATH", `พบชื่อไฟล์ที่ไม่ปลอดภัย: "${entry.filename}"`);
     }
@@ -248,8 +412,6 @@ export function buildThaiNovelExportZip(
     mimeType: "application/zip",
     content,
     entries: buildThaiNovelPreviewRows(entries),
-    // adm-zip physically stores entries lexicographically — report the
-    // actual archive order (deterministic), matching A's behavior.
     entryFilenames: zip.getEntries().map((zipEntry) => zipEntry.entryName),
     itemCount: entries.length,
     totalPlaintextBytes: entries.reduce((sum, entry) => sum + entry.byteLength, 0),

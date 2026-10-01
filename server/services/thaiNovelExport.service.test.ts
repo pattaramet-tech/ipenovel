@@ -1,8 +1,9 @@
-// IPE-059-B - Thai-Novel export service tests: published-only authority and
-// selection safety shared with IPE-059-A, exercised through the Thai-Novel
-// preview/ZIP builders. The DB layer (`../db`) is mocked entirely.
+// IPE-059-C — Thai-Novel service tests.
+// DB is mocked; these tests pin published-only authority, pack expansion,
+// selection safety, preview/download parity, and flat Naruto-style filenames.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import AdmZip from "adm-zip";
 
 vi.mock("../db", () => ({
   getNovelById: vi.fn(),
@@ -47,6 +48,14 @@ function makeEpisode(overrides: Partial<EpisodeRow> = {}): EpisodeRow {
   };
 }
 
+function makePackContent(start: number, end: number, counter = "001"): string {
+  const chapters = Array.from({ length: end - start + 1 }, (_, index) => {
+    const chapter = start + index;
+    return `บทที่ ${chapter} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท ${chapter}`;
+  });
+  return `แพ็กตอน ${start} - ${end} ${counter}\n\n${chapters.join("\n\n")}`;
+}
+
 function mockNovel(novelId: number, title = "ตำนานมังกร") {
   mockedDb.getNovelById.mockResolvedValue({ id: novelId, title } as any);
 }
@@ -56,47 +65,122 @@ beforeEach(() => {
 });
 
 describe("Thai-Novel preview - published-only authority", () => {
-  it("lists and exports only published episodes; drafts never leak", async () => {
+  it("lists and exports only published Episodes; drafts never leak", async () => {
     mockNovel(1);
     mockedDb.getEpisodesByNovelId.mockResolvedValue([
-      makeEpisode({ id: 10, episodeNumber: "1" }),
+      makeEpisode({ id: 10, episodeNumber: "1", title: "บทที่ 1", content: "บทที่ 1 จุดเริ่มต้น\n\nเนื้อหา" }),
       makeEpisode({ id: 11, episodeNumber: "2", isPublished: false, title: "ฉบับร่าง" }),
     ] as any);
 
     const preview = await buildThaiNovelExportPreview({ novelId: 1 });
-    expect(preview.sourceEpisodes.map((e) => e.episodeId)).toEqual([10]);
-    expect(preview.entries.map((e) => e.filename)).toEqual(["001.txt"]);
+    expect(preview.sourceEpisodes.map((entry) => entry.episodeId)).toEqual([10]);
+    expect(preview.entries.map((entry) => entry.filename)).toEqual(["บทที่ 1 จุดเริ่มต้น.txt"]);
     expect(JSON.stringify(preview)).not.toContain("ฉบับร่าง");
-    expect(JSON.stringify(preview)).not.toContain("เนื้อหา"); // no content over the wire
+    expect(JSON.stringify(preview)).not.toContain("เนื้อหา");
   });
 
-  it("preview derives from the same serializer as the download", async () => {
+  it("preview derives from the exact same expanded serializer as download", async () => {
     mockNovel(1);
     mockedDb.getEpisodesByNovelId.mockResolvedValue([
-      makeEpisode({ id: 10, episodeNumber: "1", title: "การพบกันอีกครั้ง" }),
+      makeEpisode({
+        id: 10,
+        episodeNumber: "141 - 143",
+        title: "แพ็กตอน 141 - 143 001",
+        content: makePackContent(141, 143),
+      }),
     ] as any);
 
-    const preview = await buildThaiNovelExportPreview({ novelId: 1 }, { titlePrefix: "ตอนที่" });
-    const zip = await buildThaiNovelZipExport({ novelId: 1 }, { titlePrefix: "ตอนที่" });
+    const preview = await buildThaiNovelExportPreview({ novelId: 1 });
+    const zip = await buildThaiNovelZipExport({ novelId: 1 });
 
-    expect(preview.entries[0].title).toBe("ตอนที่ การพบกันอีกครั้ง");
+    expect(preview.sourceEpisodes).toHaveLength(1);
+    expect(preview.entries).toHaveLength(3);
     expect(zip.entries).toEqual(preview.entries);
     expect(zip.filename).toBe("ตำนานมังกร-thainovel.zip");
+    expect(zip.entryFilenames).toEqual([
+      "บทที่ 141 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 142 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 143 จ้าวกลยุทธ์โปเกมอน.txt",
+    ]);
   });
 });
 
-describe("Thai-Novel export - selection safety", () => {
-  it("exports an explicit subset with renumbering, same novel only", async () => {
-    mockNovel(1);
+describe("Thai-Novel pack split", () => {
+  it("turns one published pack Episode into one TXT per embedded chapter and removes the pack wrapper", async () => {
+    mockNovel(1, "เกิดใหม่ในโลกโปเกมอน เส้นทางจ้าวกลยุทธ์");
     mockedDb.getEpisodesByNovelId.mockResolvedValue([
-      makeEpisode({ id: 10, episodeNumber: "5" }),
-      makeEpisode({ id: 11, episodeNumber: "7" }),
-      makeEpisode({ id: 12, episodeNumber: "10" }),
+      makeEpisode({
+        id: 50,
+        episodeNumber: "141 - 143",
+        title: "แพ็กตอน 141 - 143 001",
+        content: makePackContent(141, 143),
+      }),
     ] as any);
 
-    const preview = await buildThaiNovelExportPreview({ novelId: 1, episodeIds: [11] }, { startEpisodeNumber: 101 });
+    const result = await buildThaiNovelZipExport({ novelId: 1 });
+    expect(result.itemCount).toBe(3);
+
+    const zip = new AdmZip(result.content);
+    const first = zip.getEntry("บทที่ 141 จ้าวกลยุทธ์โปเกมอน.txt")!.getData().toString("utf8");
+    expect(first).toBe("บทที่ 141 จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท 141");
+    expect(first).not.toContain("แพ็กตอน");
+  });
+
+  it("fails closed if a pack range and embedded chapter sequence disagree", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({
+        id: 50,
+        episodeNumber: "141 - 143",
+        content: "แพ็กตอน 141 - 143 001\n\nบทที่ 141 A\n\nหนึ่ง\n\nบทที่ 143 C\n\nสาม",
+      }),
+    ] as any);
+
+    await expect(buildThaiNovelZipExport({ novelId: 1 })).rejects.toMatchObject({
+      code: "EXPORT_INVALID_EPISODE_IDENTITY",
+    });
+  });
+});
+
+describe("Thai-Novel selection safety", () => {
+  it("an explicit subset selects source Episodes; selecting one pack exports all chapters inside that selected pack", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({ id: 10, episodeNumber: "5", title: "บทที่ 5", content: "บทที่ 5 ห้า\n\nห้า" }),
+      makeEpisode({
+        id: 11,
+        episodeNumber: "141 - 143",
+        title: "แพ็กตอน 141 - 143 001",
+        content: makePackContent(141, 143),
+      }),
+      makeEpisode({ id: 12, episodeNumber: "200", title: "บทที่ 200", content: "บทที่ 200 สองร้อย\n\nสองร้อย" }),
+    ] as any);
+
+    const preview = await buildThaiNovelExportPreview({ novelId: 1, episodeIds: [11] });
     expect(preview.mode).toBe("explicit_subset");
-    expect(preview.entries.map((e) => [e.sourceEpisodeNumber, e.filename])).toEqual([["7", "101.txt"]]);
+    expect(preview.entries.map((entry) => entry.sourceChapterNumber)).toEqual(["141", "142", "143"]);
+  });
+
+  it("supports an explicit start-number override after pack expansion", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({
+        id: 11,
+        episodeNumber: "141 - 143",
+        title: "แพ็กตอน 141 - 143 001",
+        content: makePackContent(141, 143),
+      }),
+    ] as any);
+
+    const preview = await buildThaiNovelExportPreview(
+      { novelId: 1, episodeIds: [11] },
+      { startEpisodeNumber: 391 }
+    );
+    expect(preview.entries.map((entry) => entry.filename)).toEqual([
+      "บทที่ 391 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 392 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 393 จ้าวกลยุทธ์โปเกมอน.txt",
+    ]);
   });
 
   it("fails closed on unknown episode ids", async () => {
@@ -132,13 +216,13 @@ describe("Thai-Novel export - selection safety", () => {
   it("skips-and-reports missing content for whole-novel exports", async () => {
     mockNovel(1);
     mockedDb.getEpisodesByNovelId.mockResolvedValue([
-      makeEpisode({ id: 10, episodeNumber: "1" }),
+      makeEpisode({ id: 10, episodeNumber: "1", title: "หนึ่ง" }),
       makeEpisode({ id: 11, episodeNumber: "2", content: null }),
     ] as any);
 
     const zip = await buildThaiNovelZipExport({ novelId: 1 });
     expect(zip.itemCount).toBe(1);
-    expect(zip.skippedItems.map((s) => s.episodeId)).toEqual([11]);
+    expect(zip.skippedItems.map((entry) => entry.episodeId)).toEqual([11]);
   });
 
   it("rejects a nonexistent novel", async () => {
@@ -150,16 +234,17 @@ describe("Thai-Novel export - selection safety", () => {
 });
 
 describe("Thai-Novel ZIP download contract", () => {
-  it("returns a flat-root archive with deterministic filename", async () => {
+  it("returns a flat-root archive whose filenames mirror chapter headings", async () => {
     mockNovel(1);
     mockedDb.getEpisodesByNovelId.mockResolvedValue([
-      makeEpisode({ id: 10, episodeNumber: "1" }),
-      makeEpisode({ id: 11, episodeNumber: "2" }),
+      makeEpisode({ id: 10, episodeNumber: "1", title: "หนึ่ง", content: "บทที่ 1 หนึ่ง\n\nเนื้อหา" }),
+      makeEpisode({ id: 11, episodeNumber: "2", title: "สอง", content: "บทที่ 2 สอง\n\nเนื้อหา" }),
     ] as any);
 
-    const zip = await buildThaiNovelZipExport({ novelId: 1 }, { startEpisodeNumber: 100 });
+    const zip = await buildThaiNovelZipExport({ novelId: 1 });
     expect(zip.mimeType).toBe("application/zip");
-    expect(zip.entryFilenames).toEqual(["100.txt", "101.txt"]);
+    expect(zip.entryFilenames).toEqual(["บทที่ 1 หนึ่ง.txt", "บทที่ 2 สอง.txt"]);
+    expect(zip.entryFilenames.every((name) => !name.includes("/"))).toBe(true);
     expect(zip.filename).toBe("ตำนานมังกร-thainovel.zip");
   });
 });
