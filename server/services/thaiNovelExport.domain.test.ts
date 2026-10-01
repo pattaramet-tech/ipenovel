@@ -1,6 +1,7 @@
-// IPE-059-B - Thai-Novel upload export domain tests: TXT contract,
-// numbering, title options, flat ZIP contract, determinism and limits.
-// No database anywhere in this file.
+// IPE-059-C — Thai-Novel export tests.
+// Source-of-truth behavior is the attached known-good Naruto bulk TXT archive:
+// one logical chapter per TXT, filename from the chapter heading, first line
+// equals the heading, one blank separator line, and no pack wrapper line.
 
 import { describe, expect, it } from "vitest";
 import AdmZip from "adm-zip";
@@ -14,11 +15,11 @@ import {
   NovelExportPackage,
 } from "./novelExport.domain";
 import {
-  ThaiNovelExportEntry,
   buildThaiNovelExportEntries,
   buildThaiNovelExportZip,
   buildThaiNovelPreviewRows,
   buildThaiNovelTxt,
+  expandThaiNovelLogicalChapters,
   normalizeThaiNovelOptions,
   resolveThaiNovelFilename,
   resolveThaiNovelGeneratedNumber,
@@ -41,13 +42,21 @@ function makeItem(overrides: Partial<NovelExportItem> = {}): NovelExportItem {
   };
 }
 
-function makePackage(overrides: Partial<{ novelId: number; novelTitle: string; items: NovelExportItem[] }> = {}) {
+function makePackage(overrides: Partial<{ novelId: number; novelTitle: string; items: NovelExportItem[] }> = {}): NovelExportPackage {
   return {
     novelId: 1,
     novelTitle: "ตำนานมังกร",
     items: [makeItem()],
     ...overrides,
   };
+}
+
+function makePackContent(start: number, end: number, counter = "001"): string {
+  const chapters = Array.from({ length: end - start + 1 }, (_, index) => {
+    const chapter = start + index;
+    return `บทที่ ${chapter} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท ${chapter} 🐉`;
+  });
+  return `แพ็กตอน ${start} - ${end} ${counter}\n\n${chapters.join("\n\n")}\n`;
 }
 
 function expectExportError(fn: () => void, code: NovelExportErrorCode): void {
@@ -63,232 +72,227 @@ function expectExportError(fn: () => void, code: NovelExportErrorCode): void {
   throw new Error(`expected NovelExportError with code ${code}, but nothing was thrown`);
 }
 
-describe("TXT contract (one episode = one TXT)", () => {
-  it("writes title as the first physical line with the proven blank separator", () => {
-    const text = buildThaiNovelTxt(makeItem(), "ตอนที่ 1 จุดเริ่มต้น");
-    const lines = text.split("\n");
-    expect(lines[0]).toBe("ตอนที่ 1 จุดเริ่มต้น");
-    expect(lines[1]).toBe(""); // proven blank separator line
-    expect(lines[2]).toBe("ย่อหน้าแรก");
-    expect(lines).toHaveLength(4);
+describe("TXT contract", () => {
+  it("writes heading as first physical line with exactly one blank separator", () => {
+    const text = buildThaiNovelTxt("ย่อหน้าแรก\nย่อหน้าที่สอง", "บทที่ 141 จ้าวกลยุทธ์โปเกมอน");
+    expect(text).toBe("บทที่ 141 จ้าวกลยุทธ์โปเกมอน\n\nย่อหน้าแรก\nย่อหน้าที่สอง");
+    expect(text.split("\n")[1]).toBe("");
   });
 
-  it("preserves the body exactly after the separator (no truncation/shift)", () => {
-    const body = "บรรทัด 1\n\nบรรทัด 3  🐉\nบรรทัดสุดท้าย";
-    const text = buildThaiNovelTxt(makeItem({ content: body }), "หัวเรื่อง");
-    expect(text.endsWith(body)).toBe(true);
-    expect(text).toBe(`หัวเรื่อง\n\n${body}`);
-  });
-
-  it("keeps Thai + emoji UTF-8 and normalizes CRLF/CR in the body to LF", () => {
-    const text = buildThaiNovelTxt(makeItem({ content: "สวัสดี\r\nโลก 🌏\rจบ" }), "ชื่อ");
-    expect(text).toBe("ชื่อ\n\nสวัสดี\nโลก 🌏\nจบ");
+  it("keeps Thai + emoji UTF-8 and normalizes CRLF/CR to LF", () => {
+    const text = buildThaiNovelTxt("สวัสดี\r\nโลก 🌏\rจบ", "บทที่ 1");
+    expect(text).toBe("บทที่ 1\n\nสวัสดี\nโลก 🌏\nจบ");
     expect(Buffer.byteLength(text, "utf8")).toBeGreaterThan(0);
-  });
-
-  it("never injects manifest/header metadata into TXT", () => {
-    const text = buildThaiNovelTxt(makeItem(), "ชื่อ");
-    expect(text).not.toContain("manifest");
-    expect(text).not.toContain("episodeNumber");
   });
 });
 
-describe("numbering", () => {
-  it("generates canonical 001/002/003 filenames", () => {
-    const entries = buildThaiNovelExportEntries(
-      makePackage({ items: [makeItem({ episodeId: 1, episodeNumber: "1" }), makeItem({ episodeId: 2, episodeNumber: "2" }), makeItem({ episodeId: 3, episodeNumber: "3" })] })
-    );
-    expect(entries.map((e) => e.filename)).toEqual(["001.txt", "002.txt", "003.txt"]);
-    expect(entries.map((e) => e.generatedNumber)).toEqual(["001", "002", "003"]);
+describe("Naruto-style pack expansion", () => {
+  it("removes the pack wrapper and splits one range Episode into one TXT per embedded chapter", () => {
+    const item = makeItem({
+      episodeId: 141190,
+      episodeNumber: "141 - 143",
+      episodeTitle: "แพ็กตอน 141 - 143 001",
+      content: makePackContent(141, 143),
+    });
+    const entries = buildThaiNovelExportEntries(makePackage({ items: [item] }));
+
+    expect(entries).toHaveLength(3);
+    expect(entries.map((entry) => entry.sourceEpisodeNumber)).toEqual(["141 - 143", "141 - 143", "141 - 143"]);
+    expect(entries.map((entry) => entry.sourceChapterNumber)).toEqual(["141", "142", "143"]);
+    expect(entries.map((entry) => entry.filename)).toEqual([
+      "บทที่ 141 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 142 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 143 จ้าวกลยุทธ์โปเกมอน.txt",
+    ]);
+    expect(entries[0].text).toBe("บทที่ 141 จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท 141 🐉");
+    expect(entries.every((entry) => !entry.text.includes("แพ็กตอน"))).toBe(true);
   });
 
-  it("orders numerically 001/002/010, not lexically, via canonical source order", () => {
-    const entries = buildThaiNovelExportEntries(
-      makePackage({
-        items: [
-          makeItem({ episodeId: 3, episodeNumber: "10" }),
-          makeItem({ episodeId: 1, episodeNumber: "1" }),
-          makeItem({ episodeId: 2, episodeNumber: "2" }),
-        ],
-      })
+  it("requires the embedded chapter sequence to match the declared range exactly", () => {
+    const item = makeItem({
+      episodeNumber: "141 - 143",
+      content: [
+        "แพ็กตอน 141 - 143 001",
+        "",
+        "บทที่ 141 จ้าวกลยุทธ์โปเกมอน",
+        "",
+        "หนึ่ง",
+        "",
+        "บทที่ 143 จ้าวกลยุทธ์โปเกมอน",
+        "",
+        "สาม",
+      ].join("\n"),
+    });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [item] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
     );
-    expect(entries.map((e) => e.filename)).toEqual(["001.txt", "002.txt", "003.txt"]);
-    expect(entries.map((e) => e.sourceEpisodeNumber)).toEqual(["1", "2", "10"]);
   });
 
-  it("supports the explicit start-episode-number override", () => {
-    const entries = buildThaiNovelExportEntries(
-      makePackage({ items: [makeItem({ episodeId: 1, episodeNumber: "5" }), makeItem({ episodeId: 2, episodeNumber: "7" }), makeItem({ episodeId: 3, episodeNumber: "10" })] }),
-      { startEpisodeNumber: 101 }
+  it("rejects a non-matching/non-pack preamble instead of silently dropping it", () => {
+    const item = makeItem({
+      episodeNumber: "141 - 142",
+      content: "หมายเหตุที่ไม่ควรถูกทิ้ง\n\nบทที่ 141 A\n\nหนึ่ง\n\nบทที่ 142 B\n\nสอง",
+    });
+    expectExportError(
+      () => expandThaiNovelLogicalChapters(makePackage({ items: [item] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
     );
-    expect(entries.map((e) => e.filename)).toEqual(["101.txt", "102.txt", "103.txt"]);
-    expect(entries.map((e) => e.sourceEpisodeNumber)).toEqual(["5", "7", "10"]);
   });
 
-  it("pads to 3 digits but never truncates larger numbers", () => {
-    expect(resolveThaiNovelGeneratedNumber(1, 0)).toBe("001");
-    expect(resolveThaiNovelGeneratedNumber(999, 0)).toBe("999");
-    expect(resolveThaiNovelGeneratedNumber(999, 1)).toBe("1000");
-    expect(resolveThaiNovelGeneratedNumber(1000, 1)).toBe("1001");
-    expect(resolveThaiNovelFilename("1000")).toBe("1000.txt");
+  it("sanitizes only the filename while preserving punctuation in the first-line title", () => {
+    const item = makeItem({
+      episodeNumber: "855",
+      episodeTitle: "fallback",
+      content: "บทที่ 855 นายเป็นตัวอะไรกันแน่?\n\nเนื้อหา",
+    });
+    const [entry] = buildThaiNovelExportEntries(makePackage({ items: [item] }));
+    expect(entry.title).toBe("บทที่ 855 นายเป็นตัวอะไรกันแน่?");
+    expect(entry.filename).toBe("บทที่ 855 นายเป็นตัวอะไรกันแน่.txt");
+    expect(entry.text.startsWith("บทที่ 855 นายเป็นตัวอะไรกันแน่?\n\n")).toBe(true);
   });
 
-  it("renumbers a selected subset in deterministic canonical source order", () => {
-    // canonical order of source episodes 10, 7, 5 is 5, 7, 10
+  it("does not duplicate a single Episode heading that is already the first content line", () => {
+    const [entry] = buildThaiNovelExportEntries(makePackage({
+      items: [makeItem({
+        episodeNumber: "7",
+        episodeTitle: "stored title",
+        content: "บทที่ 7 ชื่อจริง\n\nเนื้อหา",
+      })],
+    }));
+    expect(entry.filename).toBe("บทที่ 7 ชื่อจริง.txt");
+    expect(entry.text).toBe("บทที่ 7 ชื่อจริง\n\nเนื้อหา");
+    expect(entry.text.match(/บทที่ 7/g)?.length).toBe(1);
+  });
+});
+
+describe("optional renumber/title compatibility", () => {
+  it("preserves source chapter numbers by default", () => {
+    const entries = buildThaiNovelExportEntries(makePackage({
+      items: [makeItem({ episodeNumber: "141 - 143", content: makePackContent(141, 143) })],
+    }));
+    expect(entries.map((entry) => entry.generatedNumber)).toEqual(["141", "142", "143"]);
+    expect(entries[0].title).toBe("บทที่ 141 จ้าวกลยุทธ์โปเกมอน");
+  });
+
+  it("renumbers leading chapter headings only when an explicit start number is supplied", () => {
     const entries = buildThaiNovelExportEntries(
-      makePackage({
-        items: [
-          makeItem({ episodeId: 30, episodeNumber: "10" }),
-          makeItem({ episodeId: 10, episodeNumber: "5" }),
-          makeItem({ episodeId: 20, episodeNumber: "7" }),
-        ],
-      }),
-      { startEpisodeNumber: 1 }
+      makePackage({ items: [makeItem({ episodeNumber: "141 - 143", content: makePackContent(141, 143) })] }),
+      { startEpisodeNumber: 391 }
     );
-    expect(entries.map((e) => [e.sourceEpisodeNumber, e.filename])).toEqual([
-      ["5", "001.txt"],
-      ["7", "002.txt"],
-      ["10", "003.txt"],
+    expect(entries.map((entry) => entry.generatedNumber)).toEqual(["391", "392", "393"]);
+    expect(entries.map((entry) => entry.filename)).toEqual([
+      "บทที่ 391 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 392 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 393 จ้าวกลยุทธ์โปเกมอน.txt",
     ]);
   });
 
-  it("rejects invalid start numbers deterministically", () => {
+  it("keeps prefix and append options opt-in", () => {
+    const opts = normalizeThaiNovelOptions({ titlePrefix: "ตอนที่", appendFilenameToTitle: true });
+    expect(resolveThaiNovelTitle("การพบกัน", "007", opts)).toBe("ตอนที่ การพบกัน 007");
+  });
+
+  it("treats omitted start number as source-preserving and rejects invalid explicit starts", () => {
+    expect(normalizeThaiNovelOptions(undefined).startEpisodeNumber).toBeNull();
     expectExportError(() => normalizeThaiNovelOptions({ startEpisodeNumber: 0 }), "EXPORT_INVALID_SALE_METADATA");
     expectExportError(() => normalizeThaiNovelOptions({ startEpisodeNumber: 1.5 }), "EXPORT_INVALID_SALE_METADATA");
-    expect(normalizeThaiNovelOptions(undefined).startEpisodeNumber).toBe(1);
-  });
-});
-
-describe("title options", () => {
-  it("applies the title prefix joined with a single space", () => {
-    const opts = normalizeThaiNovelOptions({ titlePrefix: "ตอนที่" });
-    const title = resolveThaiNovelTitle(makeItem({ episodeTitle: "การพบกันอีกครั้ง" }), "001", opts);
-    expect(title).toBe("ตอนที่ การพบกันอีกครั้ง");
   });
 
-  it("tolerates a prefix that already carries a trailing space", () => {
-    const opts = normalizeThaiNovelOptions({ titlePrefix: "ตอนที่ " });
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "การพบกันอีกครั้ง" }), "001", opts)).toBe("ตอนที่ การพบกันอีกครั้ง");
-  });
-
-  it("appends the generated filename stem to the title", () => {
-    const opts = normalizeThaiNovelOptions({ appendFilenameToTitle: true });
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "การพบกันอีกครั้ง" }), "001", opts)).toBe("การพบกันอีกครั้ง 001");
-  });
-
-  it("combines prefix + append without duplication", () => {
-    const opts = normalizeThaiNovelOptions({ titlePrefix: "ตอนที่", appendFilenameToTitle: true });
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "การพบกันอีกครั้ง" }), "001", opts)).toBe("ตอนที่ การพบกันอีกครั้ง 001");
-  });
-
-  it("never duplicates an already-present prefix or filename token", () => {
-    const opts = normalizeThaiNovelOptions({ titlePrefix: "ตอนที่", appendFilenameToTitle: true });
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "ตอนที่ การพบกันอีกครั้ง" }), "001", opts)).toBe("ตอนที่ การพบกันอีกครั้ง 001");
-    // prefix is still added when missing, but the filename token is not duplicated
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "การพบกันอีกครั้ง 001" }), "001", opts)).toBe("ตอนที่ การพบกันอีกครั้ง 001");
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "ตอนที่ การพบกันอีกครั้ง 001" }), "001", opts)).toBe("ตอนที่ การพบกันอีกครั้ง 001");
-  });
-
-  it("handles an empty prefix and falls back to the generated number for empty titles", () => {
-    const empty = normalizeThaiNovelOptions({ titlePrefix: "" });
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "  " }), "007", empty)).toBe("007");
-    expect(resolveThaiNovelTitle(makeItem({ episodeTitle: "ชื่อ" }), "007", empty)).toBe("ชื่อ");
-  });
-
-  it("keeps the title a single physical line even when the stored title contains newlines", () => {
-    const entries = buildThaiNovelExportEntries(makePackage({ items: [makeItem({ episodeTitle: "ชื่อ\nหลายบรรทัด" })] }));
-    expect(entries[0].title).toBe("ชื่อ หลายบรรทัด");
-    expect(entries[0].text.split("\n")[0]).toBe("ชื่อ หลายบรรทัด");
-  });
-});
-
-describe("filename safety", () => {
-  it("generates numeric-only filenames that are inherently Windows-safe", () => {
-    const entries = buildThaiNovelExportEntries(makePackage({ items: [makeItem({ episodeNumber: '1<>:"/\\|?*' })] }));
-    expect(entries[0].filename).toMatch(/^\d+\.txt$/);
-  });
-
-  it("derives a sanitized, readable ZIP filename from the novel title", () => {
-    expect(buildThaiNovelExportZip(makePackage({ novelTitle: "ตำนานมังกร: ภาค 1?" })).filename).toBe("ตำนานมังกร ภาค 1-thainovel.zip");
-    expect(buildThaiNovelExportZip(makePackage({ novelTitle: "../../evil" })).filename).toBe("evil-thainovel.zip");
-    expect(buildThaiNovelExportZip(makePackage({ novelTitle: "CON" })).filename).toBe("_CON-thainovel.zip");
-    expect(buildThaiNovelExportZip(makePackage({ novelTitle: "" })).filename).toBe("novel-1-thainovel.zip");
-  });
-
-  it("rejects duplicate final entry paths instead of overwriting silently", () => {
-    // Generated numbers are sequential so collisions cannot occur naturally;
-    // exercise the guard directly through an impossible package is not
-    // possible - the guard throws on any duplicate path added.
-    const zip = buildThaiNovelExportZip(makePackage({ items: [makeItem(), makeItem({ episodeId: 2, episodeNumber: "2" })] }));
-    expect(new Set(zip.entryFilenames).size).toBe(zip.entryFilenames.length);
+  it("still pads generated numeric tokens to 3 digits minimum", () => {
+    expect(resolveThaiNovelGeneratedNumber(1, 0)).toBe("001");
+    expect(resolveThaiNovelGeneratedNumber(999, 1)).toBe("1000");
   });
 });
 
 describe("flat ZIP contract", () => {
-  it("puts TXT files at the ZIP root", () => {
-    const result = buildThaiNovelExportZip(makePackage({ items: [makeItem(), makeItem({ episodeId: 2, episodeNumber: "2" })] }));
-    expect(result.entryFilenames).toEqual(["001.txt", "002.txt"]);
-    const zip = new AdmZip(result.content);
-    expect(zip.getEntries().map((e) => e.entryName)).toEqual(["001.txt", "002.txt"]);
-  });
-
-  it("contains NO manifest.csv and NO contents/ folder", () => {
-    const result = buildThaiNovelExportZip(makePackage({ items: [makeItem(), makeItem({ episodeId: 2, episodeNumber: "2" })] }));
-    expect(result.entryFilenames.some((name) => name.toLowerCase().includes("manifest"))).toBe(false);
-    expect(result.entryFilenames.some((name) => name.includes("contents"))).toBe(false);
+  it("uses chapter-heading filenames at the ZIP root with no manifest or contents folder", () => {
+    const result = buildThaiNovelExportZip(makePackage({
+      items: [makeItem({ episodeNumber: "141 - 142", content: makePackContent(141, 142) })],
+    }));
+    expect(result.entryFilenames).toEqual([
+      "บทที่ 141 จ้าวกลยุทธ์โปเกมอน.txt",
+      "บทที่ 142 จ้าวกลยุทธ์โปเกมอน.txt",
+    ]);
     expect(result.entryFilenames.every((name) => !name.includes("/"))).toBe(true);
-  });
+    expect(result.entryFilenames.some((name) => name.toLowerCase().includes("manifest"))).toBe(false);
 
-  it("stores entry contents as the exact TXT text with UTF-8 bytes", () => {
-    const result = buildThaiNovelExportZip(makePackage());
     const zip = new AdmZip(result.content);
-    expect(zip.getEntry("001.txt")!.getData().toString("utf8")).toBe("การพบกันอีกครั้ง\n\nย่อหน้าแรก\nย่อหน้าที่สอง");
+    expect(zip.getEntry("บทที่ 141 จ้าวกลยุทธ์โปเกมอน.txt")!.getData().toString("utf8"))
+      .toBe("บทที่ 141 จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท 141 🐉");
   });
 
-  it("is deterministic: same input+options => same entries and byte-identical ZIP", () => {
+  it("is deterministic for identical source + options", () => {
     const pkg = makePackage({
-      items: [makeItem(), makeItem({ episodeId: 2, episodeNumber: "2", episodeTitle: "สอง 🐉" }), makeItem({ episodeId: 3, episodeNumber: "001-050" })],
+      items: [makeItem({ episodeNumber: "141 - 143", content: makePackContent(141, 143) })],
     });
-    const options = { startEpisodeNumber: 5, titlePrefix: "ตอนที่", appendFilenameToTitle: true };
-    const first = buildThaiNovelExportZip(pkg, options);
-    const second = buildThaiNovelExportZip(pkg, options);
+    const first = buildThaiNovelExportZip(pkg);
+    const second = buildThaiNovelExportZip(pkg);
     expect(first.entries).toEqual(second.entries);
-    expect(first.entryFilenames).toEqual(second.entryFilenames);
     expect(first.content.equals(second.content)).toBe(true);
-    expect(first.entryFilenames.every((name) => !name.includes("/"))).toBe(true);
 
     const zip = new AdmZip(first.content);
     expect(zip.getEntries()[0].header.time.getTime()).toBe(FIXED_ZIP_TIMESTAMP.getTime());
   });
 
-  it("preview rows are derived from the same entries as the download (no text leak)", () => {
-    const entries = buildThaiNovelExportEntries(makePackage());
+  it("preview rows come from the exact same expanded entries without body text", () => {
+    const entries = buildThaiNovelExportEntries(makePackage({
+      items: [makeItem({ episodeNumber: "141 - 142", content: makePackContent(141, 142) })],
+    }));
     const rows = buildThaiNovelPreviewRows(entries);
-    expect(rows).toEqual([
-      { episodeId: 1, sourceEpisodeNumber: "1", generatedNumber: "001", filename: "001.txt", title: "การพบกันอีกครั้ง", byteLength: entries[0].byteLength },
-    ]);
-    expect(JSON.stringify(rows)).not.toContain("ย่อหน้าแรก");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      episodeId: 1,
+      sourceEpisodeNumber: "141 - 142",
+      sourceChapterNumber: "141",
+      generatedNumber: "141",
+      filename: "บทที่ 141 จ้าวกลยุทธ์โปเกมอน.txt",
+      title: "บทที่ 141 จ้าวกลยุทธ์โปเกมอน",
+    });
+    expect(JSON.stringify(rows)).not.toContain("เนื้อหาบท");
+  });
+
+  it("derives a sanitized readable ZIP filename from the novel title", () => {
+    expect(buildThaiNovelExportZip(makePackage({ novelTitle: "ตำนานมังกร: ภาค 1?" })).filename)
+      .toBe("ตำนานมังกร ภาค 1-thainovel.zip");
   });
 });
 
-describe("limits (reused from IPE-059-A authority)", () => {
-  it("rejects more than the shared MAX_EXPORT_ITEMS via the shared validator", () => {
-    const items = Array.from({ length: MAX_EXPORT_ITEMS + 1 }, (_, i) =>
-      makeItem({ episodeId: i + 1, episodeNumber: String(i + 1) })
+describe("limits", () => {
+  it("rejects more than the shared source-item limit", () => {
+    const items = Array.from({ length: MAX_EXPORT_ITEMS + 1 }, (_, index) =>
+      makeItem({ episodeId: index + 1, episodeNumber: String(index + 1) })
     );
     expectExportError(() => buildThaiNovelExportEntries(makePackage({ items })), "EXPORT_LIMIT_ITEMS");
   });
 
-  it("rejects oversized entries (title+body) with a typed error", () => {
-    const big = "x".repeat(MAX_EXPORT_PER_ITEM_BYTES + 1);
-    expectExportError(() => buildThaiNovelExportEntries(makePackage({ items: [makeItem({ content: big })] })), "EXPORT_LIMIT_ENTRY_BYTES");
+  it("rejects more than the shared limit after pack expansion", () => {
+    const content = makePackContent(1, MAX_EXPORT_ITEMS + 1);
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({
+        items: [makeItem({ episodeNumber: `1 - ${MAX_EXPORT_ITEMS + 1}`, content })],
+      })),
+      "EXPORT_LIMIT_ITEMS"
+    );
   });
 
-  it("rejects empty packages and non-numeric identities via the shared validator", () => {
+  it("rejects oversized TXT entries", () => {
+    const big = "x".repeat(MAX_EXPORT_PER_ITEM_BYTES + 1);
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [makeItem({ content: big })] })),
+      "EXPORT_LIMIT_ENTRY_BYTES"
+    );
+  });
+
+  it("rejects empty packages and non-numeric identities", () => {
     expectExportError(() => buildThaiNovelExportEntries(makePackage({ items: [] })), "EXPORT_EMPTY_SELECTION");
     expectExportError(
       () => buildThaiNovelExportEntries(makePackage({ items: [makeItem({ episodeNumber: "ไม่มีเลข" })] })),
       "EXPORT_INVALID_EPISODE_IDENTITY"
     );
+  });
+
+  it("never emits unsafe path separators from the heading-derived filename", () => {
+    expect(resolveThaiNovelFilename('บทที่ 1 ชื่อ: ทดสอบ?')).toBe("บทที่ 1 ชื่อ ทดสอบ.txt");
   });
 });

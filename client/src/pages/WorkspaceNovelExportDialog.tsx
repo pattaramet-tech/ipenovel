@@ -67,13 +67,13 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   const [scope, setScope] = useState<ExportScope>("whole");
   const [selectedNovelId, setSelectedNovelId] = useState<number | null>(novels.length === 1 ? novels[0].novelId : null);
   const [selectedEpisodeIds, setSelectedEpisodeIds] = useState<number[]>([]);
-  const [startEpisodeNumber, setStartEpisodeNumber] = useState("1");
+  const [startEpisodeNumber, setStartEpisodeNumber] = useState("");
   const [titlePrefix, setTitlePrefix] = useState("");
   const [appendFilenameToTitle, setAppendFilenameToTitle] = useState(false);
 
   const novelId = selectedNovelId ?? (novels.length === 1 ? novels[0].novelId : null);
   const parsedStart = Number(startEpisodeNumber);
-  const validStart = Number.isInteger(parsedStart) && parsedStart >= 1;
+  const validStart = startEpisodeNumber.trim() === "" || (Number.isInteger(parsedStart) && parsedStart >= 1);
   const subsetActive = scope === "subset" && selectedEpisodeIds.length > 0;
 
   const debouncedStart = useDebouncedValue(startEpisodeNumber);
@@ -90,11 +90,11 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
 
   const thaiOptions = useMemo(
     () => ({
-      ...(Number.isInteger(debouncedParsedStart) && debouncedParsedStart >= 1 ? { startEpisodeNumber: debouncedParsedStart } : {}),
+      ...(debouncedStart.trim() !== "" && Number.isInteger(debouncedParsedStart) && debouncedParsedStart >= 1 ? { startEpisodeNumber: debouncedParsedStart } : {}),
       ...(debouncedPrefix.trim() ? { titlePrefix: debouncedPrefix } : {}),
       ...(appendFilenameToTitle ? { appendFilenameToTitle: true } : {}),
     }),
-    [debouncedParsedStart, debouncedPrefix, appendFilenameToTitle]
+    [debouncedStart, debouncedParsedStart, debouncedPrefix, appendFilenameToTitle]
   );
 
   // Serves both modes: sourceEpisodes powers the subset selector; entries
@@ -116,7 +116,7 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   const previewError = mode === "thainovel" ? thaiPreview.error : backupPreview.error;
   const previewLoading = mode === "thainovel" ? thaiPreview.isFetching : backupPreview.isFetching;
   const entryCount = mode === "thainovel" ? (thaiPreview.data?.entries.length ?? 0) : (backupPreview.data?.exportItemCount ?? 0);
-  const downloadDisabled = !novelId || previewLoading || Boolean(previewError) || entryCount === 0 || downloadPending || (scope === "subset" && !subsetActive);
+  const downloadDisabled = !novelId || !validStart || previewLoading || Boolean(previewError) || entryCount === 0 || downloadPending || (scope === "subset" && !subsetActive);
 
   const handleDownload = () => {
     if (!novelId) return;
@@ -241,7 +241,7 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
               <fieldset className="space-y-2" data-testid="export-thainovel-options">
                 <legend className="text-sm font-medium">ตัวเลือก Thai-Novel</legend>
                 <div className="flex items-center gap-2 text-sm">
-                  <label htmlFor="workspace-export-start">เริ่มตอนที่</label>
+                  <label htmlFor="workspace-export-start">เริ่มเลขบทใหม่</label>
                   <input
                     id="workspace-export-start"
                     type="number"
@@ -249,9 +249,10 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                     className="h-9 w-24 rounded-md border bg-background px-3 text-sm"
                     data-testid="export-option-start-number"
                     value={startEpisodeNumber}
+                    placeholder="ตามต้นฉบับ"
                     onChange={(event) => setStartEpisodeNumber(event.target.value)}
                   />
-                  {!validStart && <span className="text-xs text-destructive">ต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป</span>}
+                  {!validStart && <span className="text-xs text-destructive">ต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป หรือเว้นว่างเพื่อใช้เลขบทต้นฉบับ</span>}
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   <label htmlFor="workspace-export-prefix">คำนำหน้าชื่อตอน</label>
@@ -275,7 +276,7 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                   เพิ่มชื่อไฟล์ต่อท้ายชื่อตอน
                 </label>
                 <p className="text-xs text-muted-foreground">
-                  ไฟล์ TXT: บรรทัดแรกเป็นชื่อตอน ตามด้วยบรรทัดว่าง แล้วเป็นเนื้อหา (UTF-8)
+                  ตอนแบบแพ็กจะถูกแยกเป็น 1 บทต่อ 1 TXT และตัดบรรทัด “แพ็กตอน …” ออก ชื่อไฟล์อิงหัวบทเหมือนไฟล์ตัวอย่าง Naruto; บรรทัดแรกเป็นหัวบท ตามด้วยบรรทัดว่าง แล้วเป็นเนื้อหา (UTF-8)
                 </p>
               </fieldset>
             )}
@@ -299,8 +300,12 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                   </thead>
                   <tbody>
                     {(thaiPreview.data?.entries ?? []).map((entry) => (
-                      <tr key={entry.episodeId} className="border-t">
-                        <td className="py-1 pr-2">{entry.sourceEpisodeNumber}</td>
+                      <tr key={`${entry.episodeId}:${entry.sourceChapterNumber}:${entry.filename}`} className="border-t">
+                        <td className="py-1 pr-2">
+                          {entry.sourceEpisodeNumber === entry.sourceChapterNumber
+                            ? entry.sourceChapterNumber
+                            : `${entry.sourceEpisodeNumber} → ${entry.sourceChapterNumber}`}
+                        </td>
                         <td className="py-1 pr-2">{entry.filename}</td>
                         <td className="py-1">{entry.title}</td>
                       </tr>
