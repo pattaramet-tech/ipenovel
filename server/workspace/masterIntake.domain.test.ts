@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertMasterIntakeRowRange,
+  canonicalMasterIntakeIdentity,
+  canonicalMasterIntakeIdentityFingerprint,
   googleDocumentIdFromUrlOrId,
   masterIntakePreviewFingerprint,
   masterIntakeProvenancePreviewStatus,
   masterIntakeRowFingerprint,
   masterIntakeRowIdentityFingerprint,
   normalizeOptionalHttpUrl,
+  parseMasterIntakeEpisodeSpan,
   parseMasterIntakeTitleRange,
 } from "./masterIntake.domain";
 
@@ -203,7 +206,72 @@ describe("Workspace Master Intake domain", () => {
       .toBe(masterIntakeRowIdentityFingerprint(row));
     expect(masterIntakeRowFingerprint({ ...row, rowNumber: 1620 }))
       .not.toBe(masterIntakeRowFingerprint(row));
-    expect(masterIntakeRowIdentityFingerprint({ ...row, translationDocUrl: "https://docs.google.com/document/d/ZYXWVUTSRQPONMLKJIHG/edit?tab=t.0", translationDocumentId: "ZYXWVUTSRQPONMLKJIHG" }))
-      .not.toBe(masterIntakeRowIdentityFingerprint(row));
+  });
+
+  it("keeps business identity stable when source documents change (IPE contract)", () => {
+    const row = {
+      spreadsheetId: "sheet",
+      sheetId: 10,
+      sheetName: "tab",
+      rowNumber: 1619,
+      novelTitle: "เรื่อง",
+      normalizedTitle: "เรื่อง",
+      episodeNumber: "301-350",
+      translationDocUrl: "https://docs.google.com/document/d/12345678901234567890/edit",
+      translationDocumentId: "12345678901234567890",
+      webSourceUrl: "https://example.com/source",
+      preparedSourceDocUrl: "https://docs.google.com/document/d/abcdefghijabcdefghij/edit",
+      preparedSourceDocumentId: "abcdefghijabcdefghij",
+    };
+    // Translation document re-issue: same Episode Pack, different source.
+    expect(
+      masterIntakeRowIdentityFingerprint({
+        ...row,
+        translationDocUrl: "https://docs.google.com/document/d/ZYXWVUTSRQPONMLKJIHG/edit",
+        translationDocumentId: "ZYXWVUTSRQPONMLKJIHG",
+      })
+    ).toBe(masterIntakeRowIdentityFingerprint(row));
+    // Web source URL change: identity unchanged.
+    expect(
+      masterIntakeRowIdentityFingerprint({ ...row, webSourceUrl: "https://example.com/other" })
+    ).toBe(masterIntakeRowIdentityFingerprint(row));
+    // Prepared source change: identity unchanged.
+    expect(
+      masterIntakeRowIdentityFingerprint({
+        ...row,
+        preparedSourceDocUrl: null,
+        preparedSourceDocumentId: null,
+      })
+    ).toBe(masterIntakeRowIdentityFingerprint(row));
+    // The row/source fingerprint still detects every one of those changes.
+    expect(masterIntakeRowFingerprint({ ...row, translationDocumentId: "ZYXWVUTSRQPONMLKJIHG" }))
+      .not.toBe(masterIntakeRowFingerprint(row));
+    expect(masterIntakeRowFingerprint({ ...row, webSourceUrl: "https://example.com/other" }))
+      .not.toBe(masterIntakeRowFingerprint(row));
+  });
+
+  it("derives canonical identity from normalized title + canonical episode span only", () => {
+    // Equivalent range spellings resolve to one identity.
+    const padded = canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง A", episodeNumber: "001 - 030" });
+    const compact = canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง A", episodeNumber: "1-30" });
+    const emDash = canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง A", episodeNumber: "1—30" });
+    expect(padded).toEqual(compact);
+    expect(compact).toEqual(emDash);
+    expect(canonicalMasterIntakeIdentityFingerprint({ normalizedTitle: "เรื่อง A", episodeNumber: "001-030" }))
+      .toBe(canonicalMasterIntakeIdentityFingerprint({ normalizedTitle: "เรื่อง A", episodeNumber: "1-30" }));
+
+    // Episode span change => different identity.
+    expect(canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง A", episodeNumber: "141-191" }))
+      .not.toEqual(canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง A", episodeNumber: "141-190" }));
+
+    // Title change => different identity.
+    expect(canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง B", episodeNumber: "141-190" }))
+      .not.toEqual(canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง A", episodeNumber: "141-190" }));
+
+    // Malformed identity => null (fail closed).
+    expect(canonicalMasterIntakeIdentity({ normalizedTitle: "เรื่อง A", episodeNumber: "ไม่มีเลข" })).toBeNull();
+    expect(canonicalMasterIntakeIdentity({ normalizedTitle: "", episodeNumber: "1-30" })).toBeNull();
+    expect(parseMasterIntakeEpisodeSpan("abc")).toBeNull();
+    expect(parseMasterIntakeEpisodeSpan("050-001")).toBeNull();
   });
 });

@@ -32,6 +32,7 @@ import {
   masterIntakeRowIdentityFingerprint,
   normalizeMasterIntakeNovelTitle,
   normalizeOptionalHttpUrl,
+  parseMasterIntakeEpisodeSpan,
   parseMasterIntakeTitleRange,
   type MasterIntakeRowCanonical,
 } from "./masterIntake.domain";
@@ -80,6 +81,8 @@ type PreviewRow = {
   provenanceRowNumber: number | null;
   blockers: string[];
   sourceAlreadyLinked: boolean;
+  /** Sync may replace the pack's active translation source (same canonical identity). */
+  sourceReplacementExpected: boolean;
 };
 
 type PreviewResult = {
@@ -122,6 +125,10 @@ function affectedRows(result: any) {
 }
 
 function provenanceIdentityFingerprint(row: any) {
+  // Canonical business identity (normalized title + canonical episode span)
+  // recomputed from the persisted provenance fields at runtime — legacy
+  // provenance records created under the old source-bound fingerprint
+  // resolve through the same canonicalization without any data migration.
   return masterIntakeRowIdentityFingerprint({
     spreadsheetId: String(row.spreadsheetId),
     sheetId: Number(row.sheetId),
@@ -140,18 +147,6 @@ function provenanceIdentityFingerprint(row: any) {
   });
 }
 
-function parseEpisodeSpan(value: string) {
-  const normalized = value.normalize("NFKC").trim().replace(/[–—]/g, "-");
-  const match = normalized.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
-  if (!match) return null;
-  const start = Number(match[1]);
-  const end = Number(match[2] ?? match[1]);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start) {
-    return null;
-  }
-  return { start, end };
-}
-
 function spansOverlap(
   a: { start: number; end: number },
   b: { start: number; end: number }
@@ -160,8 +155,8 @@ function spansOverlap(
 }
 
 function sameEpisodeIdentity(left: string, right: string) {
-  const a = parseEpisodeSpan(left);
-  const b = parseEpisodeSpan(right);
+  const a = parseMasterIntakeEpisodeSpan(left);
+  const b = parseMasterIntakeEpisodeSpan(right);
   return Boolean(a && b && a.start === b.start && a.end === b.end);
 }
 
@@ -453,6 +448,7 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceRowNumber: null,
         blockers,
         sourceAlreadyLinked: false,
+        sourceReplacementExpected: false,
       });
       continue;
     }
@@ -472,6 +468,9 @@ export async function previewWorkspaceMasterIntake(input: {
       preparedSourceDocumentId,
     };
     const rowFingerprint = masterIntakeRowFingerprint(canonical);
+    // Canonical business identity: normalized title + canonical episode span.
+    // Source documents/URLs and sheet/row metadata are deliberately excluded —
+    // changing them must be a source update/rebind, never an identity change.
     const identityFingerprint = masterIntakeRowIdentityFingerprint(canonical);
     const provenanceAtRow = provenanceByRow.get(rowNumber) as any;
     const identityMatches = provenanceRows.filter(
@@ -490,23 +489,32 @@ export async function previewWorkspaceMasterIntake(input: {
         blockers.push("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
       }
     }
-    const provenance =
-      provenanceAtRow && provenanceIdentityFingerprint(provenanceAtRow) === identityFingerprint
-        ? provenanceAtRow
-        : identityMatches.length === 1
-          ? identityMatches[0]
-          : provenanceAtRow;
+    // Resolution precedence: a provenance record matching the canonical
+    // identity (even after a row move / source change) wins. Otherwise an
+    // at-row provenance with a DIFFERENT canonical identity means the row's
+    // title/episode changed under an existing sync target — fail closed.
+    let provenance: any = null;
+    let atRowIdentityChanged = false;
+    if (uniqueIdentityMatch) {
+      provenance = uniqueIdentityMatch;
+    } else if (provenanceAtRow) {
+      provenance = provenanceAtRow;
+      atRowIdentityChanged = true;
+      blockers.push("SYNC_IDENTITY_CHANGED");
+    }
 
-    if (provenance) {
+    if (provenance && !atRowIdentityChanged) {
+      // Defensive re-check: canonical identity equality is guaranteed by the
+      // match above, but keep the explicit blocker for stored-field drift.
       if (
         provenance.normalizedTitle !== parsed.normalizedTitle ||
         !sameEpisodeIdentity(provenance.episodeNumber, parsed.episodeNumber)
       ) {
         blockers.push("SYNC_IDENTITY_CHANGED");
       }
-      if (provenance.translationDocumentId !== translationDocumentId) {
-        blockers.push("TRANSLATION_SOURCE_CHANGED");
-      }
+      // Translation document changes are a source update/rebind on the SAME
+      // Episode Pack — never a hard blocker (TRANSLATION_SOURCE_CHANGED /
+      // SYNC_TARGET_SOURCE_CHANGED removed from this path).
       const [workItem] = await db
         .select({
           id: workspaceEditorialWorkItems.id,
@@ -529,6 +537,7 @@ export async function previewWorkspaceMasterIntake(input: {
         )
         .limit(1);
       let provenanceSourceAlreadyLinked = false;
+      let provenanceSourceReplacementExpected = false;
       if (!workItem) {
         blockers.push("SYNC_TARGET_MISSING");
       } else {
@@ -551,7 +560,9 @@ export async function previewWorkspaceMasterIntake(input: {
             source.providerDocumentId &&
             source.providerDocumentId !== translationDocumentId
         );
-        if (conflictingSource) blockers.push("SYNC_TARGET_SOURCE_CHANGED");
+        // Same canonical identity + different active translation source =>
+        // the sync may replace/rebind the source onto the existing pack.
+        provenanceSourceReplacementExpected = conflictingSource;
         if (!matchingSource && activeSources.length === 0 && workItem.columnKey !== "new") {
           blockers.push("EXISTING_PACK_NOT_EDITABLE");
         }
@@ -588,6 +599,7 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceRowNumber: Number(provenance.rowNumber),
         blockers,
         sourceAlreadyLinked: provenanceSourceAlreadyLinked,
+        sourceReplacementExpected: provenanceSourceReplacementExpected,
       });
       continue;
     }
@@ -598,6 +610,7 @@ export async function previewWorkspaceMasterIntake(input: {
     let workspaceNovelId: number | null = null;
     let workItemId: number | null = null;
     let sourceAlreadyLinked = false;
+    let sourceReplacementExpected = false;
 
     if (candidate) {
       const workspaceNovel = workspaceByNovelId.get(candidate.id) as any;
@@ -626,7 +639,7 @@ export async function previewWorkspaceMasterIntake(input: {
           );
         for (const entry of activeItems) {
           if (entry.cardStatus !== "active") continue;
-          const span = parseEpisodeSpan(entry.item.episodeNumber ?? "");
+          const span = parseMasterIntakeEpisodeSpan(entry.item.episodeNumber ?? "");
           if (!span || !spansOverlap(span, { start: parsed.rangeStart, end: parsed.rangeEnd })) continue;
           if (
             span.start === parsed.rangeStart &&
@@ -661,9 +674,10 @@ export async function previewWorkspaceMasterIntake(input: {
                 source.providerDocumentId &&
                 source.providerDocumentId !== translationDocumentId
             );
-            if (conflictingSource) {
-              blockers.push("EXISTING_TRANSLATION_SOURCE_CONFLICT");
-            }
+            // Same normalized title + exact canonical episode span + a
+            // different active translation source = source update/rebind on
+            // the existing pack — NOT an identity conflict.
+            sourceReplacementExpected = conflictingSource;
             if (!matchingSource && activeSources.length === 0 && entry.columnKey !== "new") {
               blockers.push("EXISTING_PACK_NOT_EDITABLE");
             }
@@ -694,6 +708,7 @@ export async function previewWorkspaceMasterIntake(input: {
       provenanceRowNumber: null,
       blockers,
       sourceAlreadyLinked,
+      sourceReplacementExpected,
     });
   }
 
@@ -1133,6 +1148,12 @@ export async function syncWorkspaceMasterIntake(input: {
             workItemId: work.workItemId,
             payload: sourcePayload,
             googleConnectionId: input.googleConnectionId,
+            // Same canonical Episode Pack identity + different translation
+            // document: the sync explicitly replaces the pack's active
+            // source. importEditorialSource transitions the old active
+            // source to "removed" (audit-preserved) and leaves exactly one
+            // active source — the newly imported one.
+            replaceActiveSource: row.sourceReplacementExpected === true,
           })
         : null;
       await persistProvenance({

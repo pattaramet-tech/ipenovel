@@ -88,24 +88,79 @@ export function normalizeOptionalHttpUrl(value: string): string | null | undefin
   }
 }
 
+/**
+ * Parse an episode number/range into canonical start/end numbers. Leading
+ * zeros, whitespace and dash variants normalize away: "001 - 030",
+ * "001-030", "1-30" and "1 — 30" all resolve to { start: 1, end: 30 }.
+ * Returns null for malformed input — callers must fail closed.
+ */
+export function parseMasterIntakeEpisodeSpan(value: string): { start: number; end: number } | null {
+  const normalized = String(value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/[–—]/g, "-");
+  const match = normalized.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2] ?? match[1]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start) {
+    return null;
+  }
+  return { start, end };
+}
+
+export type MasterIntakeCanonicalIdentity = {
+  version: "workspace-master-intake-identity-v2";
+  normalizedTitle: string;
+  episodeStart: number;
+  episodeEnd: number;
+};
+
+/**
+ * Canonical Master Intake business identity: normalized novel title +
+ * canonical episode span. This is the ONLY identity that decides whether an
+ * intake row is "the same Novel / Episode Pack" as a previous sync.
+ *
+ * Deliberately EXCLUDED from business identity: rowNumber, spreadsheet/sheet
+ * metadata, translationDocumentId/Url, webSourceUrl, prepared source
+ * document/Url. Those belong to provenance/audit and to the row/source
+ * fingerprint (masterIntakeRowFingerprint) — changing a source document must
+ * never turn the same Episode Pack into an identity conflict.
+ */
+export function canonicalMasterIntakeIdentity(input: {
+  normalizedTitle: string;
+  episodeNumber: string;
+}): MasterIntakeCanonicalIdentity | null {
+  const span = parseMasterIntakeEpisodeSpan(input.episodeNumber);
+  const normalizedTitle = normalizeSpace(String(input.normalizedTitle ?? ""));
+  if (!span || !normalizedTitle) return null;
+  return {
+    version: "workspace-master-intake-identity-v2",
+    normalizedTitle,
+    episodeStart: span.start,
+    episodeEnd: span.end,
+  };
+}
+
+/** Deterministic fingerprint of the canonical business identity, or null when malformed. */
+export function canonicalMasterIntakeIdentityFingerprint(input: {
+  normalizedTitle: string;
+  episodeNumber: string;
+}): string | null {
+  const identity = canonicalMasterIntakeIdentity(input);
+  if (!identity) return null;
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+}
+
 export function masterIntakeRowIdentityFingerprint(row: MasterIntakeRowCanonical): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        version: "workspace-master-intake-row-identity-v1",
-        spreadsheetId: row.spreadsheetId,
-        sheetId: row.sheetId,
-        sheetName: row.sheetName,
-        normalizedTitle: row.normalizedTitle,
-        episodeNumber: row.episodeNumber,
-        translationDocumentId: row.translationDocumentId,
-        translationDocUrl: row.translationDocUrl.trim(),
-        webSourceUrl: row.webSourceUrl?.trim() ?? null,
-        preparedSourceDocumentId: row.preparedSourceDocumentId,
-        preparedSourceDocUrl: row.preparedSourceDocUrl?.trim() ?? null,
-      })
-    )
-    .digest("hex");
+  const fingerprint = canonicalMasterIntakeIdentityFingerprint({
+    normalizedTitle: row.normalizedTitle,
+    episodeNumber: row.episodeNumber,
+  });
+  if (!fingerprint) {
+    throw new Error("Master Intake canonical identity is invalid.");
+  }
+  return fingerprint;
 }
 
 export function masterIntakeRowFingerprint(row: MasterIntakeRowCanonical): string {
@@ -158,12 +213,13 @@ export function masterIntakePreviewFingerprint(input: {
     provenanceRowNumber?: number | null;
     blockers?: string[];
     sourceAlreadyLinked?: boolean;
+    sourceReplacementExpected?: boolean;
   }>;
 }): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        version: "workspace-master-intake-preview-v2",
+        version: "workspace-master-intake-preview-v3",
         workspaceId: input.workspaceId,
         startRow: input.startRow,
         endRow: input.endRow,
@@ -178,6 +234,7 @@ export function masterIntakePreviewFingerprint(input: {
           provenanceRowNumber: row.provenanceRowNumber ?? null,
           blockers: [...(row.blockers ?? [])].sort(),
           sourceAlreadyLinked: row.sourceAlreadyLinked === true,
+          sourceReplacementExpected: row.sourceReplacementExpected === true,
         })),
       })
     )

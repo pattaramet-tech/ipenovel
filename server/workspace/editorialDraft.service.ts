@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   workspaceEditorialDraftParagraphs,
   workspaceEditorialDraftTabs,
@@ -272,6 +272,15 @@ export async function importEditorialSource(input: {
   workItemId: number;
   payload: EditorialSourcePayload;
   googleConnectionId?: number | null;
+  /**
+   * Explicit source replacement for callers that have already proven the
+   * target work item is the same canonical business identity (e.g. Master
+   * Intake sync of a re-issued translation document). The conflicting
+   * active source row is transitioned to status "removed" — never deleted —
+   * so provenance/snapshots stay auditable, and exactly one active source
+   * (the incoming one) remains afterwards.
+   */
+  replaceActiveSource?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
@@ -327,16 +336,45 @@ export async function importEditorialSource(input: {
         )
       );
 
-    const differentSource = activeSources.find(
+    const conflictingActiveSources = activeSources.filter(
       (source: any) =>
         source.sourceKind !== payload.sourceKind ||
         source.sourceKey !== payload.sourceKey
     );
-    if (differentSource) {
-      throw new WorkspaceEditorialDraftError(
-        "SOURCE_CONFLICT",
-        "This work item already has another active source. Remove or explicitly replace it before changing source identity."
-      );
+    if (conflictingActiveSources.length > 0) {
+      if (!input.replaceActiveSource) {
+        throw new WorkspaceEditorialDraftError(
+          "SOURCE_CONFLICT",
+          "This work item already has another active source. Remove or explicitly replace it before changing source identity."
+        );
+      }
+      // Explicit replacement: transition the old active source(s) to
+      // "removed" (row + snapshots stay for audit), then re-resolve the
+      // candidate row for the incoming source identity in ANY status — a
+      // previously removed row for the same document may exist and must be
+      // reactivated instead of violating the unique index.
+      await tx
+        .update(workspaceEditorialSources)
+        .set({ status: "removed", updatedAt: new Date() })
+        .where(
+          inArray(
+            workspaceEditorialSources.id,
+            conflictingActiveSources.map((source: any) => source.id)
+          )
+        );
+      const [replacementCandidate] = await tx
+        .select()
+        .from(workspaceEditorialSources)
+        .where(
+          and(
+            eq(workspaceEditorialSources.workItemId, input.workItemId),
+            eq(workspaceEditorialSources.sourceKind, payload.sourceKind),
+            eq(workspaceEditorialSources.sourceKey, payload.sourceKey)
+          )
+        )
+        .limit(1);
+      activeSources.length = 0;
+      if (replacementCandidate) activeSources.push(replacementCandidate);
     }
 
     let source = activeSources[0] ?? null;
@@ -380,6 +418,9 @@ export async function importEditorialSource(input: {
             : null,
           mimeType: payload.mimeType,
           title: payload.title,
+          // Reactivates a previously removed row re-resolved during explicit
+          // replacement; a no-op for rows that were already active.
+          status: "active",
           updatedAt: new Date(),
         })
         .where(eq(workspaceEditorialSources.id, source.id));
