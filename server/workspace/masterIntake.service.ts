@@ -92,6 +92,10 @@ type PreviewRow = {
    * active-source state differs from what the operator reviewed.
    */
   observedActiveSourceKeys: string[];
+  /** IPE-061: provenance classification for this row. */
+  provenanceDisposition: "SAME_IDENTITY" | "REBOUND" | "ROW_REUSED" | "NONE";
+  /** Stale at-row locator (different identity) reconciled when this row syncs. */
+  reconcileStaleProvenanceId: number | null;
 };
 
 type PreviewResult = {
@@ -458,6 +462,8 @@ export async function previewWorkspaceMasterIntake(input: {
         sourceAlreadyLinked: false,
         sourceReplacementExpected: false,
         observedActiveSourceKeys: [],
+        provenanceDisposition: "NONE",
+        reconcileStaleProvenanceId: null,
       });
       continue;
     }
@@ -505,15 +511,59 @@ export async function previewWorkspaceMasterIntake(input: {
     // provenance context itself, never via NEW-path derivation.
     let provenance: any = null;
     let atRowIdentityChanged = false;
+    // IPE-061: true row-reuse reconciliation (CASE C) — set when the at-row
+    // provenance record belongs to a DIFFERENT, verifiably-gone identity.
+    let reusedProvenanceDisposition: "ROW_REUSED" | "REBOUND" | null = null;
+    let reusedStaleProvenanceId: number | null = null;
     if (uniqueIdentityMatch) {
       provenance = uniqueIdentityMatch;
     } else if (provenanceAtRow) {
-      provenance = provenanceAtRow;
-      atRowIdentityChanged = true;
-      // AMBIGUOUS_PROVENANCE_REBIND already reports the multi-match case;
-      // report the identity change only when nothing canonical-matched.
-      if (identityMatches.length === 0) {
-        blockers.push("SYNC_IDENTITY_CHANGED");
+      // IPE-061: the at-row provenance record does NOT canonical-match this
+      // row. Classify before failing: a rowNumber is only a sheet locator,
+      // so the record may be a stale locator left by a REUSED row.
+      const staleIdentity = provenanceIdentityFingerprint(provenanceAtRow);
+      const staleSiblingRecords =
+        staleIdentity === null
+          ? 0
+          : provenanceRows.filter(
+              (record: any) =>
+                record !== provenanceAtRow &&
+                provenanceIdentityFingerprint(record) === staleIdentity
+            ).length;
+      const staleVerifiedOccurrences =
+        staleIdentity === null
+          ? 0
+          : Array.from(currentSheetIdentityByRow.values()).filter(
+              (value: string | null) => value === staleIdentity
+            ).length;
+      const ambiguousReuse =
+        staleIdentity === null ||
+        blockers.includes("AMBIGUOUS_PROVENANCE_REBIND") ||
+        staleSiblingRecords > 0 ||
+        staleVerifiedOccurrences > 1;
+      if (ambiguousReuse) {
+        // CASE D — ambiguous/malformed: fail closed with provenance context.
+        provenance = provenanceAtRow;
+        atRowIdentityChanged = true;
+        if (staleIdentity === null) {
+          // Malformed legacy record (R1-D contract).
+          if (identityMatches.length === 0) {
+            blockers.push("SYNC_IDENTITY_CHANGED");
+          }
+        } else if (!blockers.includes("AMBIGUOUS_PROVENANCE_REBIND")) {
+          // Well-formed identity claimed by multiple locators / seen in
+          // multiple verified rows — refuse to guess the authoritative one.
+          blockers.push("AMBIGUOUS_PROVENANCE_REBIND");
+        }
+      } else {
+        // CASE C — true row reuse: the old identity's only locator is this
+        // row, and the sheet now carries a different (verified) identity.
+        // Release the stale locator and let this row follow the normal
+        // NEW/existing-candidate path; sync reconciles the locator
+        // (overwrite/delete) with a preview-bound ownership guard.
+        reusedStaleProvenanceId = Number(provenanceAtRow.id);
+        reusedProvenanceDisposition =
+          staleVerifiedOccurrences === 1 ? "REBOUND" : "ROW_REUSED";
       }
     }
 
@@ -552,6 +602,8 @@ export async function previewWorkspaceMasterIntake(input: {
         .limit(1);
       let provenanceSourceAlreadyLinked = false;
       let provenanceSourceReplacementExpected = false;
+      let canonicalDisposition: "SAME_IDENTITY" | "REBOUND" = "SAME_IDENTITY";
+      let staleAtRowProvenanceId: number | null = null;
       let provenanceObservedActiveSourceKeys: string[] = [];
       if (!workItem) {
         blockers.push("SYNC_TARGET_MISSING");
@@ -596,6 +648,17 @@ export async function previewWorkspaceMasterIntake(input: {
       const provenanceWorkspaceNovel = workspaceNovelRows.find(
         (item: any) => Number(item.id) === Number(provenance.workspaceNovelId)
       );
+      canonicalDisposition =
+        Number(provenance.rowNumber) === rowNumber ? "SAME_IDENTITY" : "REBOUND";
+      // IPE-061: an at-row record carrying a DIFFERENT identity than this
+      // canonical match is a stale locator — reconciled (deleted) when this
+      // row syncs, so the matched provenance record remains the single owner.
+      if (
+        provenanceAtRow &&
+        Number(provenanceAtRow.id) !== Number(provenance.id)
+      ) {
+        staleAtRowProvenanceId = Number(provenanceAtRow.id);
+      }
       rows.push({
         rowNumber,
         status: masterIntakeProvenancePreviewStatus({
@@ -626,6 +689,8 @@ export async function previewWorkspaceMasterIntake(input: {
         sourceAlreadyLinked: provenanceSourceAlreadyLinked,
         sourceReplacementExpected: provenanceSourceReplacementExpected,
         observedActiveSourceKeys: provenanceObservedActiveSourceKeys,
+        provenanceDisposition: canonicalDisposition,
+        reconcileStaleProvenanceId: staleAtRowProvenanceId,
       });
       continue;
     }
@@ -660,6 +725,8 @@ export async function previewWorkspaceMasterIntake(input: {
         sourceAlreadyLinked: false,
         sourceReplacementExpected: false,
         observedActiveSourceKeys: [],
+        provenanceDisposition: "NONE",
+        reconcileStaleProvenanceId: null,
       });
       continue;
     }
@@ -779,6 +846,9 @@ export async function previewWorkspaceMasterIntake(input: {
       sourceAlreadyLinked,
       sourceReplacementExpected,
       observedActiveSourceKeys,
+
+      provenanceDisposition: reusedProvenanceDisposition ?? "NONE",
+      reconcileStaleProvenanceId: reusedStaleProvenanceId,
     });
   }
 
@@ -1012,6 +1082,31 @@ async function persistProvenance(input: {
       )
     )
     .limit(1);
+  // IPE-061 TOCTOU guard: a reused row's sync is bound to the exact stale
+  // locator observed at preview time. If concurrent work reconciled or
+  // moved it, refuse this row instead of overwriting someone else's record.
+  if (input.row.reconcileStaleProvenanceId != null && existing) {
+    if (Number(existing.id) !== input.row.reconcileStaleProvenanceId) {
+      throw new WorkspaceMasterIntakeError(
+        "STALE_PREVIEW",
+        "Provenance ownership of this row changed after preview. Preview again before syncing."
+      );
+    }
+    if (
+      input.row.provenanceDisposition === "REBOUND" &&
+      input.row.provenanceId != null &&
+      Number(input.row.provenanceId) !== input.row.reconcileStaleProvenanceId
+    ) {
+      // The canonical identity matched a provenance record elsewhere: delete
+      // the stale at-row locator and keep the matched record as the single owner.
+      await db
+        .delete(workspaceMasterIntakeRows)
+        .where(eq(workspaceMasterIntakeRows.id, Number(existing.id)));
+      return;
+    }
+    // ROW_REUSED: fall through — the update below overwrites the stale
+    // locator in place (no release gap; reconcile-by-overwrite).
+  }
   if (existing) {
     await db
       .update(workspaceMasterIntakeRows)
