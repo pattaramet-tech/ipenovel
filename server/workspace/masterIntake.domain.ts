@@ -109,6 +109,15 @@ export function parseMasterIntakeEpisodeSpan(value: string): { start: number; en
   return { start, end };
 }
 
+export type ProvenanceReconciliationPlanEntry = {
+  provenanceId: number;
+  identityFingerprint: string;
+  fromRow: number;
+  toRow: number | null;
+  action: "MOVE" | "RELEASE";
+  ownerRowNumber: number;
+};
+
 export type MasterIntakeCanonicalIdentity = {
   version: "workspace-master-intake-identity-v2";
   normalizedTitle: string;
@@ -229,12 +238,27 @@ export function masterIntakePreviewFingerprint(input: {
     sourceReplacementExpected?: boolean;
     /** Canonical `<sourceKind>:<sourceKey>` set observed active at preview time. */
     observedActiveSourceKeys?: string[];
+    /** IPE-061: how this row's provenance was classified during preview. */
+    provenanceDisposition?: "SAME_IDENTITY" | "REBOUND" | "ROW_REUSED" | "NONE";
+    /** Stale at-row locator (different identity) pending reconcile in sync. */
+    reconcileStaleProvenanceId?: number | null;
+    /** IPE-061R2: canonical identity of that stale locator at preview time. */
+    reconcileStaleProvenanceIdentityFingerprint?: string | null;
+    /** IPE-061R5: preview-bound reconciliation plan entry. */
+    provenanceReconciliationPlan?: Array<{
+      provenanceId: number;
+      identityFingerprint: string;
+      fromRow: number;
+      toRow: number | null;
+      action: "MOVE" | "RELEASE";
+      ownerRowNumber: number;
+    }>;
   }>;
 }): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        version: "workspace-master-intake-preview-v4",
+        version: "workspace-master-intake-preview-v7",
         workspaceId: input.workspaceId,
         startRow: input.startRow,
         endRow: input.endRow,
@@ -250,6 +274,11 @@ export function masterIntakePreviewFingerprint(input: {
           blockers: [...(row.blockers ?? [])].sort(),
           sourceAlreadyLinked: row.sourceAlreadyLinked === true,
           sourceReplacementExpected: row.sourceReplacementExpected === true,
+          provenanceDisposition: row.provenanceDisposition ?? "NONE",
+          reconcileStaleProvenanceId: row.reconcileStaleProvenanceId ?? null,
+          reconcileStaleProvenanceIdentityFingerprint:
+            row.reconcileStaleProvenanceIdentityFingerprint ?? null,
+          provenanceReconciliationPlan: (row.provenanceReconciliationPlan ?? []).map(entry => ({ ... entry })),
           // Binding the preview to the exact observed active-source state is
           // what makes a replacement authorization stale-safe: [A] and [C]
           // must never produce the same fingerprint.

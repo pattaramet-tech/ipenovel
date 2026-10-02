@@ -884,7 +884,44 @@ export default function WorkspacePage() {
         `Sync สำเร็จ ${result.summary.succeeded}/${result.summary.attempted} แถว${result.summary.failed ? ` · มีปัญหา ${result.summary.failed} แถว` : ""}`
       );
     },
-    onError: (error) => toast.error(error.message),
+    onError: async (error) => {
+      // IPE-061R1: stale-preview recovery — refetch the preview once, swap
+      // the fresh result into the UI, and let the operator re-review before
+      // syncing again. Never auto-sync, and never clear the current preview
+      // unless the refresh actually succeeded.
+      // IPE-061R1A: structured tRPC discriminator. The server maps the
+      // Master Intake STALE_PREVIEW error to PRECONDITION_FAILED, which is
+      // allowlisted in CLIENT_SAFE_ERROR_CODES and serialized as data.code.
+      const isStalePreview = error.data?.code === "PRECONDITION_FAILED";
+      if (!isStalePreview) {
+        toast.error(error.message);
+        return;
+      }
+      try {
+        const response = await masterIntakePreviewQuery.refetch();
+        // IPE-061R5: refetch() does not reject on query errors — a failed
+        // refetch can carry stale cached data. Only a typed successful
+        // result may replace the preview the operator is looking at.
+        if (!response.isSuccess || !response.data) {
+          toast.error(
+            response.error
+              ? `อัปเดต Preview ไม่สำเร็จ: ${response.error.message}`
+              : "อัปเดต Preview ไม่สำเร็จ — กด Preview Sync อีกครั้ง"
+          );
+          return;
+        }
+        setMasterIntakePreviewResult(response.data);
+        toast.info(
+          "ข้อมูลเปลี่ยนหลัง Preview — อัปเดต Preview ล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกด Sync อีกครั้ง"
+        );
+      } catch (refreshError) {
+        toast.error(
+          refreshError instanceof Error
+            ? `อัปเดต Preview ไม่สำเร็จ: ${refreshError.message}`
+            : "อัปเดต Preview ไม่สำเร็จ — กด Preview Sync อีกครั้ง"
+        );
+      }
+    },
   });
   const createEditorialNovel = trpc.workspace.editorial.createNovel.useMutation({
     onSuccess: async () => {

@@ -32,10 +32,30 @@ vi.mock("../db", () => ({
 vi.mock("../nqa/google/transport", () => ({
   GoogleRestReadOnlyTransport: class {
     async getSpreadsheetMetadata() {
-      return { sheets: [{ title: NQA_AUTOLINK_LIVE_TARGET.sheetName, sheetId: 42 }] };
+      return {
+        spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+        sheets: [
+          {
+            sheetId: 42,
+            title: NQA_AUTOLINK_LIVE_TARGET.sheetName,
+            index: 0,
+            rowCount: 2000,
+            columnCount: 20,
+          },
+        ],
+      };
     }
     async batchGetValues(input: { ranges: string[] }) {
       return input.ranges.map((range: string) => {
+        const single = range.match(/!B(\d+):B(\d+)$/);
+        if (single) {
+          const singleValues: unknown[][] = [];
+          for (let rowNumber = Number(single[1]); rowNumber <= Number(single[2]); rowNumber += 1) {
+            const cells = h.sheetRows.get(rowNumber);
+            singleValues.push(cells ? [cells[0]] : []);
+          }
+          return { values: singleValues };
+        }
         const match = range.match(/!B(\d+):O(\d+)$/);
         const start = Number(match?.[1]);
         const end = Number(match?.[2]);
@@ -351,22 +371,28 @@ describe("Master Intake canonical identity — preview contract (A-E)", () => {
 });
 
 describe("Master Intake canonical identity — fail closed (F-K)", () => {
-  it("F: normalized title changed => SYNC_IDENTITY_CHANGED, CONFLICT", async () => {
+  it("F: normalized title changed at a reused row => ROW_REUSED, normal NEW path (IPE-061)", async () => {
     h.sheetRows.set(2, sheetRowCells({ rawTitle: "เรื่อง B 1-30", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
     const preview = await previewRows({ provenance: [provenanceRow()] });
     const row = preview.rows[0];
-    expect(row.status).toBe("CONFLICT");
-    expect(row.blockers).toContain("SYNC_IDENTITY_CHANGED");
+    // IPE-061: rowNumber is a sheet locator; a different identity on the same
+    // row (old identity gone) is a row reuse, not an identity mutation.
+    expect(row.blockers).not.toContain("SYNC_IDENTITY_CHANGED");
+    expect(row.provenanceDisposition).toBe("ROW_REUSED");
+    expect(row.provenanceId).toBeNull();
+    expect(row.reconcileStaleProvenanceId).toBe(900);
   });
 
-  it("G: episode range changed 141-190 -> 141-191 => identity changed, CONFLICT", async () => {
+  it("G: episode range changed 141-190 -> 141-191 => ROW_REUSED (IPE-061); overlap still blocks via work item", async () => {
     h.sheetRows.set(2, sheetRowCells({ rawTitle: "เรื่อง A 141-191", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
     const preview = await previewRows({
       provenance: [provenanceRow({ rawTitle: "เรื่อง A 141-190", normalizedTitle: "เรื่อง a", episodeNumber: "141-190" })],
     });
     const row = preview.rows[0];
-    expect(row.status).toBe("CONFLICT");
-    expect(row.blockers).toContain("SYNC_IDENTITY_CHANGED");
+    expect(row.blockers).not.toContain("SYNC_IDENTITY_CHANGED");
+    expect(row.provenanceDisposition).toBe("ROW_REUSED");
+    expect(row.provenanceId).toBeNull();
+    expect(row.reconcileStaleProvenanceId).toBe(900);
   });
 
   it("H: overlapping but non-exact range => EPISODE_RANGE_OVERLAP, no auto-rebind", async () => {
@@ -515,39 +541,29 @@ describe("Master Intake sync — source replacement wiring", () => {
 // ============ R1 — bounded review findings repair (F1 + F2) ============
 
 describe("R1 F1 — at-row provenance identity mismatch never falls through to NEW path", () => {
-  it("R1-A: range changed at same row => CONFLICT with provenance context preserved", async () => {
+  it("R1-A (superseded by IPE-061): range changed at same row => ROW_REUSED reconciliation", async () => {
     h.sheetRows.set(2, sheetRowCells({ rawTitle: "เรื่อง A 141-191", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
     const preview = await previewRows({
       provenance: [provenanceRow({ rawTitle: "เรื่อง A 141-190", normalizedTitle: "เรื่อง a", episodeNumber: "141-190" })],
     });
     const row = preview.rows[0];
-    expect(row.status).toBe("CONFLICT");
-    expect(row.blockers).toContain("SYNC_IDENTITY_CHANGED");
-    // NEW-path derivation must not add misleading blockers.
-    expect(row.blockers).toEqual(["SYNC_IDENTITY_CHANGED"]);
-    // Provenance context preserved.
-    expect(row.provenanceId).toBe(900);
-    expect(row.provenanceRowNumber).toBe(2);
-    expect(row.workItemId).toBe(55);
-    expect(row.workspaceNovelId).toBe(777);
-    expect(row.existingNovelId).toBe(5);
-    // No source replacement, no new target resolution.
-    expect(row.sourceReplacementExpected).toBe(false);
-    expect(row.sourceAlreadyLinked).toBe(false);
+    // IPE-061 supersedes R1-A: a well-formed identity mismatch at a reused
+    // row releases the stale locator and follows the normal NEW path.
+    expect(row.blockers).not.toContain("SYNC_IDENTITY_CHANGED");
+    expect(row.provenanceDisposition).toBe("ROW_REUSED");
+    expect(row.reconcileStaleProvenanceId).toBe(900);
+    expect(row.blockers).toEqual([]);
   });
 
-  it("R1-B: title changed at same row => same fail-closed semantics with context", async () => {
+  it("R1-B (superseded by IPE-061): title changed at same row => ROW_REUSED reconciliation", async () => {
     h.sheetRows.set(2, sheetRowCells({ rawTitle: "เรื่อง B 141-190", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
     const preview = await previewRows({
       provenance: [provenanceRow({ rawTitle: "เรื่อง A 141-190", normalizedTitle: "เรื่อง a", episodeNumber: "141-190" })],
     });
     const row = preview.rows[0];
-    expect(row.status).toBe("CONFLICT");
-    expect(row.blockers).toEqual(["SYNC_IDENTITY_CHANGED"]);
-    expect(row.provenanceId).toBe(900);
-    expect(row.provenanceRowNumber).toBe(2);
-    expect(row.workItemId).toBe(55);
-    expect(row.sourceReplacementExpected).toBe(false);
+    expect(row.blockers).not.toContain("SYNC_IDENTITY_CHANGED");
+    expect(row.provenanceDisposition).toBe("ROW_REUSED");
+    expect(row.reconcileStaleProvenanceId).toBe(900);
   });
 });
 

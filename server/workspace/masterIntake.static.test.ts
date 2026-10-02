@@ -101,10 +101,12 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(service).toContain("AMBIGUOUS_PROVENANCE_REBIND");
     expect(service).toContain("PROVENANCE_REBIND_BATCH_INCOMPLETE");
     expect(service).toContain("Master Intake source identity changed before row rebind.");
-    expect(service).toContain("PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+    // IPE-061R3: identity presence verified via the authoritative identity-only
+    // index (source-validity independent, preview-range independent).
     expect(service).toContain("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
-    expect(service).toContain("readSpecificSheetRows");
-    expect(service).toContain("currentSheetIdentityByRow");
+    expect(service).toContain("readSheetBusinessIdentityIndex");
+    expect(service).not.toContain("readSpecificSheetRows");
+    expect(service).not.toContain("currentSheetIdentityByRow");
     expect(service).toContain("Number(record.rowNumber) !== Number(move.provenanceRowNumber)");
     expect(service).toContain("eq(workspaceMasterIntakeRows.rowNumber, Number(move.provenanceRowNumber))");
     expect(service).toContain("eq(workspaceMasterIntakeRows.rowNumber, temporaryRow)");

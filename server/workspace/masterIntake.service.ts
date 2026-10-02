@@ -36,7 +36,9 @@ import {
   normalizeOptionalHttpUrl,
   parseMasterIntakeEpisodeSpan,
   parseMasterIntakeTitleRange,
+  MASTER_INTAKE_MAX_ROWS,
   type MasterIntakeRowCanonical,
+  type ProvenanceReconciliationPlanEntry,
 } from "./masterIntake.domain";
 import {
   bindPublicationNovel,
@@ -92,6 +94,14 @@ type PreviewRow = {
    * active-source state differs from what the operator reviewed.
    */
   observedActiveSourceKeys: string[];
+  /** IPE-061: provenance classification for this row. */
+  provenanceDisposition: "SAME_IDENTITY" | "REBOUND" | "ROW_REUSED" | "NONE";
+  /** Stale at-row locator (different identity) reconciled when this row syncs. */
+  reconcileStaleProvenanceId: number | null;
+  /** IPE-061R2: canonical identity of the stale locator at preview time. */
+  reconcileStaleProvenanceIdentityFingerprint: string | null;
+  /** IPE-061R5: preview-bound reconciliation plan entries owned by this row. */
+  provenanceReconciliationPlan: ProvenanceReconciliationPlanEntry[];
 };
 
 type PreviewResult = {
@@ -216,18 +226,20 @@ async function readSheetRows(input: {
   }
   return {
     sheetId: sheet.sheetId,
+    rowCount: sheet.rowCount ?? null,
     values: batch?.values ?? [],
   };
 }
 
-async function readSpecificSheetRows(input: {
+const MASTER_INTAKE_IDENTITY_SCAN_CHUNK_ROWS = 500;
+const MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS = 10000;
+
+async function readSheetBusinessIdentityIndex(input: {
   actorUserId: number;
   googleConnectionId: number;
-  rowNumbers: number[];
-}) {
-  const uniqueRows = Array.from(new Set(input.rowNumbers)).sort((a, b) => a - b);
-  const valuesByRow = new Map<number, unknown[]>();
-  if (uniqueRows.length === 0) return valuesByRow;
+  sheetName: string;
+  rowCount: number | null;
+}): Promise<Map<string, number[]>> {
   const transport = new GoogleRestReadOnlyTransport({
     accessTokenProvider: () =>
       refreshWorkspaceGoogleNqaReadAccessToken({
@@ -235,62 +247,57 @@ async function readSpecificSheetRows(input: {
         connectionId: input.googleConnectionId,
       }),
   });
-  const ranges = uniqueRows.map(
-    rowNumber =>
-      quoteSheetName(NQA_AUTOLINK_LIVE_TARGET.sheetName) +
-      "!B" +
-      rowNumber +
-      ":O" +
-      rowNumber
-  );
-  let batches;
-  try {
-    batches = await transport.batchGetValues({
-      spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
-      ranges,
-    });
-  } catch {
+  const index = new Map<string, number[]>();
+  // IPE-061R3: authoritative absence claims require an established sheet
+  // extent. Without rowCount we refuse to infer absence.
+  if (input.rowCount == null) {
     throw new WorkspaceMasterIntakeError(
       "GOOGLE_READ_FAILED",
-      "Google Sheets provenance rows could not be verified."
+      "Master Intake sheet extent could not be established for identity verification."
     );
   }
-  uniqueRows.forEach((rowNumber, index) => {
-    valuesByRow.set(rowNumber, batches[index]?.values?.[0] ?? []);
-  });
-  return valuesByRow;
-}
-
-function sheetRowIdentityFingerprint(input: {
-  rowNumber: number;
-  cells: unknown[];
-  sheetId: number;
-}) {
-  const rawTitle = String(input.cells[0] ?? "").trim();
-  const translationDocUrl = String(input.cells[1] ?? "").trim();
-  const webSourceRaw = String(input.cells[3] ?? "").trim();
-  const preparedSourceRaw = String(input.cells[13] ?? "").trim();
-  const parsed = parseMasterIntakeTitleRange(rawTitle);
-  const translationDocumentId = googleDocumentIdFromUrlOrId(translationDocUrl);
-  const preparedSourceDocumentId = preparedSourceRaw
-    ? googleDocumentIdFromUrlOrId(preparedSourceRaw)
-    : null;
-  const webSourceUrl = normalizeOptionalHttpUrl(webSourceRaw);
-  if (!parsed || !translationDocumentId || webSourceUrl === undefined) return null;
-  return masterIntakeRowIdentityFingerprint({
-    spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
-    sheetId: input.sheetId,
-    sheetName: NQA_AUTOLINK_LIVE_TARGET.sheetName,
-    rowNumber: input.rowNumber,
-    novelTitle: parsed.novelTitle,
-    normalizedTitle: parsed.normalizedTitle,
-    episodeNumber: parsed.episodeNumber,
-    translationDocUrl,
-    translationDocumentId,
-    webSourceUrl,
-    preparedSourceDocUrl: preparedSourceDocumentId ? preparedSourceRaw : null,
-    preparedSourceDocumentId,
-  });
+  const boundedRowCount = input.rowCount;
+  if (boundedRowCount > MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS) {
+    throw new WorkspaceMasterIntakeError(
+      "GOOGLE_READ_FAILED",
+      `Master Intake sheet exceeds the bounded identity scan range (${MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS} rows).`
+    );
+  }
+  let consecutiveEmptyChunks = 0;
+  for (let start = 2; start <= boundedRowCount; start += MASTER_INTAKE_IDENTITY_SCAN_CHUNK_ROWS) {
+    const end = Math.min(start + MASTER_INTAKE_IDENTITY_SCAN_CHUNK_ROWS - 1, boundedRowCount);
+    const range =
+      quoteSheetName(input.sheetName) + "!B" + start + ":B" + end;
+    let batch;
+    try {
+      [batch] = await transport.batchGetValues({
+        spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+        ranges: [range],
+      });
+    } catch {
+      throw new WorkspaceMasterIntakeError(
+        "GOOGLE_READ_FAILED",
+        "Google Sheet identity index could not be read."
+      );
+    }
+    const values = batch?.values ?? [];
+    values.forEach((cells: unknown[], offset: number) => {
+      const rowNumber = start + offset;
+      const rawTitle = String(cells?.[0] ?? "").trim();
+      if (!rawTitle) return;
+      const parsed = parseMasterIntakeTitleRange(rawTitle);
+      if (!parsed) return;
+      const identity = canonicalMasterIntakeIdentityFingerprint({
+        normalizedTitle: parsed.normalizedTitle,
+        episodeNumber: parsed.episodeNumber,
+      });
+      if (!identity) return;
+      const bucket = index.get(identity) ?? [];
+      bucket.push(rowNumber);
+      index.set(identity, bucket);
+    });
+  }
+  return index;
 }
 
 async function requireWorkspace(db: any, actorUserId: number, workspaceId: number) {
@@ -339,6 +346,22 @@ export async function previewWorkspaceMasterIntake(input: {
   const db = await database();
   await requireWorkspace(db, input.actorUserId, input.workspaceId);
   const sheetRead = await readSheetRows(input);
+  // IPE-061R2: authoritative business-identity index, built lazily (one
+  // bounded B-column scan) only when an at-row identity mismatch actually
+  // needs presence verification. Classification must never depend on the
+  // operator's preview range.
+  let identityIndexPromise: Promise<Map<string, number[]>> | null = null;
+  const getIdentityIndex = () => {
+    if (!identityIndexPromise) {
+      identityIndexPromise = readSheetBusinessIdentityIndex({
+        actorUserId: input.actorUserId,
+        googleConnectionId: input.googleConnectionId,
+        sheetName: NQA_AUTOLINK_LIVE_TARGET.sheetName,
+        rowCount: sheetRead.rowCount,
+      });
+    }
+    return identityIndexPromise;
+  };
 
   const [publicationNovels, workspaceNovelRows, provenanceRows] = await Promise.all([
     db.select({ id: novels.id, title: novels.title }).from(novels),
@@ -351,47 +374,6 @@ export async function previewWorkspaceMasterIntake(input: {
       .from(workspaceMasterIntakeRows)
       .where(eq(workspaceMasterIntakeRows.workspaceId, input.workspaceId)),
   ]);
-
-  const currentSheetIdentityByRow = new Map<number, string | null>();
-  const selectedIdentityFingerprints = new Set<string>();
-  for (let rowNumber = input.startRow; rowNumber <= input.endRow; rowNumber += 1) {
-    const identity = sheetRowIdentityFingerprint({
-      rowNumber,
-      cells: sheetRead.values[rowNumber - input.startRow] ?? [],
-      sheetId: sheetRead.sheetId,
-    });
-    currentSheetIdentityByRow.set(rowNumber, identity);
-    if (identity) selectedIdentityFingerprints.add(identity);
-  }
-  const provenanceRowsToVerify = provenanceRows
-    .filter((row: any) => {
-      if (
-        row.spreadsheetId !== NQA_AUTOLINK_LIVE_TARGET.spreadsheetId ||
-        Number(row.sheetId) !== Number(sheetRead.sheetId)
-      ) {
-        return false;
-      }
-      // Malformed legacy records canonicalize to null -> never selected for
-      // verification and never treated as an identity match.
-      const identity = provenanceIdentityFingerprint(row);
-      if (identity === null) return false;
-      return (
-        selectedIdentityFingerprints.has(identity) &&
-        (Number(row.rowNumber) < input.startRow || Number(row.rowNumber) > input.endRow)
-      );
-    })
-    .map((row: any) => Number(row.rowNumber));
-  const externalIdentityRows = await readSpecificSheetRows({
-    actorUserId: input.actorUserId,
-    googleConnectionId: input.googleConnectionId,
-    rowNumbers: provenanceRowsToVerify,
-  });
-  externalIdentityRows.forEach((cells, rowNumber) => {
-    currentSheetIdentityByRow.set(
-      rowNumber,
-      sheetRowIdentityFingerprint({ rowNumber, cells, sheetId: sheetRead.sheetId })
-    );
-  });
 
   const titles = new Map<string, Array<{ id: number; title: string }>>();
   for (const novel of publicationNovels) {
@@ -458,6 +440,10 @@ export async function previewWorkspaceMasterIntake(input: {
         sourceAlreadyLinked: false,
         sourceReplacementExpected: false,
         observedActiveSourceKeys: [],
+        provenanceDisposition: "NONE",
+        reconcileStaleProvenanceId: null,
+        reconcileStaleProvenanceIdentityFingerprint: null,
+        provenanceReconciliationPlan: [],
       });
       continue;
     }
@@ -491,12 +477,15 @@ export async function previewWorkspaceMasterIntake(input: {
     if (identityMatches.length > 1) blockers.push("AMBIGUOUS_PROVENANCE_REBIND");
     const uniqueIdentityMatch = identityMatches.length === 1 ? identityMatches[0] : null;
     if (uniqueIdentityMatch && Number(uniqueIdentityMatch.rowNumber) !== rowNumber) {
-      const oldRowIdentity = currentSheetIdentityByRow.get(Number(uniqueIdentityMatch.rowNumber));
-      if (oldRowIdentity === undefined) {
-        blockers.push("PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
-      } else if (oldRowIdentity === identityFingerprint) {
+      // IPE-061R3: business-identity presence at the provenance row is
+      // verified through the authoritative identity-only index — source
+      // metadata validity must never flip presence to "absent".
+      const identityRows = ((await getIdentityIndex()).get(identityFingerprint) ?? []);
+      if (identityRows.includes(Number(uniqueIdentityMatch.rowNumber))) {
         blockers.push("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
       }
+      // Otherwise the provenance row has verifiably vacated the identity —
+      // safe to reconcile (rebind) into this row.
     }
     // Resolution precedence: a provenance record matching the canonical
     // identity (even after a row move / source change) wins. An at-row
@@ -505,15 +494,98 @@ export async function previewWorkspaceMasterIntake(input: {
     // provenance context itself, never via NEW-path derivation.
     let provenance: any = null;
     let atRowIdentityChanged = false;
+    // IPE-061: true row-reuse reconciliation (CASE C) — set when the at-row
+    // provenance record belongs to a DIFFERENT, verifiably-gone identity.
+    let reusedProvenanceDisposition: "ROW_REUSED" | "REBOUND" | null = null;
+    let reusedStaleProvenanceId: number | null = null;
+    let reusedStaleProvenanceIdentityFingerprint: string | null = null;
+    let reusedProvenancePlanEntries: ProvenanceReconciliationPlanEntry[] = [];
     if (uniqueIdentityMatch) {
       provenance = uniqueIdentityMatch;
     } else if (provenanceAtRow) {
-      provenance = provenanceAtRow;
-      atRowIdentityChanged = true;
-      // AMBIGUOUS_PROVENANCE_REBIND already reports the multi-match case;
-      // report the identity change only when nothing canonical-matched.
-      if (identityMatches.length === 0) {
-        blockers.push("SYNC_IDENTITY_CHANGED");
+      // IPE-061: the at-row provenance record does NOT canonical-match this
+      // row. Classify before failing: a rowNumber is only a sheet locator,
+      // so the record may be a stale locator left by a REUSED row.
+      const staleIdentity = provenanceIdentityFingerprint(provenanceAtRow);
+      const staleSiblingRecords =
+        staleIdentity === null
+          ? 0
+          : provenanceRows.filter(
+              (record: any) =>
+                record !== provenanceAtRow &&
+                // IPE-061R3: scope ambiguity to the current target sheet —
+                // historical provenance from another spreadsheet/sheet must
+                // not make the current target ambiguous.
+                record.spreadsheetId === NQA_AUTOLINK_LIVE_TARGET.spreadsheetId &&
+                Number(record.sheetId) === Number(sheetRead.sheetId) &&
+                provenanceIdentityFingerprint(record) === staleIdentity
+            ).length;
+      // IPE-061R2: authoritative presence check — identity-only B-column
+      // index across the populated sheet extent. Independent of the
+      // preview range and of source-metadata validity.
+      const staleIdentityRows =
+        staleIdentity === null ? [] : ((await getIdentityIndex()).get(staleIdentity) ?? []);
+      const staleOccurrencesElsewhere = staleIdentityRows.filter(
+        (foundRow: number) => foundRow !== rowNumber
+      );
+      const staleSelfPresent = staleIdentityRows.some(
+        (foundRow: number) => foundRow === rowNumber
+      );
+      const ambiguousReuse =
+        staleIdentity === null ||
+        blockers.includes("AMBIGUOUS_PROVENANCE_REBIND") ||
+        staleSiblingRecords > 0 ||
+        staleOccurrencesElsewhere.length > 1;
+      if (ambiguousReuse) {
+        // CASE D — ambiguous/malformed: fail closed with provenance context.
+        provenance = provenanceAtRow;
+        atRowIdentityChanged = true;
+        if (staleIdentity === null) {
+          // Malformed legacy record (R1-D contract).
+          if (identityMatches.length === 0) {
+            blockers.push("SYNC_IDENTITY_CHANGED");
+          }
+        } else if (!blockers.includes("AMBIGUOUS_PROVENANCE_REBIND")) {
+          // Well-formed identity claimed by multiple locators / present in
+          // multiple sheet rows — refuse to guess the authoritative one.
+          blockers.push("AMBIGUOUS_PROVENANCE_REBIND");
+        }
+      } else if (staleOccurrencesElsewhere.length === 1) {
+        // CASE B — identity moved: the old identity is verifiably present at
+        // exactly one other row. Its locator reconciles to that row; this
+        // row proceeds independently with its own identity.
+        reusedStaleProvenanceId = Number(provenanceAtRow.id);
+        reusedStaleProvenanceIdentityFingerprint = staleIdentity;
+        reusedProvenanceDisposition = "REBOUND";
+        reusedProvenancePlanEntries = [{
+          provenanceId: Number(provenanceAtRow.id),
+          identityFingerprint: staleIdentity ?? "",
+          fromRow: Number(provenanceAtRow.rowNumber),
+          toRow: null,
+          action: "RELEASE",
+          ownerRowNumber: rowNumber,
+        }];
+      } else if (staleSelfPresent) {
+        // Identity unchanged at this row but the row fails full source
+        // validation — not a reuse, not a move. Fail closed; fixing the
+        // source metadata restores the normal canonical path.
+        provenance = provenanceAtRow;
+        atRowIdentityChanged = true;
+        if (identityMatches.length === 0) {
+          blockers.push("SYNC_IDENTITY_CHANGED");
+        }
+      } else {
+        // CASE C — true row reuse: the old identity is absent from the
+        // authoritative current sheet. Release the stale locator and let
+        // this row follow the normal NEW/existing-candidate path; sync
+        // reconciles the locator atomically with a preview-bound
+        // identity/ownership guard.
+        reusedStaleProvenanceId = Number(provenanceAtRow.id);
+        reusedStaleProvenanceIdentityFingerprint = staleIdentity;
+        reusedProvenanceDisposition = "ROW_REUSED";
+        // RELEASE plan entry is added by the chain walk below (destination
+        // occupancy may require intermediate moves first).
+        reusedProvenancePlanEntries = [];
       }
     }
 
@@ -552,6 +624,9 @@ export async function previewWorkspaceMasterIntake(input: {
         .limit(1);
       let provenanceSourceAlreadyLinked = false;
       let provenanceSourceReplacementExpected = false;
+      let canonicalDisposition: "SAME_IDENTITY" | "REBOUND" = "SAME_IDENTITY";
+      let staleAtRowProvenanceId: number | null = null;
+      let staleAtRowProvenanceIdentityFingerprint: string | null = null;
       let provenanceObservedActiveSourceKeys: string[] = [];
       if (!workItem) {
         blockers.push("SYNC_TARGET_MISSING");
@@ -596,6 +671,18 @@ export async function previewWorkspaceMasterIntake(input: {
       const provenanceWorkspaceNovel = workspaceNovelRows.find(
         (item: any) => Number(item.id) === Number(provenance.workspaceNovelId)
       );
+      canonicalDisposition =
+        Number(provenance.rowNumber) === rowNumber ? "SAME_IDENTITY" : "REBOUND";
+      // IPE-061: an at-row record carrying a DIFFERENT identity than this
+      // canonical match is a stale locator — reconciled (deleted) when this
+      // row syncs, so the matched provenance record remains the single owner.
+      if (
+        provenanceAtRow &&
+        Number(provenanceAtRow.id) !== Number(provenance.id)
+      ) {
+        staleAtRowProvenanceId = Number(provenanceAtRow.id);
+        staleAtRowProvenanceIdentityFingerprint = provenanceIdentityFingerprint(provenanceAtRow);
+      }
       rows.push({
         rowNumber,
         status: masterIntakeProvenancePreviewStatus({
@@ -626,6 +713,10 @@ export async function previewWorkspaceMasterIntake(input: {
         sourceAlreadyLinked: provenanceSourceAlreadyLinked,
         sourceReplacementExpected: provenanceSourceReplacementExpected,
         observedActiveSourceKeys: provenanceObservedActiveSourceKeys,
+        provenanceDisposition: canonicalDisposition,
+        reconcileStaleProvenanceId: staleAtRowProvenanceId,
+        reconcileStaleProvenanceIdentityFingerprint: staleAtRowProvenanceIdentityFingerprint,
+        provenanceReconciliationPlan: [],
       });
       continue;
     }
@@ -660,6 +751,10 @@ export async function previewWorkspaceMasterIntake(input: {
         sourceAlreadyLinked: false,
         sourceReplacementExpected: false,
         observedActiveSourceKeys: [],
+        provenanceDisposition: "NONE",
+        reconcileStaleProvenanceId: null,
+        reconcileStaleProvenanceIdentityFingerprint: null,
+        provenanceReconciliationPlan: [],
       });
       continue;
     }
@@ -779,6 +874,11 @@ export async function previewWorkspaceMasterIntake(input: {
       sourceAlreadyLinked,
       sourceReplacementExpected,
       observedActiveSourceKeys,
+
+      provenanceDisposition: reusedProvenanceDisposition ?? "NONE",
+      reconcileStaleProvenanceId: reusedStaleProvenanceId,
+      reconcileStaleProvenanceIdentityFingerprint: reusedStaleProvenanceIdentityFingerprint,
+      provenanceReconciliationPlan: reusedProvenancePlanEntries,
     });
   }
 
@@ -811,6 +911,110 @@ export async function previewWorkspaceMasterIntake(input: {
     }
   }
 
+  // IPE-061R5 — reconciliation plan derived from the authoritative
+  // identity-only index. Chained row moves are preview-bound (fingerprint v7);
+  // the operator's preview range never limits reconciliation.
+  const reconcileSeedRows = rows.filter(
+    row => row.status !== "CONFLICT" && row.reconcileStaleProvenanceId != null
+  );
+  const provenanceReconciliationPlan: ProvenanceReconciliationPlanEntry[] = [];
+  if (reconcileSeedRows.length > 0) {
+    const identityIndex = await getIdentityIndex();
+    const provenanceById = new Map(
+      provenanceRows.map((record: any) => [Number(record.id), record])
+    );
+    const rowByNumber = new Map(rows.map(row => [row.rowNumber, row]));
+    const plannedIds = new Set<number>();
+    const destinationOwners = new Map<number, number>();
+    const queue = reconcileSeedRows.map(row => ({
+      recordId: Number(row.reconcileStaleProvenanceId),
+      ownerRowNumber: row.rowNumber,
+    }));
+    let reconciliationGuard = 0;
+    const failDependent = (ownerRowNumber: number, blocker: string) => {
+      const ownerRow = rowByNumber.get(ownerRowNumber);
+      if (!ownerRow) return;
+      if (!ownerRow.blockers.includes(blocker)) ownerRow.blockers.push(blocker);
+      ownerRow.status = "CONFLICT";
+    };
+    while (queue.length) {
+      reconciliationGuard += 1;
+      if (reconciliationGuard > MASTER_INTAKE_MAX_ROWS * 2) {
+        for (const item of queue) {
+          failDependent(item.ownerRowNumber, "PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+        }
+        break;
+      }
+      const item = queue.shift()!;
+      if (plannedIds.has(item.recordId)) continue;
+      plannedIds.add(item.recordId);
+      const record = provenanceById.get(item.recordId);
+      if (!record) {
+        failDependent(item.ownerRowNumber, "PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+        continue;
+      }
+      const recordIdentity = provenanceIdentityFingerprint(record);
+      if (recordIdentity === null) {
+        failDependent(item.ownerRowNumber, "PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+        continue;
+      }
+      const occurrences = (identityIndex.get(recordIdentity) ?? []).filter(
+        found => found !== record.rowNumber
+      );
+      if (occurrences.length > 1) {
+        failDependent(item.ownerRowNumber, "AMBIGUOUS_PROVENANCE_REBIND");
+        continue;
+      }
+      if (occurrences.length === 1) {
+        const destination = occurrences[0]!;
+        const destinationOwner = destinationOwners.get(destination);
+        if (destinationOwner !== undefined) {
+          failDependent(item.ownerRowNumber, "AMBIGUOUS_PROVENANCE_REBIND");
+          failDependent(destinationOwner, "AMBIGUOUS_PROVENANCE_REBIND");
+          continue;
+        }
+        // A destination preview row whose canonical match IS this record is
+        // already covered by the canonical rebind pass — skip the duplicate.
+        const destinationRow = rowByNumber.get(destination);
+        if (
+          destinationRow &&
+          destinationRow.provenanceId === item.recordId &&
+          destinationRow.provenanceDisposition === "REBOUND"
+        ) {
+          continue;
+        }
+        destinationOwners.set(destination, item.recordId);
+        provenanceReconciliationPlan.push({
+          provenanceId: item.recordId,
+          identityFingerprint: recordIdentity,
+          fromRow: record.rowNumber,
+          toRow: destination,
+          action: "MOVE",
+          ownerRowNumber: item.ownerRowNumber,
+        });
+        const occupant = provenanceByRow.get(destination);
+        if (occupant && Number(occupant.id) !== item.recordId && !plannedIds.has(Number(occupant.id))) {
+          queue.push({ recordId: Number(occupant.id), ownerRowNumber: item.ownerRowNumber });
+        }
+        continue;
+      }
+      // Zero occurrences: identity genuinely absent — stale locator released.
+      provenanceReconciliationPlan.push({
+        provenanceId: item.recordId,
+        identityFingerprint: recordIdentity,
+        fromRow: record.rowNumber,
+        toRow: null,
+        action: "RELEASE",
+        ownerRowNumber: item.ownerRowNumber,
+      });
+    }
+    for (const row of rows) {
+      row.provenanceReconciliationPlan = provenanceReconciliationPlan.filter(
+        entry => entry.ownerRowNumber === row.rowNumber
+      );
+    }
+  }
+
   const provenanceRebindRows = rows.filter(
     row =>
       row.provenanceId !== null &&
@@ -827,7 +1031,10 @@ export async function previewWorkspaceMasterIntake(input: {
       if (
         occupant &&
         Number(occupant.id) !== Number(row.provenanceId) &&
-        !movingIds.has(Number(occupant.id))
+        !movingIds.has(Number(occupant.id)) &&
+        // IPE-061R2: an occupant that is exactly the preview-bound stale
+        // locator of this row is reconcilable inside the rebind transaction.
+        Number(occupant.id) !== Number(row.reconcileStaleProvenanceId ?? -1)
       ) {
         unsafeBatch = true;
       }
@@ -1012,6 +1219,56 @@ async function persistProvenance(input: {
       )
     )
     .limit(1);
+  // IPE-061R2 — preview-bound reconciliation of a reused/stale locator.
+  if (input.row.reconcileStaleProvenanceId != null) {
+    const reconcileId = Number(input.row.reconcileStaleProvenanceId);
+    if (input.row.provenanceDisposition === "ROW_REUSED") {
+      // True row reuse: atomically verify the stale locator still carries
+      // the preview-observed identity (same id AND same canonical identity),
+      // then overwrite it in place. No release gap, no blind overwrite.
+      await db.transaction(async (tx: any) => {
+        const [locked] = await tx
+          .select()
+          .from(workspaceMasterIntakeRows)
+          .where(eq(workspaceMasterIntakeRows.id, reconcileId))
+          .for("update")
+          .limit(1);
+        if (!locked) {
+          // Concurrently reconciled already: insert fresh provenance below.
+          await tx.insert(workspaceMasterIntakeRows).values(values);
+          return;
+        }
+        if (
+          Number(locked.rowNumber) !== input.row.rowNumber ||
+          provenanceIdentityFingerprint(locked) !==
+            (input.row.reconcileStaleProvenanceIdentityFingerprint ?? null)
+        ) {
+          throw new WorkspaceMasterIntakeError(
+            "STALE_PREVIEW",
+            "Provenance ownership of this row changed after preview. Preview again before syncing."
+          );
+        }
+        await tx
+          .update(workspaceMasterIntakeRows)
+          .set({ ...values, updatedAt: new Date() })
+          .where(eq(workspaceMasterIntakeRows.id, locked.id));
+      });
+      return;
+    }
+    if (input.row.provenanceDisposition === "REBOUND") {
+      // The identity moved: its canonical rebind (this sync) owns the
+      // reconciliation. If the stale locator still occupies this row, the
+      // rebind pass did not cover it — fail closed instead of clobbering.
+      if (existing) {
+        throw new WorkspaceMasterIntakeError(
+          "STALE_PREVIEW",
+          "The previous identity locator still needs reconciliation — include its current row in the preview range."
+        );
+      }
+      await db.insert(workspaceMasterIntakeRows).values(values);
+      return;
+    }
+  }
   if (existing) {
     await db
       .update(workspaceMasterIntakeRows)
@@ -1096,7 +1353,24 @@ async function rebindMovedMasterIntakeProvenance(preview: PreviewResult) {
         Number(occupant.id) !== Number(move.provenanceId) &&
         !movingIds.has(Number(occupant.id))
       ) {
-        throw new Error("Master Intake row rebind target became occupied.");
+        // IPE-061R2 Blocker 3: a stale locator occupying the rebind target is
+        // reconciled atomically here — only when it exactly matches the
+        // preview evidence (id + canonical identity). Any drift is fail-closed.
+        const reconcilable =
+          move.provenanceDisposition === "REBOUND" &&
+          move.reconcileStaleProvenanceId != null &&
+          Number(occupant.id) === Number(move.reconcileStaleProvenanceId) &&
+          provenanceIdentityFingerprint(occupant) ===
+            (move.reconcileStaleProvenanceIdentityFingerprint ?? null);
+        if (!reconcilable) {
+          throw new WorkspaceMasterIntakeError(
+            "STALE_PREVIEW",
+            "Provenance ownership of the rebind target changed after preview. Preview again before syncing."
+          );
+        }
+        await tx
+          .delete(workspaceMasterIntakeRows)
+          .where(eq(workspaceMasterIntakeRows.id, Number(occupant.id)));
       }
       const temporaryRow = -Number(move.provenanceId);
       const temporaryOccupant = byRow.get(temporaryRow) as any;
