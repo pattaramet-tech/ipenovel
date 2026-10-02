@@ -884,7 +884,35 @@ export default function WorkspacePage() {
         `Sync สำเร็จ ${result.summary.succeeded}/${result.summary.attempted} แถว${result.summary.failed ? ` · มีปัญหา ${result.summary.failed} แถว` : ""}`
       );
     },
-    onError: (error) => toast.error(error.message),
+    onError: async (error) => {
+      // IPE-061R1: stale-preview recovery — refetch the preview once, swap
+      // the fresh result into the UI, and let the operator re-review before
+      // syncing again. Never auto-sync, and never clear the current preview
+      // unless the refresh actually succeeded.
+      const causeCode =
+        (error as any)?.data?.cause?.code ?? (error as any)?.cause?.code;
+      if (causeCode !== "STALE_PREVIEW") {
+        toast.error(error.message);
+        return;
+      }
+      try {
+        const response = await masterIntakePreviewQuery.refetch();
+        if (response.data) {
+          setMasterIntakePreviewResult(response.data);
+          toast.info(
+            "ข้อมูลเปลี่ยนหลัง Preview — อัปเดต Preview ล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกด Sync อีกครั้ง"
+          );
+        } else {
+          toast.error("Preview ถูกเปลี่ยนและอัปเดตไม่สำเร็จ — กด Preview Sync อีกครั้ง");
+        }
+      } catch (refreshError) {
+        toast.error(
+          refreshError instanceof Error
+            ? `อัปเดต Preview ไม่สำเร็จ: ${refreshError.message}`
+            : "อัปเดต Preview ไม่สำเร็จ — กด Preview Sync อีกครั้ง"
+        );
+      }
+    },
   });
   const createEditorialNovel = trpc.workspace.editorial.createNovel.useMutation({
     onSuccess: async () => {

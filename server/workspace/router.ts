@@ -196,7 +196,13 @@ function mapWorkspaceError(error: unknown): never {
               error.code === "GOOGLE_READ_FAILED"
             ? "SERVICE_UNAVAILABLE"
             : "BAD_REQUEST";
-    throw new TRPCError({ code, message: error.message });
+    throw new TRPCError({
+      code,
+      message: error.message,
+      // IPE-061R1: deterministic client detection — the Master Intake UI
+      // triggers a stale-preview recovery flow on this exact code.
+      cause: error instanceof WorkspaceMasterIntakeError ? { code: error.code } : undefined,
+    });
   }
   if (error instanceof WorkspaceNqaAutolinkRuntimeError) {
     throw new TRPCError({
