@@ -32,10 +32,30 @@ vi.mock("../db", () => ({
 vi.mock("../nqa/google/transport", () => ({
   GoogleRestReadOnlyTransport: class {
     async getSpreadsheetMetadata() {
-      return { sheets: [{ title: NQA_AUTOLINK_LIVE_TARGET.sheetName, sheetId: 42 }] };
+      return {
+        spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+        sheets: [
+          {
+            sheetId: 42,
+            title: NQA_AUTOLINK_LIVE_TARGET.sheetName,
+            index: 0,
+            rowCount: 2000,
+            columnCount: 20,
+          },
+        ],
+      };
     }
     async batchGetValues(input: { ranges: string[] }) {
       return input.ranges.map((range: string) => {
+        const single = range.match(/!B(\d+):B(\d+)$/);
+        if (single) {
+          const singleValues: unknown[][] = [];
+          for (let rowNumber = Number(single[1]); rowNumber <= Number(single[2]); rowNumber += 1) {
+            const cells = h.sheetRows.get(rowNumber);
+            singleValues.push(cells ? [cells[0]] : []);
+          }
+          return { values: singleValues };
+        }
         const match = range.match(/!B(\d+):O(\d+)$/);
         const start = Number(match?.[1]);
         const end = Number(match?.[2]);

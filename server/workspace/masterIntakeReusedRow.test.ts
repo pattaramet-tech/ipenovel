@@ -31,6 +31,7 @@ import { NQA_AUTOLINK_LIVE_TARGET } from "./nqaAutolink.runtime";
 const h = vi.hoisted(() => ({
   db: null as any,
   sheetRows: new Map<number, unknown[]>(),
+  sheetRowCount: 2000 as number | null,
 }));
 
 vi.mock("../db", () => ({
@@ -48,7 +49,7 @@ vi.mock("../nqa/google/transport", () => ({
             sheetId: 42,
             title: NQA_AUTOLINK_LIVE_TARGET.sheetName,
             index: 0,
-            rowCount: 2000,
+            rowCount: h.sheetRowCount,
             columnCount: 20,
           },
         ],
@@ -889,4 +890,120 @@ describe("IPE-061R2 — authoritative identity verification + atomic reconcile",
     expect(row.provenanceDisposition).toBe("REBOUND");
     expect(row.reconcileStaleProvenanceId).toBe(1597);
     });
+});
+
+describe("IPE-061R3 — canonical rebind verification closure", () => {
+  function movedIdentityFixture(row100Cells: unknown[]) {
+    return buildDb(
+      baseConfig({
+        novels: [{ id: 5, title: "Naruto" }],
+        workspaceNovels: [{ id: 777, novelId: 5, status: "active" }],
+        workItemLookup: [{ id: 551, columnKey: "new" }],
+        provenance: [provenanceRow({ id: 100, rowNumber: 100, rawTitle: "Naruto 1251-1300", normalizedTitle: "naruto", episodeNumber: "1251-1300" })],
+      })
+    );
+  }
+
+  it("R3-A1. old identity present with invalid translation source still blocks rebind", async () => {
+    h.sheetRows.set(150, sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit` }));
+    h.sheetRows.set(100, sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: "not-a-google-doc" }));
+    const { db } = movedIdentityFixture([]);
+    h.db = db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 150, endRow: 150,
+    });
+    const row = preview.rows[0];
+    expect(row.status).toBe("CONFLICT");
+    expect(row.blockers).toContain("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
+    expect(row.blockers).not.toContain("PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+    // Identity A exists at BOTH rows -> canonical move is blocked (no rebind).
+    expect(row.provenanceDisposition).toBe("REBOUND");
+    expect(row.provenanceId).toBe(100);
+  });
+
+  it("R3-A2. old identity present with invalid web source still blocks rebind", async () => {
+    h.sheetRows.set(150, sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit` }));
+    h.sheetRows.set(100, sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "javascript:alert(1)" }));
+    const { db } = movedIdentityFixture([]);
+    h.db = db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 150, endRow: 150,
+    });
+    const row = preview.rows[0];
+    expect(row.blockers).toContain("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
+    expect(row.provenanceDisposition).toBe("REBOUND");
+  });
+
+  it("R3-A3. old row verifiably vacated => canonical REBOUND still allowed", async () => {
+    h.sheetRows.set(150, sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit` }));
+    h.sheetRows.set(100, sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` }));
+    const { db } = movedIdentityFixture([]);
+    h.db = db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 150, endRow: 150,
+    });
+    const row = preview.rows[0];
+    expect(row.blockers).toEqual([]);
+    expect(row.blockers).not.toContain("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
+    expect(row.provenanceDisposition).toBe("REBOUND");
+    expect(row.provenanceId).toBe(100);
+  });
+
+  it("R3-B1. sparse sheet: identity found beyond two empty chunks (rowCount honored)", async () => {
+    h.sheetRowCount = 3000;
+    h.sheetRows.set(1597, sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` }));
+    h.sheetRows.set(2500, sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit` }));
+    const { db } = buildDb(baseConfig({ novels: [], workspaceNovels: [], provenance: [provenanceRow({ ...NARUTO_OLD, rowNumber: 1597, id: 1597 })] }));
+    h.db = db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    const row = preview.rows[0];
+    expect(row.provenanceDisposition).toBe("REBOUND");
+    expect(row.blockers).toEqual([]);
+    expect(row.provenanceId).toBeNull();
+  });
+
+  it("R3-B2. rowCount beyond the supported bound fails closed", async () => {
+    h.sheetRowCount = 20001;
+    h.sheetRows.set(1597, sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` }));
+    const { db } = buildDb(baseConfig({ novels: [], workspaceNovels: [], provenance: [provenanceRow({ ...NARUTO_OLD, rowNumber: 1597, id: 1597 })] }));
+    h.db = db;
+    const preview = previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    await expect(preview).rejects.toMatchObject({ code: "GOOGLE_READ_FAILED" });
+  });
+
+  it("R3-C1. same identity provenance in another sheetId does not make current target ambiguous", async () => {
+    h.sheetRowCount = 2000;
+    h.sheetRows.set(1597, sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` }));
+    const { db } = buildDb(baseConfig({ novels: [], workspaceNovels: [], provenance: [
+      provenanceRow({ id: 1597, rowNumber: 1597, ...NARUTO_OLD }),
+      provenanceRow({ id: 500, rowNumber: 500, sheetId: 999, ...NARUTO_OLD }),
+    ] }));
+    h.db = db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    const row = preview.rows[0];
+    expect(row.blockers).toEqual([]);
+    expect(row.blockers).not.toContain("AMBIGUOUS_PROVENANCE_REBIND");
+    expect(row.provenanceDisposition).toBe("ROW_REUSED");
+  });
+
+  it("R3-C2. duplicate provenance in the current sheetId still fails closed as ambiguous", async () => {
+    h.sheetRows.set(1597, sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` }));
+    const { db } = buildDb(baseConfig({ novels: [], workspaceNovels: [], provenance: [
+      provenanceRow({ id: 1597, rowNumber: 1597, ...NARUTO_OLD }),
+      provenanceRow({ id: 1600, rowNumber: 1600, ...NARUTO_OLD }),
+    ] }));
+    h.db = db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    const row = preview.rows[0];
+    expect(row.status).toBe("CONFLICT");
+    expect(row.blockers).toContain("AMBIGUOUS_PROVENANCE_REBIND");
+  });
 });

@@ -227,86 +227,8 @@ async function readSheetRows(input: {
   };
 }
 
-async function readSpecificSheetRows(input: {
-  actorUserId: number;
-  googleConnectionId: number;
-  rowNumbers: number[];
-}) {
-  const uniqueRows = Array.from(new Set(input.rowNumbers)).sort((a, b) => a - b);
-  const valuesByRow = new Map<number, unknown[]>();
-  if (uniqueRows.length === 0) return valuesByRow;
-  const transport = new GoogleRestReadOnlyTransport({
-    accessTokenProvider: () =>
-      refreshWorkspaceGoogleNqaReadAccessToken({
-        actorUserId: input.actorUserId,
-        connectionId: input.googleConnectionId,
-      }),
-  });
-  const ranges = uniqueRows.map(
-    rowNumber =>
-      quoteSheetName(NQA_AUTOLINK_LIVE_TARGET.sheetName) +
-      "!B" +
-      rowNumber +
-      ":O" +
-      rowNumber
-  );
-  let batches;
-  try {
-    batches = await transport.batchGetValues({
-      spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
-      ranges,
-    });
-  } catch {
-    throw new WorkspaceMasterIntakeError(
-      "GOOGLE_READ_FAILED",
-      "Google Sheets provenance rows could not be verified."
-    );
-  }
-  uniqueRows.forEach((rowNumber, index) => {
-    valuesByRow.set(rowNumber, batches[index]?.values?.[0] ?? []);
-  });
-  return valuesByRow;
-}
-
-function sheetRowIdentityFingerprint(input: {
-  rowNumber: number;
-  cells: unknown[];
-  sheetId: number;
-}) {
-  const rawTitle = String(input.cells[0] ?? "").trim();
-  const translationDocUrl = String(input.cells[1] ?? "").trim();
-  const webSourceRaw = String(input.cells[3] ?? "").trim();
-  const preparedSourceRaw = String(input.cells[13] ?? "").trim();
-  const parsed = parseMasterIntakeTitleRange(rawTitle);
-  const translationDocumentId = googleDocumentIdFromUrlOrId(translationDocUrl);
-  const preparedSourceDocumentId = preparedSourceRaw
-    ? googleDocumentIdFromUrlOrId(preparedSourceRaw)
-    : null;
-  const webSourceUrl = normalizeOptionalHttpUrl(webSourceRaw);
-  if (!parsed || !translationDocumentId || webSourceUrl === undefined) return null;
-  return masterIntakeRowIdentityFingerprint({
-    spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
-    sheetId: input.sheetId,
-    sheetName: NQA_AUTOLINK_LIVE_TARGET.sheetName,
-    rowNumber: input.rowNumber,
-    novelTitle: parsed.novelTitle,
-    normalizedTitle: parsed.normalizedTitle,
-    episodeNumber: parsed.episodeNumber,
-    translationDocUrl,
-    translationDocumentId,
-    webSourceUrl,
-    preparedSourceDocUrl: preparedSourceDocumentId ? preparedSourceRaw : null,
-    preparedSourceDocumentId,
-  });
-}
-
-// IPE-061R2 — authoritative business-identity index of the Master Intake
-// sheet. Reads ONLY the title/range column (B) across the populated extent,
-// chunked with early stop, so identity presence never depends on the
-// operator's preview range and never requires valid source metadata.
 const MASTER_INTAKE_IDENTITY_SCAN_CHUNK_ROWS = 500;
 const MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS = 10000;
-const MASTER_INTAKE_IDENTITY_SCAN_EMPTY_STOP_CHUNKS = 2;
 
 async function readSheetBusinessIdentityIndex(input: {
   actorUserId: number;
@@ -322,8 +244,16 @@ async function readSheetBusinessIdentityIndex(input: {
       }),
   });
   const index = new Map<string, number[]>();
-  const boundedRowCount = input.rowCount ?? MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS;
-  if (boundedRowCount > MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS + 1) {
+  // IPE-061R3: authoritative absence claims require an established sheet
+  // extent. Without rowCount we refuse to infer absence.
+  if (input.rowCount == null) {
+    throw new WorkspaceMasterIntakeError(
+      "GOOGLE_READ_FAILED",
+      "Master Intake sheet extent could not be established for identity verification."
+    );
+  }
+  const boundedRowCount = input.rowCount;
+  if (boundedRowCount > MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS) {
     throw new WorkspaceMasterIntakeError(
       "GOOGLE_READ_FAILED",
       `Master Intake sheet exceeds the bounded identity scan range (${MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS} rows).`
@@ -347,12 +277,10 @@ async function readSheetBusinessIdentityIndex(input: {
       );
     }
     const values = batch?.values ?? [];
-    let nonEmptyRows = 0;
     values.forEach((cells: unknown[], offset: number) => {
       const rowNumber = start + offset;
       const rawTitle = String(cells?.[0] ?? "").trim();
       if (!rawTitle) return;
-      nonEmptyRows += 1;
       const parsed = parseMasterIntakeTitleRange(rawTitle);
       if (!parsed) return;
       const identity = canonicalMasterIntakeIdentityFingerprint({
@@ -364,12 +292,6 @@ async function readSheetBusinessIdentityIndex(input: {
       bucket.push(rowNumber);
       index.set(identity, bucket);
     });
-    if (nonEmptyRows === 0) {
-      consecutiveEmptyChunks += 1;
-      if (consecutiveEmptyChunks >= MASTER_INTAKE_IDENTITY_SCAN_EMPTY_STOP_CHUNKS) break;
-    } else {
-      consecutiveEmptyChunks = 0;
-    }
   }
   return index;
 }
@@ -448,47 +370,6 @@ export async function previewWorkspaceMasterIntake(input: {
       .from(workspaceMasterIntakeRows)
       .where(eq(workspaceMasterIntakeRows.workspaceId, input.workspaceId)),
   ]);
-
-  const currentSheetIdentityByRow = new Map<number, string | null>();
-  const selectedIdentityFingerprints = new Set<string>();
-  for (let rowNumber = input.startRow; rowNumber <= input.endRow; rowNumber += 1) {
-    const identity = sheetRowIdentityFingerprint({
-      rowNumber,
-      cells: sheetRead.values[rowNumber - input.startRow] ?? [],
-      sheetId: sheetRead.sheetId,
-    });
-    currentSheetIdentityByRow.set(rowNumber, identity);
-    if (identity) selectedIdentityFingerprints.add(identity);
-  }
-  const provenanceRowsToVerify = provenanceRows
-    .filter((row: any) => {
-      if (
-        row.spreadsheetId !== NQA_AUTOLINK_LIVE_TARGET.spreadsheetId ||
-        Number(row.sheetId) !== Number(sheetRead.sheetId)
-      ) {
-        return false;
-      }
-      // Malformed legacy records canonicalize to null -> never selected for
-      // verification and never treated as an identity match.
-      const identity = provenanceIdentityFingerprint(row);
-      if (identity === null) return false;
-      return (
-        selectedIdentityFingerprints.has(identity) &&
-        (Number(row.rowNumber) < input.startRow || Number(row.rowNumber) > input.endRow)
-      );
-    })
-    .map((row: any) => Number(row.rowNumber));
-  const externalIdentityRows = await readSpecificSheetRows({
-    actorUserId: input.actorUserId,
-    googleConnectionId: input.googleConnectionId,
-    rowNumbers: provenanceRowsToVerify,
-  });
-  externalIdentityRows.forEach((cells, rowNumber) => {
-    currentSheetIdentityByRow.set(
-      rowNumber,
-      sheetRowIdentityFingerprint({ rowNumber, cells, sheetId: sheetRead.sheetId })
-    );
-  });
 
   const titles = new Map<string, Array<{ id: number; title: string }>>();
   for (const novel of publicationNovels) {
@@ -591,12 +472,15 @@ export async function previewWorkspaceMasterIntake(input: {
     if (identityMatches.length > 1) blockers.push("AMBIGUOUS_PROVENANCE_REBIND");
     const uniqueIdentityMatch = identityMatches.length === 1 ? identityMatches[0] : null;
     if (uniqueIdentityMatch && Number(uniqueIdentityMatch.rowNumber) !== rowNumber) {
-      const oldRowIdentity = currentSheetIdentityByRow.get(Number(uniqueIdentityMatch.rowNumber));
-      if (oldRowIdentity === undefined) {
-        blockers.push("PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
-      } else if (oldRowIdentity === identityFingerprint) {
+      // IPE-061R3: business-identity presence at the provenance row is
+      // verified through the authoritative identity-only index — source
+      // metadata validity must never flip presence to "absent".
+      const identityRows = ((await getIdentityIndex()).get(identityFingerprint) ?? []);
+      if (identityRows.includes(Number(uniqueIdentityMatch.rowNumber))) {
         blockers.push("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
       }
+      // Otherwise the provenance row has verifiably vacated the identity —
+      // safe to reconcile (rebind) into this row.
     }
     // Resolution precedence: a provenance record matching the canonical
     // identity (even after a row move / source change) wins. An at-row
@@ -623,6 +507,11 @@ export async function previewWorkspaceMasterIntake(input: {
           : provenanceRows.filter(
               (record: any) =>
                 record !== provenanceAtRow &&
+                // IPE-061R3: scope ambiguity to the current target sheet —
+                // historical provenance from another spreadsheet/sheet must
+                // not make the current target ambiguous.
+                record.spreadsheetId === NQA_AUTOLINK_LIVE_TARGET.spreadsheetId &&
+                Number(record.sheetId) === Number(sheetRead.sheetId) &&
                 provenanceIdentityFingerprint(record) === staleIdentity
             ).length;
       // IPE-061R2: authoritative presence check — identity-only B-column
