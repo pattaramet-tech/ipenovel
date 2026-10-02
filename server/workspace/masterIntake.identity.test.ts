@@ -507,3 +507,170 @@ describe("Master Intake sync — source replacement wiring", () => {
     expect(importEditorialSource).not.toHaveBeenCalled();
   });
 });
+
+// ============ R1 — bounded review findings repair (F1 + F2) ============
+
+describe("R1 F1 — at-row provenance identity mismatch never falls through to NEW path", () => {
+  it("R1-A: range changed at same row => CONFLICT with provenance context preserved", async () => {
+    h.sheetRows.set(2, sheetRowCells({ rawTitle: "เรื่อง A 141-191", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
+    const preview = await previewRows({
+      provenance: [provenanceRow({ rawTitle: "เรื่อง A 141-190", normalizedTitle: "เรื่อง a", episodeNumber: "141-190" })],
+    });
+    const row = preview.rows[0];
+    expect(row.status).toBe("CONFLICT");
+    expect(row.blockers).toContain("SYNC_IDENTITY_CHANGED");
+    // NEW-path derivation must not add misleading blockers.
+    expect(row.blockers).toEqual(["SYNC_IDENTITY_CHANGED"]);
+    // Provenance context preserved.
+    expect(row.provenanceId).toBe(900);
+    expect(row.provenanceRowNumber).toBe(2);
+    expect(row.workItemId).toBe(55);
+    expect(row.workspaceNovelId).toBe(777);
+    expect(row.existingNovelId).toBe(5);
+    // No source replacement, no new target resolution.
+    expect(row.sourceReplacementExpected).toBe(false);
+    expect(row.sourceAlreadyLinked).toBe(false);
+  });
+
+  it("R1-B: title changed at same row => same fail-closed semantics with context", async () => {
+    h.sheetRows.set(2, sheetRowCells({ rawTitle: "เรื่อง B 141-190", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
+    const preview = await previewRows({
+      provenance: [provenanceRow({ rawTitle: "เรื่อง A 141-190", normalizedTitle: "เรื่อง a", episodeNumber: "141-190" })],
+    });
+    const row = preview.rows[0];
+    expect(row.status).toBe("CONFLICT");
+    expect(row.blockers).toEqual(["SYNC_IDENTITY_CHANGED"]);
+    expect(row.provenanceId).toBe(900);
+    expect(row.provenanceRowNumber).toBe(2);
+    expect(row.workItemId).toBe(55);
+    expect(row.sourceReplacementExpected).toBe(false);
+  });
+});
+
+describe("R1 F2 — malformed legacy provenance cannot crash the batch", () => {
+  it("R1-C: malformed provenance elsewhere is a per-row non-match; valid rows still process", async () => {
+    const rawTitle = "เรื่อง A 1-30";
+    h.sheetRows.set(2, sheetRowCells({ rawTitle, translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
+    const preview = await previewRows({
+      provenance: [
+        provenanceRow({
+          id: 901,
+          rowNumber: 9,
+          // Malformed legacy record: episode span cannot be parsed.
+          episodeNumber: "ไม่มีเลขจริง",
+          rawTitle: "เรื่อง A (บิดเบี้ยว)",
+        }),
+      ],
+    });
+    const row = preview.rows[0];
+    // No throw happened; the malformed record is NOT an identity match, so
+    // the row resolves through the canonical NEW-path (no provenance).
+    expect(row.status).toBe("MATCH");
+    expect(row.provenanceId).toBeNull();
+    expect(row.blockers).toEqual([]);
+    // The malformed record cannot steal/rebind the target.
+    expect(row.workItemId).toBeNull();
+  });
+
+  it("R1-D: malformed provenance at the current row => fail closed with context, no NEW fallback", async () => {
+    const rawTitle = "เรื่อง A 1-30";
+    h.sheetRows.set(2, sheetRowCells({ rawTitle, translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, webSourceUrl: "https://example.com/web" }));
+    const preview = await previewRows({
+      provenance: [
+        provenanceRow({
+          // Legacy record with unparseable episode span at this very row.
+          episodeNumber: "ไม่มีเลขจริง",
+          rawTitle: "เรื่อง A (บิดเบี้ยว)",
+          normalizedTitle: "เรื่อง a (บิดเบี้ยว)",
+        }),
+      ],
+    });
+    const row = preview.rows[0];
+    expect(row.status).toBe("CONFLICT");
+    expect(row.blockers).toContain("SYNC_IDENTITY_CHANGED");
+    expect(row.provenanceId).toBe(900);
+    expect(row.provenanceRowNumber).toBe(2);
+    expect(row.workItemId).toBe(55);
+    expect(row.sourceReplacementExpected).toBe(false);
+    expect(row.blockers).not.toContain("EPISODE_RANGE_OVERLAP");
+  });
+
+  it("R1-E: mixed batch — malformed, unchanged, and source-change rows all behave independently", async () => {
+    // Row 2: malformed legacy provenance.
+    h.sheetRows.set(2, sheetRowCells({ rawTitle: "เรื่อง A 1-30", translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, webSourceUrl: "https://example.com/web" }));
+    // Row 3: valid unchanged provenance.
+    h.sheetRows.set(3, sheetRowCells({ rawTitle: "เรื่อง B 31-60", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`, webSourceUrl: "https://example.com/web" }));
+    // Row 4: valid provenance, translation doc changed.
+    h.sheetRows.set(4, sheetRowCells({ rawTitle: "เรื่อง C 61-90", translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, webSourceUrl: "https://example.com/web" }));
+
+    const preview = await previewRows({
+      startRow: 2,
+      endRow: 4,
+      workspaceNovels: [
+        { id: 777, novelId: 5, status: "active" },
+        { id: 778, novelId: 6, status: "active" },
+        { id: 779, novelId: 7, status: "active" },
+      ],
+      novels: [
+        { id: 5, title: "เรื่อง A" },
+        { id: 6, title: "เรื่อง B" },
+        { id: 7, title: "เรื่อง C" },
+      ],
+      provenance: [
+        provenanceRow({
+          id: 900,
+          rowNumber: 2,
+          episodeNumber: "ไม่มีเลขจริง",
+          rawTitle: "เรื่อง A (บิดเบี้ยว)",
+          normalizedTitle: "เรื่อง a (บิดเบี้ยว)",
+        }),
+        provenanceRow({
+          id: 901,
+          rowNumber: 3,
+          workItemId: 56,
+          workspaceNovelId: 778,
+          rawTitle: "เรื่อง B 31-60",
+          normalizedTitle: "เรื่อง b",
+          episodeNumber: "31-60",
+          rowFingerprint: canonicalRowFingerprint({
+            rowNumber: 3,
+            rawTitle: "เรื่อง B 31-60",
+            translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`,
+            webSourceUrl: "https://example.com/web",
+            preparedSourceDocUrl: null,
+          }),
+        }),
+        provenanceRow({
+          id: 902,
+          rowNumber: 4,
+          workItemId: 57,
+          workspaceNovelId: 779,
+          rawTitle: "เรื่อง C 61-90",
+          normalizedTitle: "เรื่อง c",
+          episodeNumber: "61-90",
+          translationDocumentId: DOC_A,
+          translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit`,
+        }),
+      ],
+    });
+
+    expect(preview.rows).toHaveLength(3);
+    const [malformed, unchanged, sourceChanged] = preview.rows;
+
+    // Malformed row: fail closed with context, batch continues.
+    expect(malformed.status).toBe("CONFLICT");
+    expect(malformed.blockers).toContain("SYNC_IDENTITY_CHANGED");
+    expect(malformed.provenanceId).toBe(900);
+
+    // Unchanged row: normal behavior.
+    expect(unchanged.status).toBe("UNCHANGED");
+    expect(unchanged.blockers).toEqual([]);
+    expect(unchanged.provenanceId).toBe(901);
+
+    // Source-change row: safe replacement semantics preserved.
+    expect(sourceChanged.status).toBe("UPDATED");
+    expect(sourceChanged.blockers).toEqual([]);
+    expect(sourceChanged.sourceReplacementExpected).toBe(true);
+    expect(sourceChanged.provenanceId).toBe(902);
+  });
+});

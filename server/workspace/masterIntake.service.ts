@@ -25,6 +25,7 @@ import { refreshWorkspaceGoogleNqaReadAccessToken } from "./googleNqaRead";
 import { NQA_AUTOLINK_LIVE_TARGET } from "./nqaAutolink.runtime";
 import {
   assertMasterIntakeRowRange,
+  canonicalMasterIntakeIdentityFingerprint,
   googleDocumentIdFromUrlOrId,
   masterIntakePreviewFingerprint,
   masterIntakeProvenancePreviewStatus,
@@ -124,26 +125,16 @@ function affectedRows(result: any) {
   return Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0);
 }
 
-function provenanceIdentityFingerprint(row: any) {
+function provenanceIdentityFingerprint(row: any): string | null {
   // Canonical business identity (normalized title + canonical episode span)
   // recomputed from the persisted provenance fields at runtime — legacy
   // provenance records created under the old source-bound fingerprint
   // resolve through the same canonicalization without any data migration.
-  return masterIntakeRowIdentityFingerprint({
-    spreadsheetId: String(row.spreadsheetId),
-    sheetId: Number(row.sheetId),
-    sheetName: String(row.sheetName),
-    rowNumber: Number(row.rowNumber),
-    novelTitle: String(row.normalizedTitle),
-    normalizedTitle: String(row.normalizedTitle),
-    episodeNumber: String(row.episodeNumber),
-    translationDocUrl: String(row.translationDocUrl),
-    translationDocumentId: String(row.translationDocumentId),
-    webSourceUrl: row.webSourceUrl == null ? null : String(row.webSourceUrl),
-    preparedSourceDocUrl:
-      row.preparedSourceDocUrl == null ? null : String(row.preparedSourceDocUrl),
-    preparedSourceDocumentId:
-      row.preparedSourceDocumentId == null ? null : String(row.preparedSourceDocumentId),
+  // Malformed legacy records (unparseable title/episode) return null: a
+  // per-row non-match that must never crash the whole batch.
+  return canonicalMasterIntakeIdentityFingerprint({
+    normalizedTitle: String(row.normalizedTitle ?? ""),
+    episodeNumber: String(row.episodeNumber ?? ""),
   });
 }
 
@@ -365,13 +356,22 @@ export async function previewWorkspaceMasterIntake(input: {
     if (identity) selectedIdentityFingerprints.add(identity);
   }
   const provenanceRowsToVerify = provenanceRows
-    .filter(
-      (row: any) =>
-        row.spreadsheetId === NQA_AUTOLINK_LIVE_TARGET.spreadsheetId &&
-        Number(row.sheetId) === Number(sheetRead.sheetId) &&
-        selectedIdentityFingerprints.has(provenanceIdentityFingerprint(row)) &&
+    .filter((row: any) => {
+      if (
+        row.spreadsheetId !== NQA_AUTOLINK_LIVE_TARGET.spreadsheetId ||
+        Number(row.sheetId) !== Number(sheetRead.sheetId)
+      ) {
+        return false;
+      }
+      // Malformed legacy records canonicalize to null -> never selected for
+      // verification and never treated as an identity match.
+      const identity = provenanceIdentityFingerprint(row);
+      if (identity === null) return false;
+      return (
+        selectedIdentityFingerprints.has(identity) &&
         (Number(row.rowNumber) < input.startRow || Number(row.rowNumber) > input.endRow)
-    )
+      );
+    })
     .map((row: any) => Number(row.rowNumber));
   const externalIdentityRows = await readSpecificSheetRows({
     actorUserId: input.actorUserId,
@@ -490,9 +490,10 @@ export async function previewWorkspaceMasterIntake(input: {
       }
     }
     // Resolution precedence: a provenance record matching the canonical
-    // identity (even after a row move / source change) wins. Otherwise an
-    // at-row provenance with a DIFFERENT canonical identity means the row's
-    // title/episode changed under an existing sync target — fail closed.
+    // identity (even after a row move / source change) wins. An at-row
+    // provenance that does NOT canonical-match means the row's title/episode
+    // changed (or the legacy record is malformed) — fail closed from the
+    // provenance context itself, never via NEW-path derivation.
     let provenance: any = null;
     let atRowIdentityChanged = false;
     if (uniqueIdentityMatch) {
@@ -500,7 +501,11 @@ export async function previewWorkspaceMasterIntake(input: {
     } else if (provenanceAtRow) {
       provenance = provenanceAtRow;
       atRowIdentityChanged = true;
-      blockers.push("SYNC_IDENTITY_CHANGED");
+      // AMBIGUOUS_PROVENANCE_REBIND already reports the multi-match case;
+      // report the identity change only when nothing canonical-matched.
+      if (identityMatches.length === 0) {
+        blockers.push("SYNC_IDENTITY_CHANGED");
+      }
     }
 
     if (provenance && !atRowIdentityChanged) {
@@ -600,6 +605,39 @@ export async function previewWorkspaceMasterIntake(input: {
         blockers,
         sourceAlreadyLinked: provenanceSourceAlreadyLinked,
         sourceReplacementExpected: provenanceSourceReplacementExpected,
+      });
+      continue;
+    }
+
+    if (atRowIdentityChanged) {
+      // F1: the row's stored provenance no longer matches this row's
+      // canonical identity (title/range changed, or the legacy record is
+      // malformed). Report the conflict from the provenance context itself —
+      // no candidate search, no new/rebound Episode Pack, no source
+      // replacement, no NEW-path derivation.
+      const provenanceWorkspaceNovel = workspaceNovelRows.find(
+        (item: any) => Number(item.id) === Number(provenance.workspaceNovelId)
+      );
+      rows.push({
+        rowNumber,
+        status: "CONFLICT",
+        rowFingerprint,
+        rawTitle,
+        novelTitle: parsed.novelTitle,
+        episodeNumber: parsed.episodeNumber,
+        translationDocUrl,
+        webSourceUrl,
+        preparedSourceDocUrl,
+        existingNovelId: Number(provenance.workspaceNovelId)
+          ? Number(provenanceWorkspaceNovel?.novelId ?? 0) || null
+          : null,
+        workspaceNovelId: Number(provenance.workspaceNovelId) || null,
+        workItemId: Number(provenance.workItemId) || null,
+        provenanceId: Number(provenance.id),
+        provenanceRowNumber: Number(provenance.rowNumber),
+        blockers,
+        sourceAlreadyLinked: false,
+        sourceReplacementExpected: false,
       });
       continue;
     }
