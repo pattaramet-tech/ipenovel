@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalizeActiveSourceKeys,
   assertMasterIntakeRowRange,
   canonicalMasterIntakeIdentity,
   canonicalMasterIntakeIdentityFingerprint,
@@ -273,5 +274,56 @@ describe("Workspace Master Intake domain", () => {
     expect(canonicalMasterIntakeIdentity({ normalizedTitle: "", episodeNumber: "1-30" })).toBeNull();
     expect(parseMasterIntakeEpisodeSpan("abc")).toBeNull();
     expect(parseMasterIntakeEpisodeSpan("050-001")).toBeNull();
+  });
+});
+
+describe("R2 — observed active source state binding", () => {
+  const base = {
+    workspaceId: 7,
+    startRow: 2,
+    endRow: 2,
+    rows: [
+      {
+        rowNumber: 2,
+        rowFingerprint: "a".repeat(64),
+        status: "UPDATED",
+        workItemId: 30,
+        blockers: [] as string[],
+        sourceAlreadyLinked: false,
+        sourceReplacementExpected: true,
+      },
+    ],
+  };
+
+  it("R2-G: preview fingerprint differs when the observed active source changes", () => {
+    const observedA = masterIntakePreviewFingerprint({
+      ...base,
+      rows: [{ ...base.rows[0], observedActiveSourceKeys: ["google_doc:DocA"] }],
+    });
+    const observedC = masterIntakePreviewFingerprint({
+      ...base,
+      rows: [{ ...base.rows[0], observedActiveSourceKeys: ["google_doc:DocC"] }],
+    });
+    expect(observedA).not.toBe(observedC);
+    // The P1 defect scenario: both previews had sourceReplacementExpected
+    // true, yet the fingerprints must differ.
+    expect(base.rows[0].sourceReplacementExpected).toBe(true);
+  });
+
+  it("R2-F: canonical ordering — [A,C] and [C,A] yield the same fingerprint", () => {
+    const ac = masterIntakePreviewFingerprint({
+      ...base,
+      rows: [{ ...base.rows[0], observedActiveSourceKeys: ["google_doc:DocA", "google_doc:DocC"] }],
+    });
+    const ca = masterIntakePreviewFingerprint({
+      ...base,
+      rows: [{ ...base.rows[0], observedActiveSourceKeys: ["google_doc:DocC", "google_doc:DocA"] }],
+    });
+    expect(ac).toBe(ca);
+  });
+
+  it("canonicalizes source keys deterministically (unique + sorted, no empties)", () => {
+    expect(canonicalizeActiveSourceKeys(["b", "a", "b", null, undefined, " "])).toEqual(["a", "b"]);
+    expect(canonicalizeActiveSourceKeys([])).toEqual([]);
   });
 });

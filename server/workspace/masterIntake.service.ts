@@ -26,6 +26,7 @@ import { NQA_AUTOLINK_LIVE_TARGET } from "./nqaAutolink.runtime";
 import {
   assertMasterIntakeRowRange,
   canonicalMasterIntakeIdentityFingerprint,
+  canonicalizeActiveSourceKeys,
   googleDocumentIdFromUrlOrId,
   masterIntakePreviewFingerprint,
   masterIntakeProvenancePreviewStatus,
@@ -84,6 +85,13 @@ type PreviewRow = {
   sourceAlreadyLinked: boolean;
   /** Sync may replace the pack's active translation source (same canonical identity). */
   sourceReplacementExpected: boolean;
+  /**
+   * Canonical `<sourceKind>:<sourceKey>` set observed active on the target
+   * Work Item during this preview. This is the authorization binding for a
+   * later source replacement: the sync refuses to mutate when the current
+   * active-source state differs from what the operator reviewed.
+   */
+  observedActiveSourceKeys: string[];
 };
 
 type PreviewResult = {
@@ -449,6 +457,7 @@ export async function previewWorkspaceMasterIntake(input: {
         blockers,
         sourceAlreadyLinked: false,
         sourceReplacementExpected: false,
+        observedActiveSourceKeys: [],
       });
       continue;
     }
@@ -543,12 +552,15 @@ export async function previewWorkspaceMasterIntake(input: {
         .limit(1);
       let provenanceSourceAlreadyLinked = false;
       let provenanceSourceReplacementExpected = false;
+      let provenanceObservedActiveSourceKeys: string[] = [];
       if (!workItem) {
         blockers.push("SYNC_TARGET_MISSING");
       } else {
         const activeSources = await db
           .select({
             providerDocumentId: workspaceEditorialSources.providerDocumentId,
+            sourceKind: workspaceEditorialSources.sourceKind,
+            sourceKey: workspaceEditorialSources.sourceKey,
           })
           .from(workspaceEditorialSources)
           .where(
@@ -568,6 +580,14 @@ export async function previewWorkspaceMasterIntake(input: {
         // Same canonical identity + different active translation source =>
         // the sync may replace/rebind the source onto the existing pack.
         provenanceSourceReplacementExpected = conflictingSource;
+        // Bind the replacement authorization to the exact observed state,
+        // using the same `<sourceKind>:<sourceKey>` identity the source
+        // mutation service itself uses for conflict decisions.
+        provenanceObservedActiveSourceKeys = canonicalizeActiveSourceKeys(
+          activeSources.map(
+            (source: any) => `${String(source.sourceKind)}:${String(source.sourceKey)}`
+          )
+        );
         if (!matchingSource && activeSources.length === 0 && workItem.columnKey !== "new") {
           blockers.push("EXISTING_PACK_NOT_EDITABLE");
         }
@@ -605,6 +625,7 @@ export async function previewWorkspaceMasterIntake(input: {
         blockers,
         sourceAlreadyLinked: provenanceSourceAlreadyLinked,
         sourceReplacementExpected: provenanceSourceReplacementExpected,
+        observedActiveSourceKeys: provenanceObservedActiveSourceKeys,
       });
       continue;
     }
@@ -638,6 +659,7 @@ export async function previewWorkspaceMasterIntake(input: {
         blockers,
         sourceAlreadyLinked: false,
         sourceReplacementExpected: false,
+        observedActiveSourceKeys: [],
       });
       continue;
     }
@@ -649,6 +671,7 @@ export async function previewWorkspaceMasterIntake(input: {
     let workItemId: number | null = null;
     let sourceAlreadyLinked = false;
     let sourceReplacementExpected = false;
+    let observedActiveSourceKeys: string[] = [];
 
     if (candidate) {
       const workspaceNovel = workspaceByNovelId.get(candidate.id) as any;
@@ -695,6 +718,8 @@ export async function previewWorkspaceMasterIntake(input: {
             const activeSources = await db
               .select({
                 providerDocumentId: workspaceEditorialSources.providerDocumentId,
+                sourceKind: workspaceEditorialSources.sourceKind,
+                sourceKey: workspaceEditorialSources.sourceKey,
               })
               .from(workspaceEditorialSources)
               .where(
@@ -716,6 +741,12 @@ export async function previewWorkspaceMasterIntake(input: {
             // different active translation source = source update/rebind on
             // the existing pack — NOT an identity conflict.
             sourceReplacementExpected = conflictingSource;
+            // Bind the replacement authorization to the exact observed state.
+            observedActiveSourceKeys = canonicalizeActiveSourceKeys(
+              activeSources.map(
+                (source: any) => `${String(source.sourceKind)}:${String(source.sourceKey)}`
+              )
+            );
             if (!matchingSource && activeSources.length === 0 && entry.columnKey !== "new") {
               blockers.push("EXISTING_PACK_NOT_EDITABLE");
             }
@@ -747,6 +778,7 @@ export async function previewWorkspaceMasterIntake(input: {
       blockers,
       sourceAlreadyLinked,
       sourceReplacementExpected,
+      observedActiveSourceKeys,
     });
   }
 
@@ -1159,6 +1191,26 @@ export async function syncWorkspaceMasterIntake(input: {
     }
 
     try {
+      // R2 TOCTOU guard: a replacement authorization without the preview-
+      // observed active-source binding must never mutate source state. The
+      // preview fingerprint version makes such tokens stale anyway; this is
+      // defense in depth so a boolean alone can never authorize replacement.
+      if (row.sourceReplacementExpected === true && !Array.isArray(row.observedActiveSourceKeys)) {
+        results.push({
+          rowNumber: row.rowNumber,
+          status: row.status,
+          ok: false,
+          novelId: row.existingNovelId,
+          workspaceNovelId: row.workspaceNovelId,
+          workItemId: row.workItemId,
+          novelCreated: false,
+          workItemCreated: false,
+          sourceResult: null,
+          error:
+            "STALE_PREVIEW: source replacement requires the preview-observed active source state.",
+        });
+        continue;
+      }
       // Validate/read C before creating any database objects unless this exact
       // Google source is already durably linked to the existing work item.
       const sourcePayload = row.sourceAlreadyLinked
@@ -1188,10 +1240,14 @@ export async function syncWorkspaceMasterIntake(input: {
             googleConnectionId: input.googleConnectionId,
             // Same canonical Episode Pack identity + different translation
             // document: the sync explicitly replaces the pack's active
-            // source. importEditorialSource transitions the old active
-            // source to "removed" (audit-preserved) and leaves exactly one
-            // active source — the newly imported one.
+            // source. importEditorialSource verifies the current active
+            // source state against this preview-observed binding INSIDE its
+            // mutation transaction (work item locked FOR UPDATE) — any drift
+            // fails closed with STALE_PREVIEW and zero source mutation.
             replaceActiveSource: row.sourceReplacementExpected === true,
+            expectedActiveSourceKeys: Array.isArray(row.observedActiveSourceKeys)
+              ? row.observedActiveSourceKeys
+              : undefined,
           })
         : null;
       await persistProvenance({

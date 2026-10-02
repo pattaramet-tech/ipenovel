@@ -12,6 +12,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { canonicalizeActiveSourceKeys } from "./masterIntake.domain";
 import {
   EDITORIAL_DRAFT_PRESENTATION,
   normalizeEditorialText,
@@ -30,7 +31,13 @@ export class WorkspaceEditorialDraftError extends Error {
       | "SOURCE_REVISION_CONFLICT"
       | "REFRESH_REQUIRES_REVIEW"
       | "SNAPSHOT_NOT_FOUND"
-      | "SOURCE_INVALID",
+      | "SOURCE_INVALID"
+      /**
+       * The active-source state observed at preview time no longer matches
+       * the state inside the mutation transaction. Thrown BEFORE any source
+       * mutation so a concurrent change is never silently overwritten.
+       */
+      | "STALE_PREVIEW",
     message: string
   ) {
     super(message);
@@ -281,6 +288,16 @@ export async function importEditorialSource(input: {
    * (the incoming one) remains afterwards.
    */
   replaceActiveSource?: boolean;
+  /**
+   * Preview-observed active source identities (`<sourceKind>:<sourceKey>`,
+   * canonicalized) that authorize an explicit replacement. When provided,
+   * the mutation transaction re-reads the current active sources (the work
+   * item row is already locked FOR UPDATE at this point) and refuses with
+   * STALE_PREVIEW — zero mutation — if the state drifted. Mandatory
+   * whenever replaceActiveSource is requested: the boolean alone never
+   * authorizes replacing a source the operator did not review.
+   */
+  expectedActiveSourceKeys?: string[];
 }) {
   const db = await database();
   await requireWorkItem(
@@ -336,6 +353,29 @@ export async function importEditorialSource(input: {
         )
       );
 
+    // R2 TOCTOU guard: compare the preview-observed active source state
+    // against the state re-read INSIDE this mutation transaction (the work
+    // item row is locked FOR UPDATE above, so this read + the mutations
+    // below are atomic against concurrent source changes). Runs before ANY
+    // source mutation: drift => STALE_PREVIEW => zero mutation.
+    const expectedKeys =
+      input.expectedActiveSourceKeys === undefined
+        ? null
+        : canonicalizeActiveSourceKeys(input.expectedActiveSourceKeys);
+    if (expectedKeys !== null) {
+      const currentKeys = canonicalizeActiveSourceKeys(
+        activeSources.map(
+          (source: any) => `${String(source.sourceKind)}:${String(source.sourceKey)}`
+        )
+      );
+      if (currentKeys.join("|") !== expectedKeys.join("|")) {
+        throw new WorkspaceEditorialDraftError(
+          "STALE_PREVIEW",
+          "Observed active source state changed after preview. Preview again before syncing."
+        );
+      }
+    }
+
     const conflictingActiveSources = activeSources.filter(
       (source: any) =>
         source.sourceKind !== payload.sourceKind ||
@@ -346,6 +386,22 @@ export async function importEditorialSource(input: {
         throw new WorkspaceEditorialDraftError(
           "SOURCE_CONFLICT",
           "This work item already has another active source. Remove or explicitly replace it before changing source identity."
+        );
+      }
+      if (expectedKeys === null) {
+        // A boolean alone never authorizes replacing a source the operator
+        // did not review.
+        throw new WorkspaceEditorialDraftError(
+          "STALE_PREVIEW",
+          "Source replacement requires the preview-observed active source state."
+        );
+      }
+      if (expectedKeys.length > 1) {
+        // Legacy multiple-active state is never silently normalized — the
+        // ambiguity must be resolved manually before a bulk replacement.
+        throw new WorkspaceEditorialDraftError(
+          "SOURCE_CONFLICT",
+          "Work item has multiple active sources; resolve the ambiguity manually before replacing."
         );
       }
       // Explicit replacement: transition the old active source(s) to

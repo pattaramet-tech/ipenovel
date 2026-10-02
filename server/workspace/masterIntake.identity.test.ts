@@ -253,7 +253,7 @@ const defaultDbConfig = {
   novels: [{ id: 5, title: "เรื่อง A" }],
   workspaceNovels: [{ id: 777, novelId: 5, status: "active" }],
   workItemLookup: [{ id: 55, columnKey: "new" }],
-  activeSources: [{ providerDocumentId: DOC_A }],
+  activeSources: [{ providerDocumentId: DOC_A, sourceKind: "google_doc", sourceKey: DOC_A }],
 };
 
 async function previewRows(config: Partial<typeof defaultDbConfig> & { startRow?: number; endRow?: number } = {}) {
@@ -440,7 +440,7 @@ describe("Master Intake sync — source replacement wiring", () => {
     h.sheetRows.set(2, sheetRowCells({ rawTitle, translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, webSourceUrl: "https://example.com/web" }));
     const config = {
       ...defaultDbConfig,
-      activeSources: [{ providerDocumentId: DOC_A }],
+      activeSources: [{ providerDocumentId: DOC_A, sourceKind: "google_doc", sourceKey: DOC_A }],
       provenance: [provenanceRow()],
       existingProvenanceRow: { id: 900 },
     } as any;
@@ -471,6 +471,10 @@ describe("Master Intake sync — source replacement wiring", () => {
     expect(importEditorialSource).toHaveBeenCalledTimes(1);
     expect(importEditorialSource.mock.calls[0][0].workItemId).toBe(55);
     expect(importEditorialSource.mock.calls[0][0].replaceActiveSource).toBe(true);
+    // R2: the replacement is bound to the preview-observed source state.
+    expect(importEditorialSource.mock.calls[0][0].expectedActiveSourceKeys).toEqual([
+      `google_doc:${DOC_A}`,
+    ]);
     // Provenance was updated (not duplicated) and the audit event was written.
     expect(calls.updates.some((update) => update.table === workspaceMasterIntakeRows)).toBe(true);
     expect(calls.inserts.some((insert) => insert.table === workspaceAuditEvents)).toBe(true);
@@ -481,7 +485,7 @@ describe("Master Intake sync — source replacement wiring", () => {
     h.sheetRows.set(2, sheetRowCells({ rawTitle, translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, webSourceUrl: "https://example.com/web" }));
     const config = {
       ...defaultDbConfig,
-      activeSources: [{ providerDocumentId: DOC_B }],
+      activeSources: [{ providerDocumentId: DOC_B, sourceKind: "google_doc", sourceKey: DOC_B }],
       provenance: [provenanceRow({ translationDocumentId: DOC_B, translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit` })],
       existingProvenanceRow: null,
     } as any;
@@ -672,5 +676,96 @@ describe("R1 F2 — malformed legacy provenance cannot crash the batch", () => {
     expect(sourceChanged.blockers).toEqual([]);
     expect(sourceChanged.sourceReplacementExpected).toBe(true);
     expect(sourceChanged.provenanceId).toBe(902);
+  });
+});
+
+describe("R2 — preview binds the observed active source state", () => {
+  it("R2-G (service): preview row carries observed keys and the fingerprint changes with them", async () => {
+    const rawTitle = "เรื่อง A 1-30";
+    h.sheetRows.set(2, sheetRowCells({ rawTitle, translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, webSourceUrl: "https://example.com/web" }));
+    const provenance = [provenanceRow()];
+
+    const previewA = await previewRows({ provenance });
+    expect(previewA.rows[0].observedActiveSourceKeys).toEqual([`google_doc:${DOC_A}`]);
+    const fingerprintA = previewA.previewFingerprint;
+
+    // Concurrent change between previews: active source A -> C.
+    const previewC = await previewRows({
+      provenance,
+      activeSources: [{ providerDocumentId: "DocCCCCCCCCCCCCCCCCCCCCC3", sourceKind: "google_doc", sourceKey: "DocCCCCCCCCCCCCCCCCCCCCC3" }],
+    });
+    expect(previewC.rows[0].observedActiveSourceKeys).toEqual(["google_doc:DocCCCCCCCCCCCCCCCCCCCCC3"]);
+    expect(previewC.previewFingerprint).not.toBe(fingerprintA);
+    // Both are source-replacement rows — the binding (not the boolean) is
+    // what distinguishes them.
+    expect(previewA.rows[0].sourceReplacementExpected).toBe(true);
+    expect(previewC.rows[0].sourceReplacementExpected).toBe(true);
+  });
+
+  it("R2 sync-level: state drift between preview and sync => STALE_PREVIEW before any mutation", async () => {
+    const rawTitle = "เรื่อง A 1-30";
+    h.sheetRows.set(2, sheetRowCells({ rawTitle, translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, webSourceUrl: "https://example.com/web" }));
+
+    // Operator previews while A is active, then a concurrent change swaps
+    // the active source A -> C BEFORE the sync runs. The sync's internal
+    // re-preview sees [C], producing a different fingerprint than the one
+    // the operator authorized.
+    let currentActiveSources: any[] = [
+      { providerDocumentId: DOC_A, sourceKind: "google_doc", sourceKey: DOC_A },
+    ];
+    const { calls } = makeDb({
+      ...defaultDbConfig,
+      get activeSources() {
+        return currentActiveSources;
+      },
+      provenance: [provenanceRow()],
+    } as any);
+    h.db = (() => {
+      // Rebuild the db mock around the mutable state.
+      const rebuilt = makeDb({
+        ...defaultDbConfig,
+        get activeSources() {
+          return currentActiveSources;
+        },
+        provenance: [provenanceRow()],
+      } as any);
+      Object.defineProperty(rebuilt, "_setCurrent", {
+        value: (next: any[]) => {
+          currentActiveSources = next;
+        },
+      });
+      return rebuilt.db;
+    })();
+
+    const authorizedPreview = await previewWorkspaceMasterIntake({
+      actorUserId: 1,
+      workspaceId: 1,
+      googleConnectionId: 3,
+      startRow: 2,
+      endRow: 2,
+    });
+    expect(authorizedPreview.rows[0].observedActiveSourceKeys).toEqual([`google_doc:${DOC_A}`]);
+
+    // Concurrent change after the operator's preview.
+    currentActiveSources = [
+      { providerDocumentId: "DocCCCCCCCCCCCCCCCCCCCCC3", sourceKind: "google_doc", sourceKey: "DocCCCCCCCCCCCCCCCCCCCCC3" },
+    ];
+
+    const sync = syncWorkspaceMasterIntake({
+      actorUserId: 1,
+      workspaceId: 1,
+      googleConnectionId: 3,
+      startRow: 2,
+      endRow: 2,
+      expectedPreviewFingerprint: authorizedPreview.previewFingerprint,
+    });
+
+    // The sync's re-preview fingerprint no longer matches the authorized
+    // one => STALE_PREVIEW is thrown before any row processing.
+    await expect(sync).rejects.toMatchObject({ code: "STALE_PREVIEW" });
+    // Zero source mutation attempted.
+    expect(importEditorialSource).not.toHaveBeenCalled();
+    expect(calls.updates).toHaveLength(0);
+    expect(calls.inserts).toHaveLength(0);
   });
 });

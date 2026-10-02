@@ -152,6 +152,19 @@ export function canonicalMasterIntakeIdentityFingerprint(input: {
   return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
 }
 
+/**
+ * Canonicalize an observed active-source key set: unique, trimmed, sorted —
+ * so the same source set in a different DB order yields the same
+ * fingerprint (no false STALE_PREVIEW) while any membership change is
+ * detected. Keys use the same stable identity `importEditorialSource` uses
+ * for SOURCE_CONFLICT decisions: `<sourceKind>:<sourceKey>`.
+ */
+export function canonicalizeActiveSourceKeys(keys: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(keys.map((key) => String(key ?? "").trim()).filter((key) => key.length > 0))
+  ).sort();
+}
+
 export function masterIntakeRowIdentityFingerprint(row: MasterIntakeRowCanonical): string {
   const fingerprint = canonicalMasterIntakeIdentityFingerprint({
     normalizedTitle: row.normalizedTitle,
@@ -214,12 +227,14 @@ export function masterIntakePreviewFingerprint(input: {
     blockers?: string[];
     sourceAlreadyLinked?: boolean;
     sourceReplacementExpected?: boolean;
+    /** Canonical `<sourceKind>:<sourceKey>` set observed active at preview time. */
+    observedActiveSourceKeys?: string[];
   }>;
 }): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        version: "workspace-master-intake-preview-v3",
+        version: "workspace-master-intake-preview-v4",
         workspaceId: input.workspaceId,
         startRow: input.startRow,
         endRow: input.endRow,
@@ -235,6 +250,10 @@ export function masterIntakePreviewFingerprint(input: {
           blockers: [...(row.blockers ?? [])].sort(),
           sourceAlreadyLinked: row.sourceAlreadyLinked === true,
           sourceReplacementExpected: row.sourceReplacementExpected === true,
+          // Binding the preview to the exact observed active-source state is
+          // what makes a replacement authorization stale-safe: [A] and [C]
+          // must never produce the same fingerprint.
+          observedActiveSourceKeys: canonicalizeActiveSourceKeys(row.observedActiveSourceKeys ?? []),
         })),
       })
     )
