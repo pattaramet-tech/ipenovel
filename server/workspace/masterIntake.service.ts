@@ -96,6 +96,8 @@ type PreviewRow = {
   provenanceDisposition: "SAME_IDENTITY" | "REBOUND" | "ROW_REUSED" | "NONE";
   /** Stale at-row locator (different identity) reconciled when this row syncs. */
   reconcileStaleProvenanceId: number | null;
+  /** IPE-061R2: canonical identity of the stale locator at preview time. */
+  reconcileStaleProvenanceIdentityFingerprint: string | null;
 };
 
 type PreviewResult = {
@@ -220,6 +222,7 @@ async function readSheetRows(input: {
   }
   return {
     sheetId: sheet.sheetId,
+    rowCount: sheet.rowCount ?? null,
     values: batch?.values ?? [],
   };
 }
@@ -297,6 +300,80 @@ function sheetRowIdentityFingerprint(input: {
   });
 }
 
+// IPE-061R2 — authoritative business-identity index of the Master Intake
+// sheet. Reads ONLY the title/range column (B) across the populated extent,
+// chunked with early stop, so identity presence never depends on the
+// operator's preview range and never requires valid source metadata.
+const MASTER_INTAKE_IDENTITY_SCAN_CHUNK_ROWS = 500;
+const MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS = 10000;
+const MASTER_INTAKE_IDENTITY_SCAN_EMPTY_STOP_CHUNKS = 2;
+
+async function readSheetBusinessIdentityIndex(input: {
+  actorUserId: number;
+  googleConnectionId: number;
+  sheetName: string;
+  rowCount: number | null;
+}): Promise<Map<string, number[]>> {
+  const transport = new GoogleRestReadOnlyTransport({
+    accessTokenProvider: () =>
+      refreshWorkspaceGoogleNqaReadAccessToken({
+        actorUserId: input.actorUserId,
+        connectionId: input.googleConnectionId,
+      }),
+  });
+  const index = new Map<string, number[]>();
+  const boundedRowCount = input.rowCount ?? MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS;
+  if (boundedRowCount > MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS + 1) {
+    throw new WorkspaceMasterIntakeError(
+      "GOOGLE_READ_FAILED",
+      `Master Intake sheet exceeds the bounded identity scan range (${MASTER_INTAKE_IDENTITY_SCAN_MAX_ROWS} rows).`
+    );
+  }
+  let consecutiveEmptyChunks = 0;
+  for (let start = 2; start <= boundedRowCount; start += MASTER_INTAKE_IDENTITY_SCAN_CHUNK_ROWS) {
+    const end = Math.min(start + MASTER_INTAKE_IDENTITY_SCAN_CHUNK_ROWS - 1, boundedRowCount);
+    const range =
+      quoteSheetName(input.sheetName) + "!B" + start + ":B" + end;
+    let batch;
+    try {
+      [batch] = await transport.batchGetValues({
+        spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+        ranges: [range],
+      });
+    } catch {
+      throw new WorkspaceMasterIntakeError(
+        "GOOGLE_READ_FAILED",
+        "Google Sheet identity index could not be read."
+      );
+    }
+    const values = batch?.values ?? [];
+    let nonEmptyRows = 0;
+    values.forEach((cells: unknown[], offset: number) => {
+      const rowNumber = start + offset;
+      const rawTitle = String(cells?.[0] ?? "").trim();
+      if (!rawTitle) return;
+      nonEmptyRows += 1;
+      const parsed = parseMasterIntakeTitleRange(rawTitle);
+      if (!parsed) return;
+      const identity = canonicalMasterIntakeIdentityFingerprint({
+        normalizedTitle: parsed.normalizedTitle,
+        episodeNumber: parsed.episodeNumber,
+      });
+      if (!identity) return;
+      const bucket = index.get(identity) ?? [];
+      bucket.push(rowNumber);
+      index.set(identity, bucket);
+    });
+    if (nonEmptyRows === 0) {
+      consecutiveEmptyChunks += 1;
+      if (consecutiveEmptyChunks >= MASTER_INTAKE_IDENTITY_SCAN_EMPTY_STOP_CHUNKS) break;
+    } else {
+      consecutiveEmptyChunks = 0;
+    }
+  }
+  return index;
+}
+
 async function requireWorkspace(db: any, actorUserId: number, workspaceId: number) {
   await requireWorkspacePlatformAdmin(db, actorUserId);
   const [workspace] = await db
@@ -343,6 +420,22 @@ export async function previewWorkspaceMasterIntake(input: {
   const db = await database();
   await requireWorkspace(db, input.actorUserId, input.workspaceId);
   const sheetRead = await readSheetRows(input);
+  // IPE-061R2: authoritative business-identity index, built lazily (one
+  // bounded B-column scan) only when an at-row identity mismatch actually
+  // needs presence verification. Classification must never depend on the
+  // operator's preview range.
+  let identityIndexPromise: Promise<Map<string, number[]>> | null = null;
+  const getIdentityIndex = () => {
+    if (!identityIndexPromise) {
+      identityIndexPromise = readSheetBusinessIdentityIndex({
+        actorUserId: input.actorUserId,
+        googleConnectionId: input.googleConnectionId,
+        sheetName: NQA_AUTOLINK_LIVE_TARGET.sheetName,
+        rowCount: sheetRead.rowCount,
+      });
+    }
+    return identityIndexPromise;
+  };
 
   const [publicationNovels, workspaceNovelRows, provenanceRows] = await Promise.all([
     db.select({ id: novels.id, title: novels.title }).from(novels),
@@ -464,6 +557,7 @@ export async function previewWorkspaceMasterIntake(input: {
         observedActiveSourceKeys: [],
         provenanceDisposition: "NONE",
         reconcileStaleProvenanceId: null,
+        reconcileStaleProvenanceIdentityFingerprint: null,
       });
       continue;
     }
@@ -515,6 +609,7 @@ export async function previewWorkspaceMasterIntake(input: {
     // provenance record belongs to a DIFFERENT, verifiably-gone identity.
     let reusedProvenanceDisposition: "ROW_REUSED" | "REBOUND" | null = null;
     let reusedStaleProvenanceId: number | null = null;
+    let reusedStaleProvenanceIdentityFingerprint: string | null = null;
     if (uniqueIdentityMatch) {
       provenance = uniqueIdentityMatch;
     } else if (provenanceAtRow) {
@@ -530,17 +625,22 @@ export async function previewWorkspaceMasterIntake(input: {
                 record !== provenanceAtRow &&
                 provenanceIdentityFingerprint(record) === staleIdentity
             ).length;
-      const staleVerifiedOccurrences =
-        staleIdentity === null
-          ? 0
-          : Array.from(currentSheetIdentityByRow.values()).filter(
-              (value: string | null) => value === staleIdentity
-            ).length;
+      // IPE-061R2: authoritative presence check — identity-only B-column
+      // index across the populated sheet extent. Independent of the
+      // preview range and of source-metadata validity.
+      const staleIdentityRows =
+        staleIdentity === null ? [] : ((await getIdentityIndex()).get(staleIdentity) ?? []);
+      const staleOccurrencesElsewhere = staleIdentityRows.filter(
+        (foundRow: number) => foundRow !== rowNumber
+      );
+      const staleSelfPresent = staleIdentityRows.some(
+        (foundRow: number) => foundRow === rowNumber
+      );
       const ambiguousReuse =
         staleIdentity === null ||
         blockers.includes("AMBIGUOUS_PROVENANCE_REBIND") ||
         staleSiblingRecords > 0 ||
-        staleVerifiedOccurrences > 1;
+        staleOccurrencesElsewhere.length > 1;
       if (ambiguousReuse) {
         // CASE D — ambiguous/malformed: fail closed with provenance context.
         provenance = provenanceAtRow;
@@ -551,19 +651,35 @@ export async function previewWorkspaceMasterIntake(input: {
             blockers.push("SYNC_IDENTITY_CHANGED");
           }
         } else if (!blockers.includes("AMBIGUOUS_PROVENANCE_REBIND")) {
-          // Well-formed identity claimed by multiple locators / seen in
-          // multiple verified rows — refuse to guess the authoritative one.
+          // Well-formed identity claimed by multiple locators / present in
+          // multiple sheet rows — refuse to guess the authoritative one.
           blockers.push("AMBIGUOUS_PROVENANCE_REBIND");
         }
-      } else {
-        // CASE C — true row reuse: the old identity's only locator is this
-        // row, and the sheet now carries a different (verified) identity.
-        // Release the stale locator and let this row follow the normal
-        // NEW/existing-candidate path; sync reconciles the locator
-        // (overwrite/delete) with a preview-bound ownership guard.
+      } else if (staleOccurrencesElsewhere.length === 1) {
+        // CASE B — identity moved: the old identity is verifiably present at
+        // exactly one other row. Its locator reconciles to that row; this
+        // row proceeds independently with its own identity.
         reusedStaleProvenanceId = Number(provenanceAtRow.id);
-        reusedProvenanceDisposition =
-          staleVerifiedOccurrences === 1 ? "REBOUND" : "ROW_REUSED";
+        reusedStaleProvenanceIdentityFingerprint = staleIdentity;
+        reusedProvenanceDisposition = "REBOUND";
+      } else if (staleSelfPresent) {
+        // Identity unchanged at this row but the row fails full source
+        // validation — not a reuse, not a move. Fail closed; fixing the
+        // source metadata restores the normal canonical path.
+        provenance = provenanceAtRow;
+        atRowIdentityChanged = true;
+        if (identityMatches.length === 0) {
+          blockers.push("SYNC_IDENTITY_CHANGED");
+        }
+      } else {
+        // CASE C — true row reuse: the old identity is absent from the
+        // authoritative current sheet. Release the stale locator and let
+        // this row follow the normal NEW/existing-candidate path; sync
+        // reconciles the locator atomically with a preview-bound
+        // identity/ownership guard.
+        reusedStaleProvenanceId = Number(provenanceAtRow.id);
+        reusedStaleProvenanceIdentityFingerprint = staleIdentity;
+        reusedProvenanceDisposition = "ROW_REUSED";
       }
     }
 
@@ -604,6 +720,7 @@ export async function previewWorkspaceMasterIntake(input: {
       let provenanceSourceReplacementExpected = false;
       let canonicalDisposition: "SAME_IDENTITY" | "REBOUND" = "SAME_IDENTITY";
       let staleAtRowProvenanceId: number | null = null;
+      let staleAtRowProvenanceIdentityFingerprint: string | null = null;
       let provenanceObservedActiveSourceKeys: string[] = [];
       if (!workItem) {
         blockers.push("SYNC_TARGET_MISSING");
@@ -658,6 +775,7 @@ export async function previewWorkspaceMasterIntake(input: {
         Number(provenanceAtRow.id) !== Number(provenance.id)
       ) {
         staleAtRowProvenanceId = Number(provenanceAtRow.id);
+        staleAtRowProvenanceIdentityFingerprint = provenanceIdentityFingerprint(provenanceAtRow);
       }
       rows.push({
         rowNumber,
@@ -691,6 +809,7 @@ export async function previewWorkspaceMasterIntake(input: {
         observedActiveSourceKeys: provenanceObservedActiveSourceKeys,
         provenanceDisposition: canonicalDisposition,
         reconcileStaleProvenanceId: staleAtRowProvenanceId,
+        reconcileStaleProvenanceIdentityFingerprint: staleAtRowProvenanceIdentityFingerprint,
       });
       continue;
     }
@@ -727,6 +846,7 @@ export async function previewWorkspaceMasterIntake(input: {
         observedActiveSourceKeys: [],
         provenanceDisposition: "NONE",
         reconcileStaleProvenanceId: null,
+        reconcileStaleProvenanceIdentityFingerprint: null,
       });
       continue;
     }
@@ -849,6 +969,7 @@ export async function previewWorkspaceMasterIntake(input: {
 
       provenanceDisposition: reusedProvenanceDisposition ?? "NONE",
       reconcileStaleProvenanceId: reusedStaleProvenanceId,
+      reconcileStaleProvenanceIdentityFingerprint: reusedStaleProvenanceIdentityFingerprint,
     });
   }
 
@@ -897,7 +1018,10 @@ export async function previewWorkspaceMasterIntake(input: {
       if (
         occupant &&
         Number(occupant.id) !== Number(row.provenanceId) &&
-        !movingIds.has(Number(occupant.id))
+        !movingIds.has(Number(occupant.id)) &&
+        // IPE-061R2: an occupant that is exactly the preview-bound stale
+        // locator of this row is reconcilable inside the rebind transaction.
+        Number(occupant.id) !== Number(row.reconcileStaleProvenanceId ?? -1)
       ) {
         unsafeBatch = true;
       }
@@ -1082,30 +1206,55 @@ async function persistProvenance(input: {
       )
     )
     .limit(1);
-  // IPE-061 TOCTOU guard: a reused row's sync is bound to the exact stale
-  // locator observed at preview time. If concurrent work reconciled or
-  // moved it, refuse this row instead of overwriting someone else's record.
-  if (input.row.reconcileStaleProvenanceId != null && existing) {
-    if (Number(existing.id) !== input.row.reconcileStaleProvenanceId) {
-      throw new WorkspaceMasterIntakeError(
-        "STALE_PREVIEW",
-        "Provenance ownership of this row changed after preview. Preview again before syncing."
-      );
-    }
-    if (
-      input.row.provenanceDisposition === "REBOUND" &&
-      input.row.provenanceId != null &&
-      Number(input.row.provenanceId) !== input.row.reconcileStaleProvenanceId
-    ) {
-      // The canonical identity matched a provenance record elsewhere: delete
-      // the stale at-row locator and keep the matched record as the single owner.
-      await db
-        .delete(workspaceMasterIntakeRows)
-        .where(eq(workspaceMasterIntakeRows.id, Number(existing.id)));
+  // IPE-061R2 — preview-bound reconciliation of a reused/stale locator.
+  if (input.row.reconcileStaleProvenanceId != null) {
+    const reconcileId = Number(input.row.reconcileStaleProvenanceId);
+    if (input.row.provenanceDisposition === "ROW_REUSED") {
+      // True row reuse: atomically verify the stale locator still carries
+      // the preview-observed identity (same id AND same canonical identity),
+      // then overwrite it in place. No release gap, no blind overwrite.
+      await db.transaction(async (tx: any) => {
+        const [locked] = await tx
+          .select()
+          .from(workspaceMasterIntakeRows)
+          .where(eq(workspaceMasterIntakeRows.id, reconcileId))
+          .for("update")
+          .limit(1);
+        if (!locked) {
+          // Concurrently reconciled already: insert fresh provenance below.
+          await tx.insert(workspaceMasterIntakeRows).values(values);
+          return;
+        }
+        if (
+          Number(locked.rowNumber) !== input.row.rowNumber ||
+          provenanceIdentityFingerprint(locked) !==
+            (input.row.reconcileStaleProvenanceIdentityFingerprint ?? null)
+        ) {
+          throw new WorkspaceMasterIntakeError(
+            "STALE_PREVIEW",
+            "Provenance ownership of this row changed after preview. Preview again before syncing."
+          );
+        }
+        await tx
+          .update(workspaceMasterIntakeRows)
+          .set({ ...values, updatedAt: new Date() })
+          .where(eq(workspaceMasterIntakeRows.id, locked.id));
+      });
       return;
     }
-    // ROW_REUSED: fall through — the update below overwrites the stale
-    // locator in place (no release gap; reconcile-by-overwrite).
+    if (input.row.provenanceDisposition === "REBOUND") {
+      // The identity moved: its canonical rebind (this sync) owns the
+      // reconciliation. If the stale locator still occupies this row, the
+      // rebind pass did not cover it — fail closed instead of clobbering.
+      if (existing) {
+        throw new WorkspaceMasterIntakeError(
+          "STALE_PREVIEW",
+          "The previous identity locator still needs reconciliation — include its current row in the preview range."
+        );
+      }
+      await db.insert(workspaceMasterIntakeRows).values(values);
+      return;
+    }
   }
   if (existing) {
     await db
@@ -1191,7 +1340,24 @@ async function rebindMovedMasterIntakeProvenance(preview: PreviewResult) {
         Number(occupant.id) !== Number(move.provenanceId) &&
         !movingIds.has(Number(occupant.id))
       ) {
-        throw new Error("Master Intake row rebind target became occupied.");
+        // IPE-061R2 Blocker 3: a stale locator occupying the rebind target is
+        // reconciled atomically here — only when it exactly matches the
+        // preview evidence (id + canonical identity). Any drift is fail-closed.
+        const reconcilable =
+          move.provenanceDisposition === "REBOUND" &&
+          move.reconcileStaleProvenanceId != null &&
+          Number(occupant.id) === Number(move.reconcileStaleProvenanceId) &&
+          provenanceIdentityFingerprint(occupant) ===
+            (move.reconcileStaleProvenanceIdentityFingerprint ?? null);
+        if (!reconcilable) {
+          throw new WorkspaceMasterIntakeError(
+            "STALE_PREVIEW",
+            "Provenance ownership of the rebind target changed after preview. Preview again before syncing."
+          );
+        }
+        await tx
+          .delete(workspaceMasterIntakeRows)
+          .where(eq(workspaceMasterIntakeRows.id, Number(occupant.id)));
       }
       const temporaryRow = -Number(move.provenanceId);
       const temporaryOccupant = byRow.get(temporaryRow) as any;

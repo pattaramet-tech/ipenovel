@@ -233,12 +233,14 @@ export function masterIntakePreviewFingerprint(input: {
     provenanceDisposition?: "SAME_IDENTITY" | "REBOUND" | "ROW_REUSED" | "NONE";
     /** Stale at-row locator (different identity) pending reconcile in sync. */
     reconcileStaleProvenanceId?: number | null;
+    /** IPE-061R2: canonical identity of that stale locator at preview time. */
+    reconcileStaleProvenanceIdentityFingerprint?: string | null;
   }>;
 }): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        version: "workspace-master-intake-preview-v5",
+        version: "workspace-master-intake-preview-v6",
         workspaceId: input.workspaceId,
         startRow: input.startRow,
         endRow: input.endRow,
@@ -256,6 +258,8 @@ export function masterIntakePreviewFingerprint(input: {
           sourceReplacementExpected: row.sourceReplacementExpected === true,
           provenanceDisposition: row.provenanceDisposition ?? "NONE",
           reconcileStaleProvenanceId: row.reconcileStaleProvenanceId ?? null,
+          reconcileStaleProvenanceIdentityFingerprint:
+            row.reconcileStaleProvenanceIdentityFingerprint ?? null,
           // Binding the preview to the exact observed active-source state is
           // what makes a replacement authorization stale-safe: [A] and [C]
           // must never produce the same fingerprint.

@@ -40,10 +40,31 @@ vi.mock("../db", () => ({
 vi.mock("../nqa/google/transport", () => ({
   GoogleRestReadOnlyTransport: class {
     async getSpreadsheetMetadata() {
-      return { sheets: [{ title: NQA_AUTOLINK_LIVE_TARGET.sheetName, sheetId: 42 }] };
+      return {
+        spreadsheetId: NQA_AUTOLINK_LIVE_TARGET.spreadsheetId,
+        properties: { title: "รวมนิยาย" },
+        sheets: [
+          {
+            sheetId: 42,
+            title: NQA_AUTOLINK_LIVE_TARGET.sheetName,
+            index: 0,
+            rowCount: 2000,
+            columnCount: 20,
+          },
+        ],
+      };
     }
     async batchGetValues(input: { ranges: string[] }) {
       return input.ranges.map((range: string) => {
+        const single = range.match(/!B(\d+):B(\d+)$/);
+        if (single) {
+          const singleValues: unknown[][] = [];
+          for (let rowNumber = Number(single[1]); rowNumber <= Number(single[2]); rowNumber += 1) {
+            const row = h.sheetRows.get(rowNumber);
+            singleValues.push(row ? [row[0]] : []);
+          }
+          return { values: singleValues };
+        }
         const match = range.match(/!B(\d+):O(\d+)$/);
         const start = Number(match?.[1]);
         const end = Number(match?.[2]);
@@ -204,8 +225,9 @@ function makeDb(config: Record<string, any>) {
   void resolveSelect;
 
   const db: any = {
+    __resolveRows: makeResolver(config),
     select: (projection?: any) => {
-      const state: { table: unknown; projection: any } = { table: null, projection: projection ?? null };
+      const state: any = { table: null, projection: projection ?? null, usedFor: false };
       const builder: any = {
         from: (table: unknown) => {
           state.table = table;
@@ -215,10 +237,10 @@ function makeDb(config: Record<string, any>) {
         where: () => builder,
         limit: () => builder,
         orderBy: () => builder,
-        for: () => builder,
+        for: () => { state.usedFor = true; return builder; },
         then: (resolve: (rows: unknown[]) => void, reject: (error: unknown) => void) => {
           try {
-            resolve(resolveRows(state));
+            resolve((db as any).__resolveRows(state));
           } catch (error) {
             reject(error);
           }
@@ -290,7 +312,7 @@ const baseConfig = (overrides: Record<string, any> = {}) => ({
 });
 
 function buildDb(config: Record<string, any>) {
-  return { ...makeDb(config) };
+  return makeDb(config);
 }
 
 beforeEach(() => {
@@ -585,4 +607,286 @@ describe("IPE-061 classification matrix (A-I)", () => {
     expect(row.provenanceId).toBeNull();
     expect(row.status).toBe("MATCH"); // existing-candidate path (novel present)
   });
+});
+
+describe("IPE-061R2 — authoritative identity verification + atomic reconcile", () => {
+  // ===== IPE-061R2 — authoritative identity verification + atomic reconcile =====
+
+  function productionReuseFixture() {
+    h.sheetRows.set(
+      1597,
+      sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` })
+    );
+    h.sheetRows.set(
+      150,
+      sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit` })
+    );
+    return buildDb(
+      baseConfig({
+        provenance: [provenanceRow({ id: 1597, rowNumber: 1597, rawTitle: "Naruto 1251-1300", normalizedTitle: "naruto", episodeNumber: "1251-1300" })],
+      })
+    );
+  }
+
+  it("R2-A. narrow-range preview still finds moved identity (100..100 == 100..150)", async () => {
+    const { db } = productionReuseFixture();
+    h.db = db;
+
+    const narrow = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    const row = narrow.rows[0];
+    expect(row.blockers).toEqual([]);
+    expect(row.provenanceDisposition).toBe("REBOUND");
+    expect(row.reconcileStaleProvenanceId).toBe(1597);
+  });
+
+  it("R2-B. classification is invariant under preview range size", async () => {
+    const { db } = productionReuseFixture();
+    h.db = db;
+    const narrow = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    h.sheetRows = new Map(h.sheetRows);
+    const wide = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1500, endRow: 1597,
+    });
+    const narrowRow = narrow.rows[0];
+    const wideRow = wide.rows.find((r: any) => r.rowNumber === 1597)!;
+    expect(narrowRow.provenanceDisposition).toBe("REBOUND");
+    expect(wideRow.provenanceDisposition).toBe("REBOUND");
+    expect(narrowRow.blockers).toEqual(wideRow.blockers);
+    // Both ranges agree: the old Naruto identity is verified present at row 150.
+    expect(narrow.reconciledIdentityRows).toBeUndefined(); // additive field only, no contract break
+  });
+
+  it("R2-C. old identity present with invalid source metadata is still present", async () => {
+    // row 150: identity A present but translation doc blank (invalid source).
+    h.sheetRows.set(
+      1597,
+      sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` })
+    );
+    h.sheetRows.set(
+      150,
+      sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: "" })
+    );
+    const { db } = buildDb(
+      baseConfig({
+        provenance: [provenanceRow({ id: 1597, rowNumber: 1597, rawTitle: "Naruto 1251-1300", normalizedTitle: "naruto", episodeNumber: "1251-1300" })],
+      })
+    );
+    h.db = db;
+
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    const row = preview.rows[0];
+    // Identity A is still visibly present at row 150 — never ROW_REUSED.
+    expect(row.provenanceDisposition).toBe("REBOUND");
+    expect(row.provenanceId).toBeNull();
+    expect(row.reconcileStaleProvenanceId).toBe(1597);
+  });
+
+  it("R2-D. canonical rebind target occupied by a stale locator reconciles atomically", async () => {
+    h.sheetRows.set(
+      150,
+      sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit` })
+    );
+    // provenance: A@100 (canonical match for row 100), stale B@150 (occupant).
+    const { db, calls } = buildDb(
+      baseConfig({
+        novels: [{ id: 5, title: "Naruto" }],
+        workspaceNovels: [{ id: 777, novelId: 5, status: "active" }],
+        workItemLookup: [{ id: 551, columnKey: "new" }],
+        provenance: [
+          provenanceRow({ id: 100, rowNumber: 100, rawTitle: "Naruto 1251-1300", normalizedTitle: "naruto", episodeNumber: "1251-1300" }),
+          provenanceRow({ id: 150, rowNumber: 150, rawTitle: "Football 1-40", normalizedTitle: "football", episodeNumber: "001-040", workItemId: 560, workspaceNovelId: 778, translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit`, translationDocumentId: DOC_FOOTBALL }),
+        ],
+      })
+    );
+    h.db = db;
+
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 100, endRow: 150,
+    });
+    const rowA = preview.rows.find((r: any) => r.rowNumber === 100)!;
+    const rowB = preview.rows.find((r: any) => r.rowNumber === 150)!;
+    // Row 150 (identity A, moved): canonical match with A@100 -> REBOUND,
+    // stale occupant B record preview-bound for atomic reconcile.
+    expect(rowB.blockers).toEqual([]);
+    expect(rowB.provenanceDisposition).toBe("REBOUND");
+    expect(rowB.reconcileStaleProvenanceId).toBe(150);
+    expect(rowB.reconcileStaleProvenanceIdentityFingerprint).toBeTruthy();
+
+    const sync = await syncWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 100, endRow: 150,
+      expectedPreviewFingerprint: preview.previewFingerprint,
+    });
+    // Sync completes without "rebind target became occupied".
+    expect(sync.summary.succeeded).toBe(1);
+    expect(sync.results.find((r: any) => r.rowNumber === 150)?.ok).toBe(true);
+    expect(sync.results.find((r: any) => r.rowNumber === 100)?.ok).toBe(false);
+  });
+
+  it("R2-E. occupant drift after preview fails closed with STALE_PREVIEW", async () => {
+    h.sheetRows.set(
+      100,
+      sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: `https://docs.google.com/document/d/${DOC_A}/edit` })
+    );
+    h.sheetRows.set(
+      150,
+      sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` })
+    );
+    const driftConfig = baseConfig({
+      novels: [{ id: 5, title: "Naruto" }],
+      workspaceNovels: [{ id: 777, novelId: 5, status: "active" }],
+      workItemLookup: [{ id: 551, columnKey: "new" }],
+      provenance: [
+        provenanceRow({ id: 100, rowNumber: 100, rawTitle: "Naruto 1251-1300", normalizedTitle: "naruto", episodeNumber: "1251-1300" }),
+        provenanceRow({ id: 150, rowNumber: 150, rawTitle: "Football 1-40", normalizedTitle: "football", episodeNumber: "001-040", workItemId: 560, workspaceNovelId: 778, translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit`, translationDocumentId: DOC_FOOTBALL }),
+      ],
+    });
+    // Preview pass.
+    const previewDb = buildDb(driftConfig);
+    h.db = previewDb.db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 100, endRow: 150,
+    });
+
+    // Sync pass: the stale occupant at row 150 was REPLACED by identity C.
+    h.sheetRows.set(
+      150,
+      sheetRowCells({ rawTitle: "C Rugby 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit` })
+    );
+    const syncDb = buildDb({
+      ...driftConfig,
+      provenance: [
+        provenanceRow({ id: 100, rowNumber: 100, rawTitle: "Naruto 1251-1300", normalizedTitle: "naruto", episodeNumber: "1251-1300" }),
+        provenanceRow({ id: 150, rowNumber: 150, rawTitle: "C Rugby 1-40", normalizedTitle: "c rugby", episodeNumber: "001-040", workItemId: 570, workspaceNovelId: 779, translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, translationDocumentId: DOC_B }),
+      ],
+    });
+    h.db = syncDb.db;
+    // R2-F harness: the tx FOR UPDATE re-read (usedFor=true) returns the
+    // concurrently-mutated C Rugby record; plain list reads still see the
+    // pre-mutation Naruto record so the fingerprint gate passes.
+    const baseResolveRows = (syncDb.db as any).__resolveRows;
+    (syncDb.db as any).__resolveRows = (state: any) => {
+      if (state.table === workspaceMasterIntakeRows && !state.projection && state.usedFor) {
+        return [
+          provenanceRow({
+            id: 1597, rowNumber: 1597, rawTitle: "C Rugby 1-40", normalizedTitle: "c rugby", episodeNumber: "001-040",
+            translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, translationDocumentId: DOC_B,
+          }),
+        ];
+      }
+      return baseResolveRows(state);
+    };
+
+    const sync = syncWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 100, endRow: 150,
+      expectedPreviewFingerprint: preview.previewFingerprint,
+    });
+    // The sync's internal re-preview binds row 150 to the drifted C identity —
+    // fingerprint differs from the operator preview => gate throws STALE_PREVIEW.
+    await expect(sync).rejects.toMatchObject({ code: "STALE_PREVIEW" });
+  });
+
+  it("R2-F. same-id stale locator mutated to another identity => STALE_PREVIEW, zero overwrite", async () => {
+    h.sheetRows.set(
+      1597,
+      sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` })
+    );
+    // Preview: stale Naruto locator id 1597 @ row 1597.
+    const previewDb = buildDb(
+      baseConfig({ novels: [], workspaceNovels: [], provenance: [provenanceRow({ ...NARUTO_OLD })] })
+    );
+    h.db = previewDb.db;
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+
+    // Sync: same id 1597 still exists at the row, but a concurrent sync
+    // overwrote it to identity C (Rugby).
+    const syncDb = buildDb(
+      baseConfig({
+        novels: [],
+        workspaceNovels: [],
+        existingProvenanceRow: provenanceRow({
+          id: 1597, rowNumber: 1597, rawTitle: "C Rugby 1-40", normalizedTitle: "c rugby", episodeNumber: "001-040",
+          translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, translationDocumentId: DOC_B,
+        }),
+        provenance: [provenanceRow({ ...NARUTO_OLD })],
+      })
+    );
+    h.db = syncDb.db;
+    // R2-F harness: the tx FOR UPDATE re-read (usedFor=true) returns the
+    // concurrently-mutated C Rugby record; plain list reads still see the
+    // pre-mutation Naruto record so the fingerprint gate passes.
+    const baseResolveRows = (syncDb.db as any).__resolveRows;
+    (syncDb.db as any).__resolveRows = (state: any) => {
+      if (state.table === workspaceMasterIntakeRows && !state.projection && state.usedFor) {
+        return [
+          provenanceRow({
+            id: 1597, rowNumber: 1597, rawTitle: "C Rugby 1-40", normalizedTitle: "c rugby", episodeNumber: "001-040",
+            translationDocUrl: `https://docs.google.com/document/d/${DOC_B}/edit`, translationDocumentId: DOC_B,
+          }),
+        ];
+      }
+      return baseResolveRows(state);
+    };
+
+    const sync = await syncWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+      expectedPreviewFingerprint: preview.previewFingerprint,
+    });
+    // The persist identity-bind guard fires at row level: zero overwrite.
+    const staleRow = sync.results.find((r: any) => r.rowNumber === 1597);
+    expect(staleRow?.ok).toBe(false);
+    expect(staleRow?.error).toContain("Provenance ownership of this row changed after preview");
+    expect(sync.summary.succeeded).toBe(0);
+  });
+
+  it("R2-G. genuinely absent identity => ROW_REUSED with normal NEW path", async () => {
+    h.sheetRows.set(
+      1597,
+      sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` })
+    );
+    const { db } = buildDb(
+      baseConfig({ novels: [], workspaceNovels: [], provenance: [provenanceRow({ ...NARUTO_OLD })] })
+    );
+    h.db = db;
+
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    const row = preview.rows[0];
+    expect(row.blockers).toEqual([]);
+    expect(row.provenanceDisposition).toBe("ROW_REUSED");
+    expect(row.reconcileStaleProvenanceId).toBe(1597);
+  });
+
+  it("R2-H. source metadata does not affect identity presence", async () => {
+    // row 150: identity A present with completely different/missing C/E/O.
+    h.sheetRows.set(
+      1597,
+      sheetRowCells({ rawTitle: "Football 1-40", translationDocUrl: `https://docs.google.com/document/d/${DOC_FOOTBALL}/edit` })
+    );
+    h.sheetRows.set(
+      150,
+      sheetRowCells({ rawTitle: "Naruto 1251-1300", translationDocUrl: "not-a-google-doc", webSourceUrl: "https://other.example/x" })
+    );
+    const { db } = buildDb(
+      baseConfig({
+        provenance: [provenanceRow({ id: 1597, rowNumber: 1597, rawTitle: "Naruto 1251-1300", normalizedTitle: "naruto", episodeNumber: "1251-1300" })],
+      })
+    );
+    h.db = db;
+
+    const preview = await previewWorkspaceMasterIntake({
+      actorUserId: 1, workspaceId: 1, googleConnectionId: 3, startRow: 1597, endRow: 1597,
+    });
+    const row = preview.rows[0];
+    expect(row.provenanceDisposition).toBe("REBOUND");
+    expect(row.reconcileStaleProvenanceId).toBe(1597);
+    });
 });

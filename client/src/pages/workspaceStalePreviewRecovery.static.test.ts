@@ -67,7 +67,8 @@ describe("IPE-061R1 stale-preview recovery contract", () => {
     const service = source("server/workspace/masterIntake.service.ts");
     expect(service).toContain('preview.previewFingerprint !== input.expectedPreviewFingerprint');
     expect(service).toContain('"STALE_PREVIEW"');
-    // The preview-bound ownership guard from IPE-061 remains.
-    expect(service).toContain("reconcileStaleProvenanceId != null && existing");
+    // The preview-bound ownership guards from IPE-061/R2 remain.
+    expect(service).toContain("input.row.reconcileStaleProvenanceId != null");
+    expect(service).toContain("Provenance ownership of this row changed after preview");
   });
 });
