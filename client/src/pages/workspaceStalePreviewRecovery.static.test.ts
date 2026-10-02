@@ -32,7 +32,9 @@ describe("IPE-061R1 stale-preview recovery contract", () => {
       page.indexOf("const createEditorialNovel")
     );
     expect(onErrorBlock).toContain("masterIntakePreviewQuery.refetch()");
-    expect(onErrorBlock.match(/refetch\(\)/g) || []).toHaveLength(1);
+    // Exactly one refetch CALL SITE (the failure branch repeats the message,
+    // not the call).
+    expect(onErrorBlock.match(/await masterIntakePreviewQuery\.refetch\(\)/g) || []).toHaveLength(1);
     expect(onErrorBlock).toContain("setMasterIntakePreviewResult(response.data);");
   });
 
@@ -44,6 +46,29 @@ describe("IPE-061R1 stale-preview recovery contract", () => {
     expect(onErrorBlock).toContain("ข้อมูลเปลี่ยนหลัง Preview — อัปเดต Preview ล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกด Sync อีกครั้ง");
     // No automatic re-sync: the recovery block contains no masterIntakeSync.mutate.
     expect(onErrorBlock).not.toContain("masterIntakeSync.mutate");
+  });
+
+  it("R5-G. failed refetch must not reinstall cached preview data", () => {
+    const recoveryBlock = page.slice(
+      page.indexOf("IPE-061R1: stale-preview recovery"),
+      page.indexOf("const createEditorialNovel")
+    );
+    // TanStack refetch() does not reject on query errors — isSuccess/error
+    // must be checked before replacing the preview the operator sees.
+    expect(recoveryBlock).toContain("if (!response.isSuccess || !response.data) {");
+    expect(recoveryBlock).toContain("response.error");
+    // Success/info toast only after the typed success check.
+    const toastIdx = recoveryBlock.indexOf("ข้อมูลเปลี่ยนหลัง Preview");
+    const checkIdx = recoveryBlock.indexOf("if (!response.isSuccess || !response.data) {");
+    expect(toastIdx).toBeGreaterThan(checkIdx);
+  });
+
+  it("R5-G. no auto-sync inside the recovery flow", () => {
+    const recoveryBlock = page.slice(
+      page.indexOf("IPE-061R1: stale-preview recovery"),
+      page.indexOf("const createEditorialNovel")
+    );
+    expect(recoveryBlock).not.toContain("masterIntakeSync.mutate");
   });
 
   it("keeps non-STALE errors on the existing toast path", () => {

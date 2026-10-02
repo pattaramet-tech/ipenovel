@@ -36,7 +36,9 @@ import {
   normalizeOptionalHttpUrl,
   parseMasterIntakeEpisodeSpan,
   parseMasterIntakeTitleRange,
+  MASTER_INTAKE_MAX_ROWS,
   type MasterIntakeRowCanonical,
+  type ProvenanceReconciliationPlanEntry,
 } from "./masterIntake.domain";
 import {
   bindPublicationNovel,
@@ -98,6 +100,8 @@ type PreviewRow = {
   reconcileStaleProvenanceId: number | null;
   /** IPE-061R2: canonical identity of the stale locator at preview time. */
   reconcileStaleProvenanceIdentityFingerprint: string | null;
+  /** IPE-061R5: preview-bound reconciliation plan entries owned by this row. */
+  provenanceReconciliationPlan: ProvenanceReconciliationPlanEntry[];
 };
 
 type PreviewResult = {
@@ -439,6 +443,7 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceDisposition: "NONE",
         reconcileStaleProvenanceId: null,
         reconcileStaleProvenanceIdentityFingerprint: null,
+        provenanceReconciliationPlan: [],
       });
       continue;
     }
@@ -494,6 +499,7 @@ export async function previewWorkspaceMasterIntake(input: {
     let reusedProvenanceDisposition: "ROW_REUSED" | "REBOUND" | null = null;
     let reusedStaleProvenanceId: number | null = null;
     let reusedStaleProvenanceIdentityFingerprint: string | null = null;
+    let reusedProvenancePlanEntries: ProvenanceReconciliationPlanEntry[] = [];
     if (uniqueIdentityMatch) {
       provenance = uniqueIdentityMatch;
     } else if (provenanceAtRow) {
@@ -551,6 +557,14 @@ export async function previewWorkspaceMasterIntake(input: {
         reusedStaleProvenanceId = Number(provenanceAtRow.id);
         reusedStaleProvenanceIdentityFingerprint = staleIdentity;
         reusedProvenanceDisposition = "REBOUND";
+        reusedProvenancePlanEntries = [{
+          provenanceId: Number(provenanceAtRow.id),
+          identityFingerprint: staleIdentity ?? "",
+          fromRow: Number(provenanceAtRow.rowNumber),
+          toRow: null,
+          action: "RELEASE",
+          ownerRowNumber: rowNumber,
+        }];
       } else if (staleSelfPresent) {
         // Identity unchanged at this row but the row fails full source
         // validation — not a reuse, not a move. Fail closed; fixing the
@@ -569,6 +583,9 @@ export async function previewWorkspaceMasterIntake(input: {
         reusedStaleProvenanceId = Number(provenanceAtRow.id);
         reusedStaleProvenanceIdentityFingerprint = staleIdentity;
         reusedProvenanceDisposition = "ROW_REUSED";
+        // RELEASE plan entry is added by the chain walk below (destination
+        // occupancy may require intermediate moves first).
+        reusedProvenancePlanEntries = [];
       }
     }
 
@@ -699,6 +716,7 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceDisposition: canonicalDisposition,
         reconcileStaleProvenanceId: staleAtRowProvenanceId,
         reconcileStaleProvenanceIdentityFingerprint: staleAtRowProvenanceIdentityFingerprint,
+        provenanceReconciliationPlan: [],
       });
       continue;
     }
@@ -736,6 +754,7 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceDisposition: "NONE",
         reconcileStaleProvenanceId: null,
         reconcileStaleProvenanceIdentityFingerprint: null,
+        provenanceReconciliationPlan: [],
       });
       continue;
     }
@@ -859,6 +878,7 @@ export async function previewWorkspaceMasterIntake(input: {
       provenanceDisposition: reusedProvenanceDisposition ?? "NONE",
       reconcileStaleProvenanceId: reusedStaleProvenanceId,
       reconcileStaleProvenanceIdentityFingerprint: reusedStaleProvenanceIdentityFingerprint,
+      provenanceReconciliationPlan: reusedProvenancePlanEntries,
     });
   }
 
@@ -888,6 +908,110 @@ export async function previewWorkspaceMasterIntake(input: {
       if (!right.blockers.includes(blocker)) right.blockers.push(blocker);
       left.status = "CONFLICT";
       right.status = "CONFLICT";
+    }
+  }
+
+  // IPE-061R5 — reconciliation plan derived from the authoritative
+  // identity-only index. Chained row moves are preview-bound (fingerprint v7);
+  // the operator's preview range never limits reconciliation.
+  const reconcileSeedRows = rows.filter(
+    row => row.status !== "CONFLICT" && row.reconcileStaleProvenanceId != null
+  );
+  const provenanceReconciliationPlan: ProvenanceReconciliationPlanEntry[] = [];
+  if (reconcileSeedRows.length > 0) {
+    const identityIndex = await getIdentityIndex();
+    const provenanceById = new Map(
+      provenanceRows.map((record: any) => [Number(record.id), record])
+    );
+    const rowByNumber = new Map(rows.map(row => [row.rowNumber, row]));
+    const plannedIds = new Set<number>();
+    const destinationOwners = new Map<number, number>();
+    const queue = reconcileSeedRows.map(row => ({
+      recordId: Number(row.reconcileStaleProvenanceId),
+      ownerRowNumber: row.rowNumber,
+    }));
+    let reconciliationGuard = 0;
+    const failDependent = (ownerRowNumber: number, blocker: string) => {
+      const ownerRow = rowByNumber.get(ownerRowNumber);
+      if (!ownerRow) return;
+      if (!ownerRow.blockers.includes(blocker)) ownerRow.blockers.push(blocker);
+      ownerRow.status = "CONFLICT";
+    };
+    while (queue.length) {
+      reconciliationGuard += 1;
+      if (reconciliationGuard > MASTER_INTAKE_MAX_ROWS * 2) {
+        for (const item of queue) {
+          failDependent(item.ownerRowNumber, "PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+        }
+        break;
+      }
+      const item = queue.shift()!;
+      if (plannedIds.has(item.recordId)) continue;
+      plannedIds.add(item.recordId);
+      const record = provenanceById.get(item.recordId);
+      if (!record) {
+        failDependent(item.ownerRowNumber, "PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+        continue;
+      }
+      const recordIdentity = provenanceIdentityFingerprint(record);
+      if (recordIdentity === null) {
+        failDependent(item.ownerRowNumber, "PROVENANCE_REBIND_SOURCE_ROW_NOT_VERIFIED");
+        continue;
+      }
+      const occurrences = (identityIndex.get(recordIdentity) ?? []).filter(
+        found => found !== record.rowNumber
+      );
+      if (occurrences.length > 1) {
+        failDependent(item.ownerRowNumber, "AMBIGUOUS_PROVENANCE_REBIND");
+        continue;
+      }
+      if (occurrences.length === 1) {
+        const destination = occurrences[0]!;
+        const destinationOwner = destinationOwners.get(destination);
+        if (destinationOwner !== undefined) {
+          failDependent(item.ownerRowNumber, "AMBIGUOUS_PROVENANCE_REBIND");
+          failDependent(destinationOwner, "AMBIGUOUS_PROVENANCE_REBIND");
+          continue;
+        }
+        // A destination preview row whose canonical match IS this record is
+        // already covered by the canonical rebind pass — skip the duplicate.
+        const destinationRow = rowByNumber.get(destination);
+        if (
+          destinationRow &&
+          destinationRow.provenanceId === item.recordId &&
+          destinationRow.provenanceDisposition === "REBOUND"
+        ) {
+          continue;
+        }
+        destinationOwners.set(destination, item.recordId);
+        provenanceReconciliationPlan.push({
+          provenanceId: item.recordId,
+          identityFingerprint: recordIdentity,
+          fromRow: record.rowNumber,
+          toRow: destination,
+          action: "MOVE",
+          ownerRowNumber: item.ownerRowNumber,
+        });
+        const occupant = provenanceByRow.get(destination);
+        if (occupant && Number(occupant.id) !== item.recordId && !plannedIds.has(Number(occupant.id))) {
+          queue.push({ recordId: Number(occupant.id), ownerRowNumber: item.ownerRowNumber });
+        }
+        continue;
+      }
+      // Zero occurrences: identity genuinely absent — stale locator released.
+      provenanceReconciliationPlan.push({
+        provenanceId: item.recordId,
+        identityFingerprint: recordIdentity,
+        fromRow: record.rowNumber,
+        toRow: null,
+        action: "RELEASE",
+        ownerRowNumber: item.ownerRowNumber,
+      });
+    }
+    for (const row of rows) {
+      row.provenanceReconciliationPlan = provenanceReconciliationPlan.filter(
+        entry => entry.ownerRowNumber === row.rowNumber
+      );
     }
   }
 

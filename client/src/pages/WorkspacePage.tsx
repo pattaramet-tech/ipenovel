@@ -899,14 +899,21 @@ export default function WorkspacePage() {
       }
       try {
         const response = await masterIntakePreviewQuery.refetch();
-        if (response.data) {
-          setMasterIntakePreviewResult(response.data);
-          toast.info(
-            "ข้อมูลเปลี่ยนหลัง Preview — อัปเดต Preview ล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกด Sync อีกครั้ง"
+        // IPE-061R5: refetch() does not reject on query errors — a failed
+        // refetch can carry stale cached data. Only a typed successful
+        // result may replace the preview the operator is looking at.
+        if (!response.isSuccess || !response.data) {
+          toast.error(
+            response.error
+              ? `อัปเดต Preview ไม่สำเร็จ: ${response.error.message}`
+              : "อัปเดต Preview ไม่สำเร็จ — กด Preview Sync อีกครั้ง"
           );
-        } else {
-          toast.error("Preview ถูกเปลี่ยนและอัปเดตไม่สำเร็จ — กด Preview Sync อีกครั้ง");
+          return;
         }
+        setMasterIntakePreviewResult(response.data);
+        toast.info(
+          "ข้อมูลเปลี่ยนหลัง Preview — อัปเดต Preview ล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกด Sync อีกครั้ง"
+        );
       } catch (refreshError) {
         toast.error(
           refreshError instanceof Error
