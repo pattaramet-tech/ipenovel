@@ -270,6 +270,8 @@ export default function WorkspacePage() {
   const [editorialSearch, setEditorialSearch] = useState("");
   const [editorialQuickFilter, setEditorialQuickFilter] = useState("all");
   const [editorialView, setEditorialView] = useState<"table" | "kanban">("table");
+  // IPE-060: master-detail — which pane of the Episode Pack Detail is shown.
+  const [packDetailTab, setPackDetailTab] = useState<"editor" | "qc" | "stage" | "publish">("editor");
   const [episodeNovelSearch, setEpisodeNovelSearch] = useState("");
   const [selectedSourceWorkItemId, setSelectedSourceWorkItemId] = useState<number>();
   const [selectedEditorialWorkItemIds, setSelectedEditorialWorkItemIds] = useState<number[]>([]);
@@ -1940,6 +1942,7 @@ export default function WorkspacePage() {
       draftSha256: latestEditorialDraft.draftSha256,
     });
     setChapterEditorParagraphs(paragraphs);
+    setPackDetailTab("editor");
     window.requestAnimationFrame(() => {
       document.getElementById("workspace-chapter-editor")?.scrollIntoView({
         behavior: "smooth",
@@ -2338,14 +2341,8 @@ export default function WorkspacePage() {
         ) : selected ? (
           <div className="space-y-6">
             <Card className="space-y-5 p-5">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Columns3 className="h-5 w-5 text-primary" />
-                    <h2 className="text-xl font-semibold">Editorial Episode Packs</h2>
-                  </div>
-                </div>
-                <StatusPill value={(editorialBoard.data as any)?.board?.status ?? "initializing"} />
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold">นำเข้าและเครื่องมือกลุ่ม</h2>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/10 p-3 text-sm">
@@ -3237,10 +3234,23 @@ export default function WorkspacePage() {
                           )}
                         </div>;
                       })}
-                    </div>
-                  </div>;
-                })()}
+                  </div>
+                </div>;
+              })()}
               </div>}
+            </Card>
+
+            <div className="grid items-start gap-4 xl:grid-cols-[minmax(340px,0.8fr)_minmax(0,1.7fr)]" data-testid="workspace-master-detail">
+            <Card className="space-y-3 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Columns3 className="h-5 w-5 text-primary" />
+                    <h2 className="text-xl font-semibold">Editorial Episode Packs</h2>
+                  </div>
+                </div>
+                <StatusPill value={(editorialBoard.data as any)?.board?.status ?? "initializing"} />
+              </div>
               {editorialBoard.isLoading || ensureEditorialBoard.isPending ? (
                 <div className="flex min-h-32 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
               ) : editorialView === "kanban" ? (
@@ -3264,9 +3274,9 @@ export default function WorkspacePage() {
                       <thead><tr className="border-y bg-muted/10 text-left text-xs text-muted-foreground"><th className="w-10 px-3 py-2"><span className="sr-only">เลือก</span></th><th className="px-3 py-2 font-medium">เรื่อง / ช่วงตอน</th><th className="px-3 py-2 font-medium">การขาย</th><th className="px-3 py-2 text-center font-medium">3. ตรวจ</th><th className="px-3 py-2 text-center font-medium">ผลตรวจ</th><th className="px-3 py-2 text-center font-medium">4. ยืนยัน</th><th className="px-3 py-2 text-center font-medium">5. Stage</th><th className="px-3 py-2 text-center font-medium">พร้อมลง</th><th className="px-3 py-2 text-center font-medium">6. เผยแพร่</th><th className="min-w-72 px-3 py-2 font-medium">หมายเหตุ</th></tr></thead>
                       <tbody>{group.cards.slice().sort((a: any,b: any)=>String(a.episodeNumber??"").localeCompare(String(b.episodeNumber??""),"th",{numeric:true})).map((card:any)=>(
                         <tr key={card.id} className={`border-b last:border-b-0 hover:bg-muted/10 ${selectedEditorialSet.has(card.workItemId) ? "bg-primary/5" : ""}`}>
-                          <td className="px-3 py-3 align-top"><input type="checkbox" aria-label={`เลือก Episode Pack ${card.episodeNumber || card.workItemId}`} checked={selectedEditorialSet.has(card.workItemId)} disabled={!card.workItemId || bulkBusy} onChange={() => card.workItemId && toggleEditorialSelection(card.workItemId)} /></td>
-                          <td className="px-3 py-3"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-1"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${card.evidence?.published ? "border-emerald-300 bg-emerald-50 text-emerald-700" : card.evidence?.readyToPublish ? "border-blue-300 bg-blue-50 text-blue-700" : card.evidence?.stage ? "border-violet-300 bg-violet-50 text-violet-700" : card.evidence?.approval ? "border-amber-300 bg-amber-50 text-amber-700" : card.evidence?.checker ? "border-cyan-300 bg-cyan-50 text-cyan-700" : "border-slate-300 bg-slate-50 text-slate-600"}`}>{card.evidence?.published ? "เผยแพร่แล้ว" : card.evidence?.readyToPublish ? "พร้อมลง" : card.evidence?.stage ? "Stage แล้ว" : card.evidence?.approval ? "ยืนยันแล้ว" : card.evidence?.checker ? "ตรวจแล้ว" : card.columnName}</span></div>{card.columnKey==="new"&&card.workItemId&&<div className="mt-2 flex gap-2"><Button type="button" size="sm" variant="outline" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไข</Button><Button type="button" size="sm" variant="outline" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</Button></div>}{card.workItemId&&<div className="mt-2">{/* IPE-058-F: row -> editor in ONE click (opens next-issue tab). */}<Button type="button" size="sm" onClick={()=>{setSelectedSourceWorkItemId(card.workItemId);setPendingEditorOpenWorkItemId(card.workItemId);}}>เปิด Editor</Button></div>}</td>
-                          <td className="px-3 py-3">
+                          <td className="px-3 py-2 align-top"><input type="checkbox" aria-label={`เลือก Episode Pack ${card.episodeNumber || card.workItemId}`} checked={selectedEditorialSet.has(card.workItemId)} disabled={!card.workItemId || bulkBusy} onChange={() => card.workItemId && toggleEditorialSelection(card.workItemId)} /></td>
+                          <td className="cursor-pointer px-3 py-2" onClick={(event)=>{const el=event.target as HTMLElement;if(el.closest("button,summary,input,a"))return;setSelectedSourceWorkItemId(card.workItemId);}} title="คลิกเพื่อเปิด Episode Pack Detail"><button type="button" className="text-left font-medium text-primary hover:underline" disabled={!card.workItemId} onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}>{card.workItemType==="NEW_EPISODE" ? card.episodeNumber||"ตอนใหม่" : "เรื่องใหม่ / Draft แรก"}</button>{card.episodeTitle&&<div className="mt-0.5 text-xs text-muted-foreground">{card.episodeTitle}</div>}<div className="mt-1"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${card.evidence?.published ? "border-emerald-300 bg-emerald-50 text-emerald-700" : card.evidence?.readyToPublish ? "border-blue-300 bg-blue-50 text-blue-700" : card.evidence?.stage ? "border-violet-300 bg-violet-50 text-violet-700" : card.evidence?.approval ? "border-amber-300 bg-amber-50 text-amber-700" : card.evidence?.checker ? "border-cyan-300 bg-cyan-50 text-cyan-700" : "border-slate-300 bg-slate-50 text-slate-600"}`}>{card.evidence?.published ? "เผยแพร่แล้ว" : card.evidence?.readyToPublish ? "พร้อมลง" : card.evidence?.stage ? "Stage แล้ว" : card.evidence?.approval ? "ยืนยันแล้ว" : card.evidence?.checker ? "ตรวจแล้ว" : card.columnName}</span></div><details className="relative mt-1 inline-block text-left" data-testid="editorial-row-actions"><summary className="cursor-pointer list-none rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted/30" aria-label="การกระทำเพิ่มเติมของ Episode Pack">⋯</summary><div className="absolute right-0 z-20 mt-1 w-52 rounded-md border bg-background p-1 shadow-lg"><button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted/30" disabled={!card.workItemId} onClick={()=>{setSelectedSourceWorkItemId(card.workItemId);setPendingEditorOpenWorkItemId(card.workItemId);}}>เปิด Editor (ตอนถัดไปที่มีปัญหา)</button>{card.columnKey==="new"&&card.workItemId&&<button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted/30" onClick={()=>{const next=window.prompt("แก้ช่วงตอน",card.episodeNumber||"");if(next&&next.trim()&&next.trim()!==String(card.episodeNumber||"").trim())updateEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,episodeNumber:next.trim(),episodeTitle:card.episodeTitle||undefined});}}>แก้ไขช่วงตอน</button>}{card.workItemId && !card.evidence?.stage && (!card.evidence?.published || card.evidence?.publishedSource === "published_episode") && <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted/30" disabled={updateEditorialEpisodeSale.isPending} onClick={()=>{const current=card.isFree===true?"free":"paid";const mode=window.prompt("การขาย Episode Pack: พิมพ์ free = ฟรี หรือ paid = ขาย",current)?.trim().toLowerCase();if(mode!=="free"&&mode!=="paid")return;if(mode==="free"){updateEditorialEpisodeSale.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,price:"0.00",isFree:true});return;}const price=window.prompt("ราคาแพ็ก (บาท)",card.price&&Number(card.price)>0?String(card.price):"100.00")?.trim();if(price)updateEditorialEpisodeSale.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,price,isFree:false});}}>แก้การขาย</button>}<button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10" onClick={()=>{if(window.confirm(`นำ Episode Pack ${card.episodeNumber||""} ออกจาก Workspace หรือไม่?`))removeEditorialEpisode.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId});}}>นำออก</button></div></details></td>
+                          <td className="px-3 py-2">
                             {card.isFree === true ? (
                               <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">ฟรี</span>
                             ) : card.saleMode === "chapter" ? (
@@ -3277,11 +3287,6 @@ export default function WorkspacePage() {
                               <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700">ยังไม่กำหนดการขาย</span>
                             )}
                             {card.saleMetadataSource === "published_episode" && <div className="mt-1 text-[10px] text-muted-foreground">ข้อมูลจากตอนที่เผยแพร่</div>}
-                            {card.workItemId && !card.evidence?.stage && (!card.evidence?.published || card.evidence?.publishedSource === "published_episode") && (
-                              <div className="mt-2">
-                                <Button type="button" size="sm" variant="outline" disabled={updateEditorialEpisodeSale.isPending} onClick={()=>{const current=card.isFree===true?"free":"paid";const mode=window.prompt("การขาย Episode Pack: พิมพ์ free = ฟรี หรือ paid = ขาย",current)?.trim().toLowerCase();if(mode!=="free"&&mode!=="paid")return;if(mode==="free"){updateEditorialEpisodeSale.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,price:"0.00",isFree:true});return;}const price=window.prompt("ราคาแพ็ก (บาท)",card.price&&Number(card.price)>0?String(card.price):"100.00")?.trim();if(price)updateEditorialEpisodeSale.mutate({workspaceId:selectedWorkspaceId,workItemId:card.workItemId,price,isFree:false});}}>แก้การขาย</Button>
-                              </div>
-                            )}
                           </td>
                           {[
                             ["checkerRan", card.evidence?.checkerRan, "รัน Deterministic Checker แล้ว"],
@@ -3294,7 +3299,7 @@ export default function WorkspacePage() {
                             const passedClass = key === "checkerRan" ? "bg-cyan-50 text-cyan-800" : key === "checker" ? "bg-teal-50 text-teal-800" : key === "approval" ? "bg-amber-50 text-amber-800" : key === "stage" ? "bg-violet-50 text-violet-800" : key === "ready" ? "bg-blue-50 text-blue-800" : "bg-emerald-50 text-emerald-800";
                             const tickClass = key === "checkerRan" ? "border-cyan-500 bg-cyan-600 text-white" : key === "checker" ? "border-teal-500 bg-teal-600 text-white" : key === "approval" ? "border-amber-500 bg-amber-500 text-white" : key === "stage" ? "border-violet-500 bg-violet-600 text-white" : key === "ready" ? "border-blue-500 bg-blue-600 text-white" : "border-emerald-500 bg-emerald-600 text-white";
                             const available = card.evidence?.available !== false;
-                            return <td key={String(key)} className={`px-3 py-3 text-center ${card.evidence ? (available ? (passed ? passedClass : "bg-slate-50 text-slate-500") : "bg-red-50 text-red-700") : ""}`} title={available ? String(label) : String(card.evidence?.error ?? "โหลดสถานะไม่สำเร็จ")}>
+                            return <td key={String(key)} className={`px-3 py-2 text-center ${card.evidence ? (available ? (passed ? passedClass : "bg-slate-50 text-slate-500") : "bg-red-50 text-red-700") : ""}`} title={available ? String(label) : String(card.evidence?.error ?? "โหลดสถานะไม่สำเร็จ")}>
                               {card.evidence ? available ? (
                                 <span aria-label={passed ? "ผ่าน" : "ยังไม่ผ่าน"} className={`inline-flex h-6 w-6 items-center justify-center rounded-md border text-sm font-bold ${passed ? tickClass : "border-slate-300 bg-white text-slate-300"}`}>{passed ? "✓" : "—"}</span>
                               ) : <span aria-label="โหลดสถานะไม่สำเร็จ" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-red-300 bg-red-100 text-xs font-bold text-red-700">!</span> : <span className="text-muted-foreground">…</span>}
@@ -3307,16 +3312,60 @@ export default function WorkspacePage() {
                   </details>
                 ))}</div>
               ) : <EmptyState>Editorial board is being prepared for this Workspace.</EmptyState>}
-
             </Card>
-
-            <Card className="space-y-5 p-5">
+            <div className="min-w-0">
+            <Card className="space-y-4 p-4">
               <div>
                 <div className="flex items-center gap-2">
                   <FileCheck2 className="h-5 w-5 text-primary" />
                   <h2 className="text-xl font-semibold">Episode Pack Detail</h2>
                 </div>
               </div>
+
+              {selectedSourceWorkItemId && (
+                <div className="flex gap-1 rounded-md border bg-muted/10 p-1" data-testid="pack-detail-tabs" role="tablist" aria-label="ส่วนของ Episode Pack">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={packDetailTab === "editor"}
+                    data-testid="pack-detail-tab-editor"
+                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "editor" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
+                    onClick={() => setPackDetailTab("editor")}
+                  >
+                    Editor
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={packDetailTab === "qc"}
+                    data-testid="pack-detail-tab-qc"
+                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "qc" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
+                    onClick={() => setPackDetailTab("qc")}
+                  >
+                    QC
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={packDetailTab === "stage"}
+                    data-testid="pack-detail-tab-stage"
+                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "stage" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
+                    onClick={() => setPackDetailTab("stage")}
+                  >
+                    Stage
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={packDetailTab === "publish"}
+                    data-testid="pack-detail-tab-publish"
+                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "publish" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
+                    onClick={() => setPackDetailTab("publish")}
+                  >
+                    Publish
+                  </button>
+                </div>
+              )}
 
               {!selectedSourceWorkItemId ? (
                 <EmptyState>คลิกช่วงตอนในตารางเพื่อเปิด Episode Pack Detail</EmptyState>
@@ -3332,7 +3381,7 @@ export default function WorkspacePage() {
                     <span className="ml-2 text-xs text-muted-foreground">Work item #{selectedSourceWorkItemId}</span>
                   </div>
 
-                  <div className="grid gap-3 lg:grid-cols-2">
+                  <div className={packDetailTab === "editor" ? "grid gap-3 lg:grid-cols-2" : "hidden"}>
                     <form
                       className="space-y-2 rounded-md border p-3"
                       onSubmit={(event) => {
@@ -3491,7 +3540,7 @@ export default function WorkspacePage() {
                     </div>
                   )}
 
-                  <div className="space-y-3 rounded-md border p-3">
+                  <div className={packDetailTab === "qc" ? "space-y-3 rounded-md border p-3" : "hidden"}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <div className="font-medium">3. ตรวจ / ตรวจซ้ำ</div>
@@ -3748,7 +3797,7 @@ export default function WorkspacePage() {
 
                   <details
                     id="workspace-chapter-editor"
-                    className="rounded-md border bg-muted/10"
+                    className={packDetailTab === "editor" ? "rounded-md border bg-muted/10" : "hidden"}
                     open={chapterEditorTarget ? true : undefined}
                   >
                     <summary className="cursor-pointer list-none p-3">
@@ -4746,7 +4795,7 @@ export default function WorkspacePage() {
                   </div>
                   </details>
 
-                  <div className="space-y-3 rounded-md border p-3">
+                  <div className={packDetailTab === "stage" ? "space-y-3 rounded-md border p-3" : "hidden"}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <div className="font-medium">4. ยืนยัน Draft ปัจจุบัน</div>
@@ -4894,6 +4943,7 @@ export default function WorkspacePage() {
                                 return;
                               }
                             }
+                            setPackDetailTab("editor");
                             document
                               .getElementById("workspace-chapter-editor")
                               ?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -5100,7 +5150,8 @@ export default function WorkspacePage() {
                       </Button>
                     </div>
 
-                    {editorialApprovalData?.readyToPublish && (
+                    <div className={packDetailTab === "publish" ? "space-y-3" : "hidden"}>
+                    {editorialApprovalData?.readyToPublish ? (
                       <div className="space-y-2 rounded-md border p-3 text-sm">
                         <div className="font-medium">6. Publish</div>
                         <div className="text-xs text-muted-foreground">
@@ -5137,11 +5188,18 @@ export default function WorkspacePage() {
                           6. Publish
                         </Button>
                       </div>
+                    ) : (
+                      <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                        ยังไม่พร้อมเผยแพร่ — ตรวจความพร้อมและทำ Stage ในแท็บ Stage
+                      </div>
                     )}
+                    </div>
                   </div>
                 </>
               )}
             </Card>
+            </div>
+            </div>
 
             <details className="rounded-lg border bg-background">
               <summary className="cursor-pointer select-none px-5 py-4">

@@ -76,7 +76,10 @@ describe("Workspace daily workflow UX static contract", () => {
   });
 
   it("provides direct row→editor navigation from the pack table", () => {
-    expect(page).toContain('เปิด Editor</Button>');
+    // IPE-060: the one-click editor open moved into the row overflow menu —
+    // the chain (menu button -> pendingEditorOpenWorkItemId -> effect) is intact.
+    expect(page).toContain('เปิด Editor (ตอนถัดไปที่มีปัญหา)</button>');
+    expect(page).toContain('data-testid="editorial-row-actions"');
     expect(page).toContain("pendingEditorOpenWorkItemId");
     // Selected row's novel group auto-expands.
     expect(page).toContain(
