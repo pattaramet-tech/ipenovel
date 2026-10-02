@@ -889,9 +889,11 @@ export default function WorkspacePage() {
       // the fresh result into the UI, and let the operator re-review before
       // syncing again. Never auto-sync, and never clear the current preview
       // unless the refresh actually succeeded.
-      const causeCode =
-        (error as any)?.data?.cause?.code ?? (error as any)?.cause?.code;
-      if (causeCode !== "STALE_PREVIEW") {
+      // IPE-061R1A: structured tRPC discriminator. The server maps the
+      // Master Intake STALE_PREVIEW error to PRECONDITION_FAILED, which is
+      // allowlisted in CLIENT_SAFE_ERROR_CODES and serialized as data.code.
+      const isStalePreview = error.data?.code === "PRECONDITION_FAILED";
+      if (!isStalePreview) {
         toast.error(error.message);
         return;
       }

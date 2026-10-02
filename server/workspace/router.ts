@@ -174,7 +174,7 @@ import {
  * authority between admins. The service layer re-checks the current DB role as
  * defense in depth. Customer-facing Google-connection gating remains bypassed.
  */
-function mapWorkspaceError(error: unknown): never {
+export function mapWorkspaceError(error: unknown): never {
   if (error instanceof WorkspaceEditorialBulkCleanupError) {
     const code =
       error.code === "DATABASE_UNAVAILABLE"
@@ -196,13 +196,13 @@ function mapWorkspaceError(error: unknown): never {
               error.code === "GOOGLE_READ_FAILED"
             ? "SERVICE_UNAVAILABLE"
             : "BAD_REQUEST";
-    throw new TRPCError({
-      code,
-      message: error.message,
-      // IPE-061R1: deterministic client detection — the Master Intake UI
-      // triggers a stale-preview recovery flow on this exact code.
-      cause: error instanceof WorkspaceMasterIntakeError ? { code: error.code } : undefined,
-    });
+    // IPE-061R1A: STALE_PREVIEW maps to PRECONDITION_FAILED — a standard
+    // tRPC code in CLIENT_SAFE_ERROR_CODES, so data.code crosses the HTTP
+    // boundary through the normal sanitization contract (no cause payload).
+    // The Master Intake client uses it as the stale-preview discriminator.
+    const mappedCode =
+      error.code === "STALE_PREVIEW" ? "PRECONDITION_FAILED" : code;
+    throw new TRPCError({ code: mappedCode, message: error.message });
   }
   if (error instanceof WorkspaceNqaAutolinkRuntimeError) {
     throw new TRPCError({

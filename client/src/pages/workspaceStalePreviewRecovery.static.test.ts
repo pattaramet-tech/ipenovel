@@ -13,9 +13,14 @@ describe("IPE-061R1 stale-preview recovery contract", () => {
   const page = source("client/src/pages/WorkspacePage.tsx");
   const router = source("server/workspace/router.ts");
 
-  it("detects STALE_PREVIEW through the typed cause code, not message strings", () => {
-    expect(router).toContain('cause: error instanceof WorkspaceMasterIntakeError ? { code: error.code } : undefined');
-    expect(page).toContain('causeCode !== "STALE_PREVIEW"');
+  it("detects stale previews via the structured tRPC data.code, not message strings", () => {
+    // IPE-061R1A: the server maps Master Intake STALE_PREVIEW to the standard
+    // PRECONDITION_FAILED code (allowlisted in CLIENT_SAFE_ERROR_CODES), so
+    // data.code crosses the HTTP boundary through normal sanitization.
+    expect(router).toContain('error.code === "STALE_PREVIEW" ? "PRECONDITION_FAILED" : code');
+    expect(page).toContain('error.data?.code === "PRECONDITION_FAILED"');
+    // The R1 cause-payload approach was removed — raw cause never crosses.
+    expect(router).not.toContain("cause: error instanceof WorkspaceMasterIntakeError");
     // The client never sniffs the Thai/English message text.
     expect(page).not.toContain('error.message.includes("');
     expect(page).not.toContain('message.includes("Google Sheet');
