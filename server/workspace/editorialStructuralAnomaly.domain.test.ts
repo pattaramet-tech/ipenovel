@@ -246,3 +246,76 @@ describe("Editorial Structural Anomaly domain", () => {
     ).toHaveLength(0);
   });
 });
+
+  it("IPE-060B B. exact canonical source-note tab is accepted, not a blocking anomaly", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "205",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "205",
+          chapterTitle: "หมายเหตุจากต้นฉบับ",
+          tabTitle: "หมายเหตุจากต้นฉบับ",
+          paragraphs: ["หมายเหตุจากต้นฉบับ", "จบตอน"],
+        }),
+      ],
+    });
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+    expect(result.summary.counts.source_note_only).toBe(0);
+  });
+
+  it("IPE-060B C. numbered heading with source note keeps the original blocking behavior", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "138",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "138",
+          chapterTitle: "หมายเหตุจากต้นฉบับ",
+          tabTitle: "บทที่ 138 หมายเหตุจากต้นฉบับ",
+          paragraphs: ["บทที่ 138 หมายเหตุจากต้นฉบับ", "จบตอน"],
+        }),
+      ],
+    });
+    expect(result.summary.counts.source_note_only).toBe(1);
+    expect(result.summary.blockingAnomalyCount).toBe(1);
+  });
+
+  it("IPE-060B D. near-miss spelling หมายเหตุต้นฉบับ keeps the original behavior", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "7",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "7",
+          chapterTitle: "หมายเหตุต้นฉบับ",
+          tabTitle: "หมายเหตุต้นฉบับ",
+          paragraphs: ["หมายเหตุต้นฉบับ", "จบตอน"],
+        }),
+      ],
+    });
+    expect(result.summary.counts.source_note_only).toBe(1);
+    expect(result.summary.blockingAnomalyCount).toBe(1);
+  });
+
+  it("IPE-060B G. whitespace variations of the exact note resolve through existing normalization", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "205",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "205",
+          chapterTitle: "  หมายเหตุ  จากต้นฉบับ  ",
+          tabTitle: "  หมายเหตุ  จากต้นฉบับ  ",
+          paragraphs: ["  หมายเหตุ   จากต้นฉบับ  "],
+        }),
+      ],
+    });
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+  });

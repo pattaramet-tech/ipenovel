@@ -24,6 +24,7 @@ import {
 import {
   EDITORIAL_STRUCTURAL_CHECK_VERSION,
   evaluateEditorialStructuralAnomalies,
+  isExactAcceptedSourceNote,
   type EditorialStructuralTabInput,
 } from "./editorialStructuralAnomaly.domain";
 import { classifyEditorialChapterNumber } from "./editorialIdentityContract.domain";
@@ -642,6 +643,14 @@ function applySingleTransform(input: {
   const beforeSha = editorialDraftSha256(next);
   for (const tab of next.tabs) {
     if (!hasNarrativeEvidence(tab)) continue;
+    // IPE-060B: a tab identified by the exact canonical source note is an
+    // intentional non-narrative tab — never receive an ending marker.
+    if (
+      isExactAcceptedSourceNote(tab.title) ||
+      isExactAcceptedSourceNote(tab.chapterTitle ?? "")
+    ) {
+      continue;
+    }
     const hadMarker = tab.paragraphs.some(paragraph =>
       /^จบตอน[.!…]*$/i.test(normalizeEditorialText(paragraph.text))
     );

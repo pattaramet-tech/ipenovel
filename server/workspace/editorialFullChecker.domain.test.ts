@@ -41,6 +41,8 @@ function documentFromTabs(
     sourceTabId: string;
     tabOrder: number;
     title?: string;
+    chapterNumber?: string | null;
+    chapterTitle?: string | null;
     paragraphs: string[];
   }>
 ): EditorialDraftDocument {
@@ -55,8 +57,8 @@ function documentFromTabs(
       ),
       fingerprintSequence: [],
       structuralSha256: "",
-      chapterNumber: null,
-      chapterTitle: null,
+      chapterNumber: tab.chapterNumber ?? null,
+      chapterTitle: tab.chapterTitle ?? null,
       warnings: [],
     })),
   });
@@ -311,3 +313,46 @@ describe("IPE-058-D Full Checker parity core", () => {
     expect(text.slice(finding!.startOffset!, finding!.endOffset!)).toBe("テスト");
   });
 });
+
+  it("IPE-060B A. exact source-note tab never receives an ending marker", () => {
+    const draft = documentFromTabs([
+      {
+        sourceTabId: "note-tab",
+        tabOrder: 1,
+        title: "หมายเหตุจากต้นฉบับ",
+        chapterNumber: "205",
+        chapterTitle: "หมายเหตุจากต้นฉบับ",
+        paragraphs: ["หมายเหตุจากต้นฉบับ", "เขาเดินกลับบ้านอย่างเงียบงัน"],
+      },
+    ]);
+    const preview = previewEditorialFullCheckerTransform({
+      document: draft,
+      transformCode: "ending_cleanup",
+    });
+    const texts = preview.document.tabs[0]!.paragraphs.map(row => row.text);
+    expect(texts).not.toContain("จบตอน");
+    expect(texts).toContain("หมายเหตุจากต้นฉบับ");
+    expect(texts).toContain("เขาเดินกลับบ้านอย่างเงียบงัน");
+  });
+
+  it("IPE-060B E. ordinary narrative chapters still get the ending marker", () => {
+    const preview = previewEditorialFullCheckerTransform({
+      document: documentFromTabs([
+        { sourceTabId: "ch", tabOrder: 1, paragraphs: ["บทที่ 9", "พายุกำลังจะมาถึง"] },
+      ]),
+      transformCode: "ending_cleanup",
+    });
+    expect(preview.document.tabs[0]!.paragraphs.at(-1)?.text).toBe("จบตอน");
+  });
+
+  it("IPE-060B F. chapters already carrying จบตอน are not duplicated", () => {
+    const preview = previewEditorialFullCheckerTransform({
+      document: documentFromTabs([
+        { sourceTabId: "ch", tabOrder: 1, paragraphs: ["บทที่ 9", "พายุกำลังจะมาถึง", "จบตอน"] },
+      ]),
+      transformCode: "ending_cleanup",
+    });
+    expect(
+      preview.document.tabs[0]!.paragraphs.filter(row => row.text === "จบตอน")
+    ).toHaveLength(1);
+  });
