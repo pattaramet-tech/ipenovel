@@ -25,6 +25,8 @@ import { refreshWorkspaceGoogleNqaReadAccessToken } from "./googleNqaRead";
 import { NQA_AUTOLINK_LIVE_TARGET } from "./nqaAutolink.runtime";
 import {
   assertMasterIntakeRowRange,
+  canonicalMasterIntakeIdentityFingerprint,
+  canonicalizeActiveSourceKeys,
   googleDocumentIdFromUrlOrId,
   masterIntakePreviewFingerprint,
   masterIntakeProvenancePreviewStatus,
@@ -32,6 +34,7 @@ import {
   masterIntakeRowIdentityFingerprint,
   normalizeMasterIntakeNovelTitle,
   normalizeOptionalHttpUrl,
+  parseMasterIntakeEpisodeSpan,
   parseMasterIntakeTitleRange,
   type MasterIntakeRowCanonical,
 } from "./masterIntake.domain";
@@ -80,6 +83,15 @@ type PreviewRow = {
   provenanceRowNumber: number | null;
   blockers: string[];
   sourceAlreadyLinked: boolean;
+  /** Sync may replace the pack's active translation source (same canonical identity). */
+  sourceReplacementExpected: boolean;
+  /**
+   * Canonical `<sourceKind>:<sourceKey>` set observed active on the target
+   * Work Item during this preview. This is the authorization binding for a
+   * later source replacement: the sync refuses to mutate when the current
+   * active-source state differs from what the operator reviewed.
+   */
+  observedActiveSourceKeys: string[];
 };
 
 type PreviewResult = {
@@ -121,35 +133,17 @@ function affectedRows(result: any) {
   return Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0);
 }
 
-function provenanceIdentityFingerprint(row: any) {
-  return masterIntakeRowIdentityFingerprint({
-    spreadsheetId: String(row.spreadsheetId),
-    sheetId: Number(row.sheetId),
-    sheetName: String(row.sheetName),
-    rowNumber: Number(row.rowNumber),
-    novelTitle: String(row.normalizedTitle),
-    normalizedTitle: String(row.normalizedTitle),
-    episodeNumber: String(row.episodeNumber),
-    translationDocUrl: String(row.translationDocUrl),
-    translationDocumentId: String(row.translationDocumentId),
-    webSourceUrl: row.webSourceUrl == null ? null : String(row.webSourceUrl),
-    preparedSourceDocUrl:
-      row.preparedSourceDocUrl == null ? null : String(row.preparedSourceDocUrl),
-    preparedSourceDocumentId:
-      row.preparedSourceDocumentId == null ? null : String(row.preparedSourceDocumentId),
+function provenanceIdentityFingerprint(row: any): string | null {
+  // Canonical business identity (normalized title + canonical episode span)
+  // recomputed from the persisted provenance fields at runtime — legacy
+  // provenance records created under the old source-bound fingerprint
+  // resolve through the same canonicalization without any data migration.
+  // Malformed legacy records (unparseable title/episode) return null: a
+  // per-row non-match that must never crash the whole batch.
+  return canonicalMasterIntakeIdentityFingerprint({
+    normalizedTitle: String(row.normalizedTitle ?? ""),
+    episodeNumber: String(row.episodeNumber ?? ""),
   });
-}
-
-function parseEpisodeSpan(value: string) {
-  const normalized = value.normalize("NFKC").trim().replace(/[–—]/g, "-");
-  const match = normalized.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
-  if (!match) return null;
-  const start = Number(match[1]);
-  const end = Number(match[2] ?? match[1]);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start) {
-    return null;
-  }
-  return { start, end };
 }
 
 function spansOverlap(
@@ -160,8 +154,8 @@ function spansOverlap(
 }
 
 function sameEpisodeIdentity(left: string, right: string) {
-  const a = parseEpisodeSpan(left);
-  const b = parseEpisodeSpan(right);
+  const a = parseMasterIntakeEpisodeSpan(left);
+  const b = parseMasterIntakeEpisodeSpan(right);
   return Boolean(a && b && a.start === b.start && a.end === b.end);
 }
 
@@ -370,13 +364,22 @@ export async function previewWorkspaceMasterIntake(input: {
     if (identity) selectedIdentityFingerprints.add(identity);
   }
   const provenanceRowsToVerify = provenanceRows
-    .filter(
-      (row: any) =>
-        row.spreadsheetId === NQA_AUTOLINK_LIVE_TARGET.spreadsheetId &&
-        Number(row.sheetId) === Number(sheetRead.sheetId) &&
-        selectedIdentityFingerprints.has(provenanceIdentityFingerprint(row)) &&
+    .filter((row: any) => {
+      if (
+        row.spreadsheetId !== NQA_AUTOLINK_LIVE_TARGET.spreadsheetId ||
+        Number(row.sheetId) !== Number(sheetRead.sheetId)
+      ) {
+        return false;
+      }
+      // Malformed legacy records canonicalize to null -> never selected for
+      // verification and never treated as an identity match.
+      const identity = provenanceIdentityFingerprint(row);
+      if (identity === null) return false;
+      return (
+        selectedIdentityFingerprints.has(identity) &&
         (Number(row.rowNumber) < input.startRow || Number(row.rowNumber) > input.endRow)
-    )
+      );
+    })
     .map((row: any) => Number(row.rowNumber));
   const externalIdentityRows = await readSpecificSheetRows({
     actorUserId: input.actorUserId,
@@ -453,6 +456,8 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceRowNumber: null,
         blockers,
         sourceAlreadyLinked: false,
+        sourceReplacementExpected: false,
+        observedActiveSourceKeys: [],
       });
       continue;
     }
@@ -472,6 +477,9 @@ export async function previewWorkspaceMasterIntake(input: {
       preparedSourceDocumentId,
     };
     const rowFingerprint = masterIntakeRowFingerprint(canonical);
+    // Canonical business identity: normalized title + canonical episode span.
+    // Source documents/URLs and sheet/row metadata are deliberately excluded —
+    // changing them must be a source update/rebind, never an identity change.
     const identityFingerprint = masterIntakeRowIdentityFingerprint(canonical);
     const provenanceAtRow = provenanceByRow.get(rowNumber) as any;
     const identityMatches = provenanceRows.filter(
@@ -490,23 +498,37 @@ export async function previewWorkspaceMasterIntake(input: {
         blockers.push("PROVENANCE_REBIND_SOURCE_ROW_STILL_PRESENT");
       }
     }
-    const provenance =
-      provenanceAtRow && provenanceIdentityFingerprint(provenanceAtRow) === identityFingerprint
-        ? provenanceAtRow
-        : identityMatches.length === 1
-          ? identityMatches[0]
-          : provenanceAtRow;
+    // Resolution precedence: a provenance record matching the canonical
+    // identity (even after a row move / source change) wins. An at-row
+    // provenance that does NOT canonical-match means the row's title/episode
+    // changed (or the legacy record is malformed) — fail closed from the
+    // provenance context itself, never via NEW-path derivation.
+    let provenance: any = null;
+    let atRowIdentityChanged = false;
+    if (uniqueIdentityMatch) {
+      provenance = uniqueIdentityMatch;
+    } else if (provenanceAtRow) {
+      provenance = provenanceAtRow;
+      atRowIdentityChanged = true;
+      // AMBIGUOUS_PROVENANCE_REBIND already reports the multi-match case;
+      // report the identity change only when nothing canonical-matched.
+      if (identityMatches.length === 0) {
+        blockers.push("SYNC_IDENTITY_CHANGED");
+      }
+    }
 
-    if (provenance) {
+    if (provenance && !atRowIdentityChanged) {
+      // Defensive re-check: canonical identity equality is guaranteed by the
+      // match above, but keep the explicit blocker for stored-field drift.
       if (
         provenance.normalizedTitle !== parsed.normalizedTitle ||
         !sameEpisodeIdentity(provenance.episodeNumber, parsed.episodeNumber)
       ) {
         blockers.push("SYNC_IDENTITY_CHANGED");
       }
-      if (provenance.translationDocumentId !== translationDocumentId) {
-        blockers.push("TRANSLATION_SOURCE_CHANGED");
-      }
+      // Translation document changes are a source update/rebind on the SAME
+      // Episode Pack — never a hard blocker (TRANSLATION_SOURCE_CHANGED /
+      // SYNC_TARGET_SOURCE_CHANGED removed from this path).
       const [workItem] = await db
         .select({
           id: workspaceEditorialWorkItems.id,
@@ -529,12 +551,16 @@ export async function previewWorkspaceMasterIntake(input: {
         )
         .limit(1);
       let provenanceSourceAlreadyLinked = false;
+      let provenanceSourceReplacementExpected = false;
+      let provenanceObservedActiveSourceKeys: string[] = [];
       if (!workItem) {
         blockers.push("SYNC_TARGET_MISSING");
       } else {
         const activeSources = await db
           .select({
             providerDocumentId: workspaceEditorialSources.providerDocumentId,
+            sourceKind: workspaceEditorialSources.sourceKind,
+            sourceKey: workspaceEditorialSources.sourceKey,
           })
           .from(workspaceEditorialSources)
           .where(
@@ -551,7 +577,17 @@ export async function previewWorkspaceMasterIntake(input: {
             source.providerDocumentId &&
             source.providerDocumentId !== translationDocumentId
         );
-        if (conflictingSource) blockers.push("SYNC_TARGET_SOURCE_CHANGED");
+        // Same canonical identity + different active translation source =>
+        // the sync may replace/rebind the source onto the existing pack.
+        provenanceSourceReplacementExpected = conflictingSource;
+        // Bind the replacement authorization to the exact observed state,
+        // using the same `<sourceKind>:<sourceKey>` identity the source
+        // mutation service itself uses for conflict decisions.
+        provenanceObservedActiveSourceKeys = canonicalizeActiveSourceKeys(
+          activeSources.map(
+            (source: any) => `${String(source.sourceKind)}:${String(source.sourceKey)}`
+          )
+        );
         if (!matchingSource && activeSources.length === 0 && workItem.columnKey !== "new") {
           blockers.push("EXISTING_PACK_NOT_EDITABLE");
         }
@@ -588,6 +624,42 @@ export async function previewWorkspaceMasterIntake(input: {
         provenanceRowNumber: Number(provenance.rowNumber),
         blockers,
         sourceAlreadyLinked: provenanceSourceAlreadyLinked,
+        sourceReplacementExpected: provenanceSourceReplacementExpected,
+        observedActiveSourceKeys: provenanceObservedActiveSourceKeys,
+      });
+      continue;
+    }
+
+    if (atRowIdentityChanged) {
+      // F1: the row's stored provenance no longer matches this row's
+      // canonical identity (title/range changed, or the legacy record is
+      // malformed). Report the conflict from the provenance context itself —
+      // no candidate search, no new/rebound Episode Pack, no source
+      // replacement, no NEW-path derivation.
+      const provenanceWorkspaceNovel = workspaceNovelRows.find(
+        (item: any) => Number(item.id) === Number(provenance.workspaceNovelId)
+      );
+      rows.push({
+        rowNumber,
+        status: "CONFLICT",
+        rowFingerprint,
+        rawTitle,
+        novelTitle: parsed.novelTitle,
+        episodeNumber: parsed.episodeNumber,
+        translationDocUrl,
+        webSourceUrl,
+        preparedSourceDocUrl,
+        existingNovelId: Number(provenance.workspaceNovelId)
+          ? Number(provenanceWorkspaceNovel?.novelId ?? 0) || null
+          : null,
+        workspaceNovelId: Number(provenance.workspaceNovelId) || null,
+        workItemId: Number(provenance.workItemId) || null,
+        provenanceId: Number(provenance.id),
+        provenanceRowNumber: Number(provenance.rowNumber),
+        blockers,
+        sourceAlreadyLinked: false,
+        sourceReplacementExpected: false,
+        observedActiveSourceKeys: [],
       });
       continue;
     }
@@ -598,6 +670,8 @@ export async function previewWorkspaceMasterIntake(input: {
     let workspaceNovelId: number | null = null;
     let workItemId: number | null = null;
     let sourceAlreadyLinked = false;
+    let sourceReplacementExpected = false;
+    let observedActiveSourceKeys: string[] = [];
 
     if (candidate) {
       const workspaceNovel = workspaceByNovelId.get(candidate.id) as any;
@@ -626,7 +700,7 @@ export async function previewWorkspaceMasterIntake(input: {
           );
         for (const entry of activeItems) {
           if (entry.cardStatus !== "active") continue;
-          const span = parseEpisodeSpan(entry.item.episodeNumber ?? "");
+          const span = parseMasterIntakeEpisodeSpan(entry.item.episodeNumber ?? "");
           if (!span || !spansOverlap(span, { start: parsed.rangeStart, end: parsed.rangeEnd })) continue;
           if (
             span.start === parsed.rangeStart &&
@@ -644,6 +718,8 @@ export async function previewWorkspaceMasterIntake(input: {
             const activeSources = await db
               .select({
                 providerDocumentId: workspaceEditorialSources.providerDocumentId,
+                sourceKind: workspaceEditorialSources.sourceKind,
+                sourceKey: workspaceEditorialSources.sourceKey,
               })
               .from(workspaceEditorialSources)
               .where(
@@ -661,9 +737,16 @@ export async function previewWorkspaceMasterIntake(input: {
                 source.providerDocumentId &&
                 source.providerDocumentId !== translationDocumentId
             );
-            if (conflictingSource) {
-              blockers.push("EXISTING_TRANSLATION_SOURCE_CONFLICT");
-            }
+            // Same normalized title + exact canonical episode span + a
+            // different active translation source = source update/rebind on
+            // the existing pack — NOT an identity conflict.
+            sourceReplacementExpected = conflictingSource;
+            // Bind the replacement authorization to the exact observed state.
+            observedActiveSourceKeys = canonicalizeActiveSourceKeys(
+              activeSources.map(
+                (source: any) => `${String(source.sourceKind)}:${String(source.sourceKey)}`
+              )
+            );
             if (!matchingSource && activeSources.length === 0 && entry.columnKey !== "new") {
               blockers.push("EXISTING_PACK_NOT_EDITABLE");
             }
@@ -694,6 +777,8 @@ export async function previewWorkspaceMasterIntake(input: {
       provenanceRowNumber: null,
       blockers,
       sourceAlreadyLinked,
+      sourceReplacementExpected,
+      observedActiveSourceKeys,
     });
   }
 
@@ -1106,6 +1191,26 @@ export async function syncWorkspaceMasterIntake(input: {
     }
 
     try {
+      // R2 TOCTOU guard: a replacement authorization without the preview-
+      // observed active-source binding must never mutate source state. The
+      // preview fingerprint version makes such tokens stale anyway; this is
+      // defense in depth so a boolean alone can never authorize replacement.
+      if (row.sourceReplacementExpected === true && !Array.isArray(row.observedActiveSourceKeys)) {
+        results.push({
+          rowNumber: row.rowNumber,
+          status: row.status,
+          ok: false,
+          novelId: row.existingNovelId,
+          workspaceNovelId: row.workspaceNovelId,
+          workItemId: row.workItemId,
+          novelCreated: false,
+          workItemCreated: false,
+          sourceResult: null,
+          error:
+            "STALE_PREVIEW: source replacement requires the preview-observed active source state.",
+        });
+        continue;
+      }
       // Validate/read C before creating any database objects unless this exact
       // Google source is already durably linked to the existing work item.
       const sourcePayload = row.sourceAlreadyLinked
@@ -1133,6 +1238,16 @@ export async function syncWorkspaceMasterIntake(input: {
             workItemId: work.workItemId,
             payload: sourcePayload,
             googleConnectionId: input.googleConnectionId,
+            // Same canonical Episode Pack identity + different translation
+            // document: the sync explicitly replaces the pack's active
+            // source. importEditorialSource verifies the current active
+            // source state against this preview-observed binding INSIDE its
+            // mutation transaction (work item locked FOR UPDATE) — any drift
+            // fails closed with STALE_PREVIEW and zero source mutation.
+            replaceActiveSource: row.sourceReplacementExpected === true,
+            expectedActiveSourceKeys: Array.isArray(row.observedActiveSourceKeys)
+              ? row.observedActiveSourceKeys
+              : undefined,
           })
         : null;
       await persistProvenance({

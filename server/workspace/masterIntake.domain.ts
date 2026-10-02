@@ -88,24 +88,92 @@ export function normalizeOptionalHttpUrl(value: string): string | null | undefin
   }
 }
 
+/**
+ * Parse an episode number/range into canonical start/end numbers. Leading
+ * zeros, whitespace and dash variants normalize away: "001 - 030",
+ * "001-030", "1-30" and "1 — 30" all resolve to { start: 1, end: 30 }.
+ * Returns null for malformed input — callers must fail closed.
+ */
+export function parseMasterIntakeEpisodeSpan(value: string): { start: number; end: number } | null {
+  const normalized = String(value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/[–—]/g, "-");
+  const match = normalized.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2] ?? match[1]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start) {
+    return null;
+  }
+  return { start, end };
+}
+
+export type MasterIntakeCanonicalIdentity = {
+  version: "workspace-master-intake-identity-v2";
+  normalizedTitle: string;
+  episodeStart: number;
+  episodeEnd: number;
+};
+
+/**
+ * Canonical Master Intake business identity: normalized novel title +
+ * canonical episode span. This is the ONLY identity that decides whether an
+ * intake row is "the same Novel / Episode Pack" as a previous sync.
+ *
+ * Deliberately EXCLUDED from business identity: rowNumber, spreadsheet/sheet
+ * metadata, translationDocumentId/Url, webSourceUrl, prepared source
+ * document/Url. Those belong to provenance/audit and to the row/source
+ * fingerprint (masterIntakeRowFingerprint) — changing a source document must
+ * never turn the same Episode Pack into an identity conflict.
+ */
+export function canonicalMasterIntakeIdentity(input: {
+  normalizedTitle: string;
+  episodeNumber: string;
+}): MasterIntakeCanonicalIdentity | null {
+  const span = parseMasterIntakeEpisodeSpan(input.episodeNumber);
+  const normalizedTitle = normalizeSpace(String(input.normalizedTitle ?? ""));
+  if (!span || !normalizedTitle) return null;
+  return {
+    version: "workspace-master-intake-identity-v2",
+    normalizedTitle,
+    episodeStart: span.start,
+    episodeEnd: span.end,
+  };
+}
+
+/** Deterministic fingerprint of the canonical business identity, or null when malformed. */
+export function canonicalMasterIntakeIdentityFingerprint(input: {
+  normalizedTitle: string;
+  episodeNumber: string;
+}): string | null {
+  const identity = canonicalMasterIntakeIdentity(input);
+  if (!identity) return null;
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+}
+
+/**
+ * Canonicalize an observed active-source key set: unique, trimmed, sorted —
+ * so the same source set in a different DB order yields the same
+ * fingerprint (no false STALE_PREVIEW) while any membership change is
+ * detected. Keys use the same stable identity `importEditorialSource` uses
+ * for SOURCE_CONFLICT decisions: `<sourceKind>:<sourceKey>`.
+ */
+export function canonicalizeActiveSourceKeys(keys: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(keys.map((key) => String(key ?? "").trim()).filter((key) => key.length > 0))
+  ).sort();
+}
+
 export function masterIntakeRowIdentityFingerprint(row: MasterIntakeRowCanonical): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        version: "workspace-master-intake-row-identity-v1",
-        spreadsheetId: row.spreadsheetId,
-        sheetId: row.sheetId,
-        sheetName: row.sheetName,
-        normalizedTitle: row.normalizedTitle,
-        episodeNumber: row.episodeNumber,
-        translationDocumentId: row.translationDocumentId,
-        translationDocUrl: row.translationDocUrl.trim(),
-        webSourceUrl: row.webSourceUrl?.trim() ?? null,
-        preparedSourceDocumentId: row.preparedSourceDocumentId,
-        preparedSourceDocUrl: row.preparedSourceDocUrl?.trim() ?? null,
-      })
-    )
-    .digest("hex");
+  const fingerprint = canonicalMasterIntakeIdentityFingerprint({
+    normalizedTitle: row.normalizedTitle,
+    episodeNumber: row.episodeNumber,
+  });
+  if (!fingerprint) {
+    throw new Error("Master Intake canonical identity is invalid.");
+  }
+  return fingerprint;
 }
 
 export function masterIntakeRowFingerprint(row: MasterIntakeRowCanonical): string {
@@ -158,12 +226,15 @@ export function masterIntakePreviewFingerprint(input: {
     provenanceRowNumber?: number | null;
     blockers?: string[];
     sourceAlreadyLinked?: boolean;
+    sourceReplacementExpected?: boolean;
+    /** Canonical `<sourceKind>:<sourceKey>` set observed active at preview time. */
+    observedActiveSourceKeys?: string[];
   }>;
 }): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        version: "workspace-master-intake-preview-v2",
+        version: "workspace-master-intake-preview-v4",
         workspaceId: input.workspaceId,
         startRow: input.startRow,
         endRow: input.endRow,
@@ -178,6 +249,11 @@ export function masterIntakePreviewFingerprint(input: {
           provenanceRowNumber: row.provenanceRowNumber ?? null,
           blockers: [...(row.blockers ?? [])].sort(),
           sourceAlreadyLinked: row.sourceAlreadyLinked === true,
+          sourceReplacementExpected: row.sourceReplacementExpected === true,
+          // Binding the preview to the exact observed active-source state is
+          // what makes a replacement authorization stale-safe: [A] and [C]
+          // must never produce the same fingerprint.
+          observedActiveSourceKeys: canonicalizeActiveSourceKeys(row.observedActiveSourceKeys ?? []),
         })),
       })
     )

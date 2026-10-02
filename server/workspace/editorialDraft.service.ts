@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   workspaceEditorialDraftParagraphs,
   workspaceEditorialDraftTabs,
@@ -12,6 +12,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { canonicalizeActiveSourceKeys } from "./masterIntake.domain";
 import {
   EDITORIAL_DRAFT_PRESENTATION,
   normalizeEditorialText,
@@ -30,7 +31,13 @@ export class WorkspaceEditorialDraftError extends Error {
       | "SOURCE_REVISION_CONFLICT"
       | "REFRESH_REQUIRES_REVIEW"
       | "SNAPSHOT_NOT_FOUND"
-      | "SOURCE_INVALID",
+      | "SOURCE_INVALID"
+      /**
+       * The active-source state observed at preview time no longer matches
+       * the state inside the mutation transaction. Thrown BEFORE any source
+       * mutation so a concurrent change is never silently overwritten.
+       */
+      | "STALE_PREVIEW",
     message: string
   ) {
     super(message);
@@ -272,6 +279,25 @@ export async function importEditorialSource(input: {
   workItemId: number;
   payload: EditorialSourcePayload;
   googleConnectionId?: number | null;
+  /**
+   * Explicit source replacement for callers that have already proven the
+   * target work item is the same canonical business identity (e.g. Master
+   * Intake sync of a re-issued translation document). The conflicting
+   * active source row is transitioned to status "removed" — never deleted —
+   * so provenance/snapshots stay auditable, and exactly one active source
+   * (the incoming one) remains afterwards.
+   */
+  replaceActiveSource?: boolean;
+  /**
+   * Preview-observed active source identities (`<sourceKind>:<sourceKey>`,
+   * canonicalized) that authorize an explicit replacement. When provided,
+   * the mutation transaction re-reads the current active sources (the work
+   * item row is already locked FOR UPDATE at this point) and refuses with
+   * STALE_PREVIEW — zero mutation — if the state drifted. Mandatory
+   * whenever replaceActiveSource is requested: the boolean alone never
+   * authorizes replacing a source the operator did not review.
+   */
+  expectedActiveSourceKeys?: string[];
 }) {
   const db = await database();
   await requireWorkItem(
@@ -327,16 +353,84 @@ export async function importEditorialSource(input: {
         )
       );
 
-    const differentSource = activeSources.find(
+    // R2 TOCTOU guard: compare the preview-observed active source state
+    // against the state re-read INSIDE this mutation transaction (the work
+    // item row is locked FOR UPDATE above, so this read + the mutations
+    // below are atomic against concurrent source changes). Runs before ANY
+    // source mutation: drift => STALE_PREVIEW => zero mutation.
+    const expectedKeys =
+      input.expectedActiveSourceKeys === undefined
+        ? null
+        : canonicalizeActiveSourceKeys(input.expectedActiveSourceKeys);
+    if (expectedKeys !== null) {
+      const currentKeys = canonicalizeActiveSourceKeys(
+        activeSources.map(
+          (source: any) => `${String(source.sourceKind)}:${String(source.sourceKey)}`
+        )
+      );
+      if (currentKeys.join("|") !== expectedKeys.join("|")) {
+        throw new WorkspaceEditorialDraftError(
+          "STALE_PREVIEW",
+          "Observed active source state changed after preview. Preview again before syncing."
+        );
+      }
+    }
+
+    const conflictingActiveSources = activeSources.filter(
       (source: any) =>
         source.sourceKind !== payload.sourceKind ||
         source.sourceKey !== payload.sourceKey
     );
-    if (differentSource) {
-      throw new WorkspaceEditorialDraftError(
-        "SOURCE_CONFLICT",
-        "This work item already has another active source. Remove or explicitly replace it before changing source identity."
-      );
+    if (conflictingActiveSources.length > 0) {
+      if (!input.replaceActiveSource) {
+        throw new WorkspaceEditorialDraftError(
+          "SOURCE_CONFLICT",
+          "This work item already has another active source. Remove or explicitly replace it before changing source identity."
+        );
+      }
+      if (expectedKeys === null) {
+        // A boolean alone never authorizes replacing a source the operator
+        // did not review.
+        throw new WorkspaceEditorialDraftError(
+          "STALE_PREVIEW",
+          "Source replacement requires the preview-observed active source state."
+        );
+      }
+      if (expectedKeys.length > 1) {
+        // Legacy multiple-active state is never silently normalized — the
+        // ambiguity must be resolved manually before a bulk replacement.
+        throw new WorkspaceEditorialDraftError(
+          "SOURCE_CONFLICT",
+          "Work item has multiple active sources; resolve the ambiguity manually before replacing."
+        );
+      }
+      // Explicit replacement: transition the old active source(s) to
+      // "removed" (row + snapshots stay for audit), then re-resolve the
+      // candidate row for the incoming source identity in ANY status — a
+      // previously removed row for the same document may exist and must be
+      // reactivated instead of violating the unique index.
+      await tx
+        .update(workspaceEditorialSources)
+        .set({ status: "removed", updatedAt: new Date() })
+        .where(
+          inArray(
+            workspaceEditorialSources.id,
+            conflictingActiveSources.map((source: any) => source.id)
+          )
+        );
+      const [replacementCandidate] = await tx
+        .select()
+        .from(workspaceEditorialSources)
+        .where(
+          and(
+            eq(workspaceEditorialSources.workItemId, input.workItemId),
+            eq(workspaceEditorialSources.sourceKind, payload.sourceKind),
+            eq(workspaceEditorialSources.sourceKey, payload.sourceKey)
+          )
+        )
+        .limit(1);
+      activeSources.length = 0;
+      if (replacementCandidate) activeSources.push(replacementCandidate);
     }
 
     let source = activeSources[0] ?? null;
@@ -380,6 +474,9 @@ export async function importEditorialSource(input: {
             : null,
           mimeType: payload.mimeType,
           title: payload.title,
+          // Reactivates a previously removed row re-resolved during explicit
+          // replacement; a no-op for rows that were already active.
+          status: "active",
           updatedAt: new Date(),
         })
         .where(eq(workspaceEditorialSources.id, source.id));
