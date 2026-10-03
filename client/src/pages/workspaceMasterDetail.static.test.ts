@@ -13,27 +13,34 @@ const source = (path: string) => readFileSync(new URL(path, root), "utf8").repla
 describe("IPE-060 master-detail layout contract", () => {
   const page = source("client/src/pages/WorkspacePage.tsx");
 
-  it("renders board and detail as a responsive two-pane master-detail grid", () => {
+  it("renders story overview plus a responsive three-pane work area", () => {
+    // Story overview cards lead the page; the focused story gets three panes.
+    expect(page).toContain("<WorkspaceStoryOverview");
+    expect(page).toContain("xl:grid-cols-[minmax(250px,0.65fr)_minmax(0,2.1fr)_minmax(280px,0.85fr)]");
     expect(page).toContain('data-testid="workspace-master-detail"');
-    expect(page).toContain("xl:grid-cols-[minmax(340px,0.8fr)_minmax(0,1.7fr)]");
     // Narrow widths stack (grid defaults to one column; detail pane keeps min width).
     expect(page).toContain('<div className="min-w-0">');
+    expect(page).toContain('data-testid="workspace-side-panel"');
   });
 
-  it("separates import/bulk tooling from the compact master list", () => {
-    // Ops card holds the import/bulk tooling; master card holds the pack list.
-    expect(page).toContain("นำเข้าและเครื่องมือกลุ่ม");
-    const opsHeader = page.indexOf("นำเข้าและเครื่องมือกลุ่ม");
-    const masterGrid = page.indexOf('data-testid="workspace-master-detail"');
-    expect(opsHeader).toBeGreaterThan(-1);
-    expect(masterGrid).toBeGreaterThan(opsHeader);
-    // Master list card still carries the Editorial Episode Packs header.
-    const masterCard = page.slice(masterGrid, masterGrid + 900);
-    expect(masterCard).toContain("Editorial Episode Packs");
+  it("collapses import/bulk tooling and the full management table out of the daily work area", () => {
+    // The import/bulk ops card is collapsed by default and the story work
+    // area leads the page; the full pack table stays available in Advanced.
+    const opsDetails = page.indexOf('data-testid="workspace-ops-advanced"');
+    const grid = page.indexOf('data-testid="workspace-master-detail"');
+    expect(opsDetails).toBeGreaterThan(-1);
+    expect(grid).toBeGreaterThan(opsDetails);
+    expect(page).toContain("นำเข้าและเครื่องมือกลุ่ม (นำเข้า · Master Intake · bulk)");
+    const tableDetails = page.indexOf('data-testid="workspace-management-table"');
+    expect(tableDetails).toBeGreaterThan(grid);
+    const tableCard = page.slice(tableDetails, tableDetails + 1200);
+    expect(tableCard).toContain("Editorial Episode Packs");
+    // The focused story's compact pack list renders inside the work area.
+    expect(page).toContain("<WorkspacePackListPanel");
   });
 
   it("keeps episode-number/name click as the selection affordance", () => {
-    expect(page).toContain('onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}');
+    expect(page).toContain('onClick={()=>selectPackAcrossStories(card)}');
     // Whole episode cell is clickable (row-level select) but ignores nested controls.
     expect(page).toContain('if(el.closest("button,summary,input,a"))return;');
     expect(page).toContain('title="คลิกเพื่อเปิด Episode Pack Detail"');

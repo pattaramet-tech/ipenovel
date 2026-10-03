@@ -157,7 +157,7 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("4. ยืนยัน Draft ปัจจุบัน");
     expect(source).toContain("5. Stage");
     expect(source).toContain("6. Publish");
-    expect(source).toContain("คลิกช่วงตอนในตารางเพื่อเปิด Episode Pack Detail");
+    expect(source).toContain("เลือกแพ็กจากรายการด้านซ้ายเพื่อเปิด Episode Pack Detail");
     expect(source).not.toContain("Google Docs Import → Draft → Checker → แก้ประโยค → Confirm → Stage → Controlled Publish");
   });
 
