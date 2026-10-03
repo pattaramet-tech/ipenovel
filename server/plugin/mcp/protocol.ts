@@ -1,8 +1,10 @@
+import { z } from "zod";
 import {
   PLUGIN_CAPABILITIES,
   PLUGIN_V1_ENABLED_CAPABILITIES,
   authorizePluginCapability,
   type PluginAuditSink,
+  type PluginCapability,
   type PluginPermissionScope,
 } from "../controlPlane";
 import {
@@ -10,14 +12,44 @@ import {
   McpToolCallParamsSchema,
   PluginPrincipalSchema,
   JsonRpcRequestSchema,
+  PLUGIN_TOOL_NOT_FOUND,
+  WorkspaceGetArgsSchema,
+  WorkspaceListArgsSchema,
+  NovelGetArgsSchema,
+  NovelListArgsSchema,
+  PackGetArgsSchema,
+  PackListArgsSchema,
+  ChapterGetArgsSchema,
+  ChapterListArgsSchema,
   jsonRpcError,
   jsonRpcResult,
   type JsonRpcId,
   type PluginPrincipal,
 } from "../contracts";
-import { findPluginUserDisplay } from "../store";
+import {
+  findPluginPackChapter,
+  findPluginUserDisplay,
+  findPluginVisibleWorkspace,
+  findPluginWorkspaceNovel,
+  findPluginWorkspacePack,
+  listPluginPackChapters,
+  listPluginVisibleWorkspaces,
+  listPluginWorkspaceNovels,
+  listPluginWorkspacePacks,
+} from "../store";
 import { newPluginCorrelationId } from "../audit";
-import { handleIdentityWhoami } from "./handlers";
+import {
+  handleChapterGet,
+  handleChapterList,
+  handleIdentityWhoami,
+  handleNovelGet,
+  handleNovelList,
+  handlePackGet,
+  handlePackList,
+  handleWorkspaceGet,
+  handleWorkspaceList,
+  type WorkspaceToolDeps,
+} from "./handlers";
 
 // IPE-PLUGIN-001B MCP transport skeleton - JSON-RPC 2.0 dispatch over HTTP
 // POST. Deliberately the MINIMAL protocol surface: initialize (stateless
@@ -34,6 +66,8 @@ export type McpDispatchDependencies = {
   auditSink: PluginAuditSink;
   now: () => Date;
   loadUserDisplay: (userId: number) => Promise<{ name: string | null; role: "user" | "admin" } | null>;
+  /** Tenant read loaders (001C) - server-side boundary implementations. */
+  workspaceTools: WorkspaceToolDeps;
 };
 
 export type McpDispatchOutcome =
@@ -50,20 +84,145 @@ export async function defaultLoadUserDisplay(
   return findPluginUserDisplay(userId);
 }
 
+/** Default tenant tool loaders - the store functions behind the boundary. */
+export function defaultWorkspaceToolDeps(): WorkspaceToolDeps {
+  return {
+    listVisibleWorkspaces: listPluginVisibleWorkspaces,
+    findVisibleWorkspace: findPluginVisibleWorkspace,
+    listWorkspaceNovels: listPluginWorkspaceNovels,
+    findWorkspaceNovel: findPluginWorkspaceNovel,
+    listWorkspacePacks: listPluginWorkspacePacks,
+    findWorkspacePack: findPluginWorkspacePack,
+    listPackChapters: listPluginPackChapters,
+    findPackChapter: findPluginPackChapter,
+  };
+}
+
+/** Human-readable JSON-schema for each tool's strict arguments object. */
+function toolInputSchema(
+  properties: Record<string, { type: "integer"; minimum: number }>
+): { type: "object"; properties: Record<string, { type: "integer"; minimum: number }>; required: string[]; additionalProperties: false } {
+  return {
+    type: "object",
+    properties,
+    required: Object.keys(properties),
+    additionalProperties: false,
+  };
+}
+
+const WORKSPACE_ID_PROPERTY = { workspaceId: { type: "integer" as const, minimum: 1 } };
+
 /** tools/list is derived from the registry + enable allowlist - never hand-written. */
 export function buildPluginToolsList(): Array<{
   name: string;
   description: string;
-  inputSchema: { type: "object"; properties: Record<string, never>; additionalProperties: boolean };
+  inputSchema: ReturnType<typeof toolInputSchema>;
 }> {
-  return PLUGIN_V1_ENABLED_CAPABILITIES.map(capability => {
-    const definition = PLUGIN_CAPABILITIES[capability];
-    return {
-      name: capability,
-      description: definition.description,
-      inputSchema: { type: "object" as const, properties: {}, additionalProperties: true },
-    };
-  });
+  const schemas: Record<PluginCapability, ReturnType<typeof toolInputSchema>> = {
+    "identity.whoami": toolInputSchema({}),
+    "workspace.list": toolInputSchema({}),
+    "workspace.get": toolInputSchema(WORKSPACE_ID_PROPERTY),
+    "novel.list": toolInputSchema(WORKSPACE_ID_PROPERTY),
+    "novel.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, novelId: { type: "integer", minimum: 1 } }),
+    "pack.list": toolInputSchema(WORKSPACE_ID_PROPERTY),
+    "pack.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
+    "chapter.list": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
+    "chapter.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, chapterId: { type: "integer", minimum: 1 } }),
+  };
+  return PLUGIN_V1_ENABLED_CAPABILITIES.map(capability => ({
+    name: capability,
+    description: PLUGIN_CAPABILITIES[capability].description,
+    inputSchema: schemas[capability],
+  }));
+}
+
+type ToolOutcome =
+  | { kind: "ok"; result: unknown }
+  | { kind: "invalid_params"; message: string }
+  | { kind: "not_found" }
+  | { kind: "denied"; reason: string };
+
+/**
+ * The one dispatch table - registry, args schema, and handler MUST agree for
+ * every enabled capability; the isolation static test locks the registry to
+ * exactly this set, so a registry-only entry is structurally impossible.
+ */
+function pluginToolDispatch(
+  principal: PluginPrincipal,
+  scopes: readonly PluginPermissionScope[],
+  deps: McpDispatchDependencies
+): Record<
+  PluginCapability,
+  { argsSchema: z.ZodTypeAny; run: (args: unknown) => Promise<ToolOutcome> }
+> {
+  const identity = { userId: principal.userId, clientId: principal.clientId, scopes };
+  const tenantDeps = deps.workspaceTools;
+  return {
+    "identity.whoami": {
+      argsSchema: WorkspaceListArgsSchema,
+      run: async () => ({ kind: "ok", result: await handleIdentityWhoami(identity, deps) }),
+    },
+    "workspace.list": {
+      argsSchema: WorkspaceListArgsSchema,
+      run: async () => ({ kind: "ok", result: await handleWorkspaceList({ userId: principal.userId }, tenantDeps) }),
+    },
+    "workspace.get": {
+      argsSchema: WorkspaceGetArgsSchema,
+      run: async args => {
+        const parsed = WorkspaceGetArgsSchema.parse(args);
+        const result = await handleWorkspaceGet({ userId: principal.userId }, parsed, tenantDeps);
+        return result === null ? { kind: "not_found" } : { kind: "ok", result };
+      },
+    },
+    "novel.list": {
+      argsSchema: NovelListArgsSchema,
+      run: async args => {
+        const parsed = NovelListArgsSchema.parse(args);
+        const result = await handleNovelList({ userId: principal.userId }, parsed, tenantDeps);
+        return result === null ? { kind: "not_found" } : { kind: "ok", result };
+      },
+    },
+    "novel.get": {
+      argsSchema: NovelGetArgsSchema,
+      run: async args => {
+        const parsed = NovelGetArgsSchema.parse(args);
+        const result = await handleNovelGet({ userId: principal.userId }, parsed, tenantDeps);
+        return result === null ? { kind: "not_found" } : { kind: "ok", result };
+      },
+    },
+    "pack.list": {
+      argsSchema: PackListArgsSchema,
+      run: async args => {
+        const parsed = PackListArgsSchema.parse(args);
+        const result = await handlePackList({ userId: principal.userId }, parsed, tenantDeps);
+        return result === null ? { kind: "not_found" } : { kind: "ok", result };
+      },
+    },
+    "pack.get": {
+      argsSchema: PackGetArgsSchema,
+      run: async args => {
+        const parsed = PackGetArgsSchema.parse(args);
+        const result = await handlePackGet({ userId: principal.userId }, parsed, tenantDeps);
+        return result === null ? { kind: "not_found" } : { kind: "ok", result };
+      },
+    },
+    "chapter.list": {
+      argsSchema: ChapterListArgsSchema,
+      run: async args => {
+        const parsed = ChapterListArgsSchema.parse(args);
+        const result = await handleChapterList({ userId: principal.userId }, parsed, tenantDeps);
+        return result === null ? { kind: "not_found" } : { kind: "ok", result };
+      },
+    },
+    "chapter.get": {
+      argsSchema: ChapterGetArgsSchema,
+      run: async args => {
+        const parsed = ChapterGetArgsSchema.parse(args);
+        const result = await handleChapterGet({ userId: principal.userId }, parsed, tenantDeps);
+        return result === null ? { kind: "not_found" } : { kind: "ok", result };
+      },
+    },
+  };
 }
 
 function parsePrincipal(input: unknown): PluginPrincipal | null {
@@ -74,50 +233,60 @@ function parsePrincipal(input: unknown): PluginPrincipal | null {
 
 async function executeAuthorizedTool(
   capability: string,
+  rawArgs: unknown,
   principal: PluginPrincipal,
   scopes: readonly PluginPermissionScope[],
   deps: McpDispatchDependencies
-): Promise<{ ok: true; result: unknown } | { ok: false; reason: string }> {
+): Promise<ToolOutcome> {
   const decision = authorizePluginCapability({
     capability,
     grantedScopes: scopes,
     enabledCapabilities: PLUGIN_V1_ENABLED_CAPABILITIES,
   });
   const correlationId = newPluginCorrelationId();
-
-  if (!decision.allowed) {
+  const audit = async (eventType: "mcp_tool_allowed" | "mcp_tool_denied", reason: string) => {
     await deps.auditSink.append({
       auditVersion: "plugin-audit-v1",
-      eventType: "mcp_tool_denied",
+      eventType,
       actorUserId: principal.userId,
       clientId: principal.clientId,
       correlationId,
-      safeMetadata: JSON.stringify({ capability, reason: decision.reason }),
+      safeMetadata: JSON.stringify({ capability, reason }),
       createdAt: deps.now().toISOString(),
     });
-    return { ok: false, reason: decision.reason };
+  };
+
+  if (!decision.allowed) {
+    await audit("mcp_tool_denied", decision.reason);
+    return { kind: "denied", reason: decision.reason };
   }
 
-  if (capability !== "identity.whoami") {
-    // Registry/allowlist and handlers must agree - a future capability must
-    // land in both on the same milestone, never registry-only.
-    return { ok: false, reason: "UNKNOWN_CAPABILITY" };
+  // Registry/allowlist and this dispatch table must agree - the static
+  // surface test locks the registry to exactly the keys above, so a missing
+  // entry is a build-time-visible programming error, handled fail-closed.
+  const dispatch = pluginToolDispatch(principal, scopes, deps)[capability as PluginCapability];
+  if (!dispatch) {
+    await audit("mcp_tool_denied", "UNKNOWN_CAPABILITY");
+    return { kind: "denied", reason: "UNKNOWN_CAPABILITY" };
   }
 
-  const result = await handleIdentityWhoami(
-    { userId: principal.userId, clientId: principal.clientId, scopes },
-    { loadUserDisplay: deps.loadUserDisplay }
-  );
-  await deps.auditSink.append({
-    auditVersion: "plugin-audit-v1",
-    eventType: "mcp_tool_allowed",
-    actorUserId: principal.userId,
-    clientId: principal.clientId,
-    correlationId,
-    safeMetadata: JSON.stringify({ capability, reason: "ALLOW" }),
-    createdAt: deps.now().toISOString(),
-  });
-  return { ok: true, result };
+  const parsedArgs = dispatch.argsSchema.safeParse(rawArgs ?? {});
+  if (!parsedArgs.success) {
+    return { kind: "invalid_params", message: "Tool arguments failed validation." };
+  }
+
+  const outcome = await dispatch.run(parsedArgs.data);
+  if (outcome.kind === "not_found") {
+    // In-tenant boundary miss: audit it as a deny (with the fixed reason -
+    // never the requested ids) but answer in-band as an empty tool failure
+    // so no existence oracle is created.
+    await audit("mcp_tool_denied", "TENANT_NOT_FOUND");
+    return { kind: "not_found" };
+  }
+  if (outcome.kind === "ok") {
+    await audit("mcp_tool_allowed", "ALLOW");
+  }
+  return outcome;
 }
 
 /**
@@ -189,8 +358,9 @@ async function handleMessage(
           ),
         };
       }
-      const outcome = await executeAuthorizedTool(params.data.name, principal, scopes, deps);
-      if (!outcome.ok) {
+      const outcome = await executeAuthorizedTool(params.data.name, params.data.arguments, principal, scopes, deps);
+      if (outcome.kind === "denied") {
+        // Registry/scope-level denial - protocol-level error, never in-band.
         return {
           kind: "response",
           status: 200,
@@ -200,6 +370,26 @@ async function handleMessage(
             "Tool call denied.",
             { reason: outcome.reason }
           ),
+        };
+      }
+      if (outcome.kind === "invalid_params") {
+        return {
+          kind: "response",
+          status: 200,
+          body: jsonRpcError(id, JSONRPC_ERROR_CODES.INVALID_PARAMS, outcome.message),
+        };
+      }
+      if (outcome.kind === "not_found") {
+        // In-band, fixed-text empty failure: out-of-tenant and nonexistent
+        // ids are indistinguishable by design (no existence oracle).
+        return {
+          kind: "response",
+          status: 200,
+          body: jsonRpcResult(id, {
+            content: [{ type: "text", text: PLUGIN_TOOL_NOT_FOUND }],
+            structuredContent: null,
+            isError: true,
+          }),
         };
       }
       return {

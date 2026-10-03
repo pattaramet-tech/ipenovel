@@ -7,7 +7,7 @@
 //     --redirect-uri "https://chatgpt.com/connector_platform_oauth_redirect" \
 //     [--redirect-uri "..."] \
 //     [--client-id my-connector] \
-//     [--scopes "identity:read"]
+//     [--scopes "identity:read workspace:read novel:read pack:read chapter:read"]
 //
 // Prints the clientId + client secret ONCE (the secret is stored only as a
 // sha256 hash) and exits. Requires DATABASE_URL. Run the migrations first
@@ -38,7 +38,7 @@ if (!args.name || args.redirectUris.length === 0) {
   process.exit(1);
 }
 
-const SERVER_ALLOWED_SCOPES = ["identity:read"];
+const SERVER_ALLOWED_SCOPES = ["identity:read", "workspace:read", "novel:read", "pack:read", "chapter:read"];
 const requestedScopes = (args.scopes ?? "").split(/\s+/).filter(Boolean);
 const unknownScopes = requestedScopes.filter(scope => !SERVER_ALLOWED_SCOPES.includes(scope));
 if (unknownScopes.length > 0 || requestedScopes.length === 0) {

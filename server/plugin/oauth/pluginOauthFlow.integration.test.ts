@@ -330,11 +330,23 @@ describe("plugin OAuth 2.1 + PKCE flow (happy path)", () => {
     expect(result!.clientId).toBe(client.clientId);
     expect(["user", "admin"]).toContain(result!.role);
 
-    // The tools/list surface exposes ONLY the identity tool.
+    // The tools/list surface exposes ONLY the nine read-only tools.
     const listing = await callMcp(grant.accessToken, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect(listing.status).toBe(200);
     const tools = (listing.body!.result as Record<string, unknown>).tools as Array<Record<string, unknown>>;
-    expect(tools.map(tool => tool.name)).toEqual(["identity.whoami"]);
+    expect([...tools.map(tool => tool.name)].sort()).toEqual(
+      [
+        "identity.whoami",
+        "workspace.list",
+        "workspace.get",
+        "novel.list",
+        "novel.get",
+        "pack.list",
+        "pack.get",
+        "chapter.list",
+        "chapter.get",
+      ].sort()
+    );
   });
 
   it("consumes an authorization code exactly once", async () => {
@@ -370,9 +382,19 @@ describe("multi-account identity isolation", () => {
     expect(whoB.result!.clientId).toBe(clientB.clientId);
     expect(whoA.result!.userId).not.toBe(whoB.result!.userId);
 
-    // A's token carries no trace of B's identity anywhere in the payload.
-    expect(JSON.stringify(whoA.body)).not.toContain(String(userB.id));
-    expect(JSON.stringify(whoB.body)).not.toContain(String(userA.id));
+    // A's payload carries no trace of B's identity - checked field-aware:
+    // the whoami result is exactly {userId, name, role, scope, clientId}, so
+    // isolation means userId/clientId (and every other field) equal A's own
+    // and never B's. (A raw whole-JSON substring match on the id was flaky:
+    // small autoincrement ids collide by chance with random hex client ids.)
+    const aFields = Object.values(whoA.result as Record<string, unknown>);
+    expect(aFields).not.toContain(userB.id);
+    expect(aFields).not.toContain(clientB.clientId);
+    expect(JSON.stringify(whoA.result)).not.toContain(`"userId":${userB.id}`);
+    const bFields = Object.values(whoB.result as Record<string, unknown>);
+    expect(bFields).not.toContain(userA.id);
+    expect(bFields).not.toContain(clientA.clientId);
+    expect(JSON.stringify(whoB.result)).not.toContain(`"userId":${userA.id}`);
   });
 });
 
@@ -485,7 +507,7 @@ describe("credentials that must fail closed", () => {
       jsonrpc: "2.0",
       id: 5,
       method: "tools/call",
-      params: { name: "workspace.list", arguments: {} },
+      params: { name: "publish.stage", arguments: {} },
     });
     const error = unknownTool.body!.error as { code: number; data?: { reason: string } };
     expect(error.code).toBe(-32000);

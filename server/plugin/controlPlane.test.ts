@@ -7,9 +7,21 @@ import {
   parsePluginScopes,
 } from "./controlPlane";
 
-describe("plugin capability registry (read-only identity slice)", () => {
-  it("registers exactly identity.whoami and nothing else", () => {
-    expect(Object.keys(PLUGIN_CAPABILITIES)).toEqual(["identity.whoami"]);
+const ALL_NINE_CAPABILITIES = [
+  "chapter.get",
+  "chapter.list",
+  "identity.whoami",
+  "novel.get",
+  "novel.list",
+  "pack.get",
+  "pack.list",
+  "workspace.get",
+  "workspace.list",
+];
+
+describe("plugin capability registry (read-only identity + tenant slice)", () => {
+  it("registers exactly the nine read-only tools and nothing else", () => {
+    expect(Object.keys(PLUGIN_CAPABILITIES).sort()).toEqual(ALL_NINE_CAPABILITIES);
   });
 
   it("every registered capability is READ_ONLY with a known scope", () => {
@@ -19,10 +31,25 @@ describe("plugin capability registry (read-only identity slice)", () => {
     }
   });
 
-  it("enable allowlist is a subset of the registry", () => {
-    for (const capability of PLUGIN_V1_ENABLED_CAPABILITIES) {
-      expect(capability in PLUGIN_CAPABILITIES).toBe(true);
+  it("no capability name hints at any mutation surface", () => {
+    for (const name of Object.keys(PLUGIN_CAPABILITIES)) {
+      expect(name, name).not.toMatch(/stage|publish|write|update|create|delete|approve|move|sync/i);
     }
+  });
+
+  it("tenant tools require their own resource scopes", () => {
+    expect(PLUGIN_CAPABILITIES["workspace.list"].requiredScope).toBe("workspace:read");
+    expect(PLUGIN_CAPABILITIES["workspace.get"].requiredScope).toBe("workspace:read");
+    expect(PLUGIN_CAPABILITIES["novel.list"].requiredScope).toBe("novel:read");
+    expect(PLUGIN_CAPABILITIES["novel.get"].requiredScope).toBe("novel:read");
+    expect(PLUGIN_CAPABILITIES["pack.list"].requiredScope).toBe("pack:read");
+    expect(PLUGIN_CAPABILITIES["pack.get"].requiredScope).toBe("pack:read");
+    expect(PLUGIN_CAPABILITIES["chapter.list"].requiredScope).toBe("chapter:read");
+    expect(PLUGIN_CAPABILITIES["chapter.get"].requiredScope).toBe("chapter:read");
+  });
+
+  it("enable allowlist covers all nine and nothing else", () => {
+    expect([...PLUGIN_V1_ENABLED_CAPABILITIES].sort()).toEqual(ALL_NINE_CAPABILITIES);
   });
 });
 
@@ -40,10 +67,23 @@ describe("authorizePluginCapability", () => {
     });
   });
 
-  it("rejects unknown capabilities with UNKNOWN_CAPABILITY", () => {
+  it("allows workspace.list with workspace:read", () => {
     const decision = authorizePluginCapability({
       capability: "workspace.list",
-      grantedScopes: ["identity:read"],
+      grantedScopes: ["identity:read", "workspace:read"],
+    });
+    expect(decision).toEqual({
+      allowed: true,
+      capability: "workspace.list",
+      requiredScope: "workspace:read",
+      reason: "ALLOW",
+    });
+  });
+
+  it("rejects unknown capabilities with UNKNOWN_CAPABILITY", () => {
+    const decision = authorizePluginCapability({
+      capability: "publish.stage",
+      grantedScopes: ["identity:read", "workspace:read"],
     });
     expect(decision).toMatchObject({ allowed: false, reason: "UNKNOWN_CAPABILITY", requiredScope: null });
   });
@@ -57,22 +97,35 @@ describe("authorizePluginCapability", () => {
     expect(decision).toMatchObject({ allowed: false, reason: "CAPABILITY_DISABLED" });
   });
 
-  it("rejects valid capabilities with insufficient scope", () => {
+  it("rejects tenant tools without their resource scope (identity:read is not enough)", () => {
     const decision = authorizePluginCapability({
-      capability: "identity.whoami",
-      grantedScopes: [],
+      capability: "workspace.list",
+      grantedScopes: ["identity:read"],
     });
-    expect(decision).toMatchObject({ allowed: false, reason: "INSUFFICIENT_SCOPE", requiredScope: "identity:read" });
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "INSUFFICIENT_SCOPE",
+      requiredScope: "workspace:read",
+    });
   });
 });
 
 describe("parsePluginScopes", () => {
-  it("parses a space-separated scope string", () => {
-    expect(parsePluginScopes("identity:read")).toEqual(["identity:read"]);
+  it("parses a space-separated scope string across all five scopes (request order)", () => {
+    expect(parsePluginScopes("identity:read workspace:read novel:read pack:read chapter:read")).toEqual([
+      "identity:read",
+      "workspace:read",
+      "novel:read",
+      "pack:read",
+      "chapter:read",
+    ]);
   });
 
   it("deduplicates and drops unknown scopes (fail closed)", () => {
-    expect(parsePluginScopes("identity:read novel:read identity:read")).toEqual(["identity:read"]);
+    expect(parsePluginScopes("identity:read novel:read identity:read")).toEqual([
+      "identity:read",
+      "novel:read",
+    ]);
   });
 
   it("returns empty for null/empty/garbage", () => {

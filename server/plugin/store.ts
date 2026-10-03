@@ -1,5 +1,6 @@
 import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import {
+  novels,
   pluginAccessGrants,
   pluginAuditLogs,
   pluginOAuthAuthorizationCodes,
@@ -8,6 +9,15 @@ import {
   pluginOAuthConsentAttempts,
   pluginRefreshGrants,
   users,
+  workspaceEditorialDraftTabs,
+  workspaceEditorialDrafts,
+  workspaceEditorialWorkItems,
+  workspaceKanbanBoards,
+  workspaceKanbanCards,
+  workspaceKanbanColumns,
+  workspaceMembers,
+  workspaceNovels,
+  workspaceWorkspaces,
   type PluginOAuthAuthorization,
   type PluginOAuthClient,
   type PluginRefreshGrant,
@@ -528,4 +538,377 @@ export async function deleteExpiredPluginAuthArtifacts(now: Date): Promise<Plugi
     expiredAccessTokens: affectedRowCount(expiredAccessTokens),
     expiredRefreshTokens: affectedRowCount(expiredRefreshTokens),
   };
+}
+
+// ---------------------------------------------------------------------------
+// IPE-PLUGIN-001C tenant read surface.
+//
+// The server-side tenant boundary: EVERY query below derives visibility from
+// the token's bound users.id via workspaceWorkspaces.ownerUserId OR an
+// active workspaceMembers row, and carries that predicate INSIDE its WHERE
+// (never a separate check-then-read), so a membership revoked mid-flight is
+// reflected on the very next call. Visibility mirrors the app's own read
+// models exactly: workspace must be status='active' AND deletedAt IS NULL;
+// workspaceNovels must be status='active'; packs are
+// workspaceEditorialWorkItems (new_episode + package saleMode) whose kanban
+// card is 'active' on the workspace's 'editorial' board (status='active');
+// chapters are the tabs of the LATEST draft version of the pack. Cross-
+// tenant ids simply match no row (NOT_FOUND at the tool layer) - there is
+// no existence oracle. Tables are read straight from drizzle/schema (no
+// server/workspace/* import - enforced by the isolation static test).
+// ---------------------------------------------------------------------------
+
+/** Owner-or-active-member + active + not-soft-deleted workspace predicate. */
+function pluginWorkspaceVisibleCondition(userId: number) {
+  // The membership arm is a self-contained EXISTS (never a join reference):
+  // this predicate is reused on queries that do not carry a workspaceMembers
+  // join, so it must be valid on its own anywhere workspaceWorkspaces is.
+  return and(
+    eq(workspaceWorkspaces.status, "active"),
+    isNull(workspaceWorkspaces.deletedAt),
+    or(
+      eq(workspaceWorkspaces.ownerUserId, userId),
+      sql`exists (
+        select 1 from ${workspaceMembers} visibleMembership
+        where visibleMembership.workspaceId = ${workspaceWorkspaces.id}
+          and visibleMembership.userId = ${userId}
+          and visibleMembership.status = 'active'
+      )`
+    )
+  );
+}
+
+export type PluginVisibleWorkspace = {
+  workspaceId: number;
+  name: string;
+  ownerUserId: number;
+  /** Effective read role: the member row's role, or "owner" for the owner. */
+  viewerRole: "owner" | "editor" | "reviewer" | "viewer";
+};
+
+const pluginWorkspaceSelection = {
+  workspaceId: workspaceWorkspaces.id,
+  name: workspaceWorkspaces.name,
+  ownerUserId: workspaceWorkspaces.ownerUserId,
+  memberRole: workspaceMembers.role,
+};
+
+function pluginWorkspaceRow(row: {
+  workspaceId: number;
+  name: string;
+  ownerUserId: number;
+  memberRole: "owner" | "editor" | "reviewer" | "viewer" | null;
+}): PluginVisibleWorkspace {
+  return {
+    workspaceId: row.workspaceId,
+    name: row.name,
+    ownerUserId: row.ownerUserId,
+    viewerRole: row.memberRole ?? "owner",
+  };
+}
+
+export async function listPluginVisibleWorkspaces(
+  userId: number
+): Promise<PluginVisibleWorkspace[]> {
+  const db = await requirePluginDb();
+  const rows = await db
+    .select(pluginWorkspaceSelection)
+    .from(workspaceWorkspaces)
+    .leftJoin(
+      workspaceMembers,
+      and(
+        eq(workspaceMembers.workspaceId, workspaceWorkspaces.id),
+        eq(workspaceMembers.userId, userId)
+      )
+    )
+    .where(pluginWorkspaceVisibleCondition(userId))
+    .orderBy(workspaceWorkspaces.id);
+  return rows.map(pluginWorkspaceRow);
+}
+
+export async function findPluginVisibleWorkspace(
+  workspaceId: number,
+  userId: number
+): Promise<PluginVisibleWorkspace | null> {
+  const db = await requirePluginDb();
+  const rows = await db
+    .select(pluginWorkspaceSelection)
+    .from(workspaceWorkspaces)
+    .leftJoin(
+      workspaceMembers,
+      and(
+        eq(workspaceMembers.workspaceId, workspaceWorkspaces.id),
+        eq(workspaceMembers.userId, userId)
+      )
+    )
+    .where(and(eq(workspaceWorkspaces.id, workspaceId), pluginWorkspaceVisibleCondition(userId)))
+    .limit(1);
+  return rows[0] ? pluginWorkspaceRow(rows[0]) : null;
+}
+
+export type PluginWorkspaceNovel = {
+  workspaceNovelId: number;
+  novelId: number;
+  title: string;
+  slug: string;
+  publicationStatus: "published" | "archived";
+  storyStatus: "ongoing" | "finished";
+};
+
+const pluginNovelSelection = {
+  workspaceNovelId: workspaceNovels.id,
+  novelId: novels.id,
+  title: novels.title,
+  slug: novels.slug,
+  publicationStatus: novels.publicationStatus,
+  storyStatus: novels.storyStatus,
+};
+
+function pluginNovelCondition(workspaceId: number, userId: number) {
+  // Tenancy rides on the workspaceWorkspaces join above; the WHERE only
+  // narrows the resource itself.
+  return and(
+    eq(workspaceNovels.workspaceId, workspaceId),
+    eq(workspaceNovels.status, "active"),
+    eq(workspaceWorkspaces.id, workspaceId),
+    pluginWorkspaceVisibleCondition(userId)
+  );
+}
+
+export async function listPluginWorkspaceNovels(
+  workspaceId: number,
+  userId: number
+): Promise<PluginWorkspaceNovel[]> {
+  const db = await requirePluginDb();
+  return await db
+    .select(pluginNovelSelection)
+    .from(workspaceNovels)
+    .innerJoin(
+      workspaceWorkspaces,
+      and(
+        eq(workspaceWorkspaces.id, workspaceNovels.workspaceId),
+        pluginWorkspaceVisibleCondition(userId)
+      )
+    )
+    .innerJoin(novels, eq(novels.id, workspaceNovels.novelId))
+    .where(pluginNovelCondition(workspaceId, userId))
+    .orderBy(workspaceNovels.id);
+}
+
+export async function findPluginWorkspaceNovel(
+  workspaceId: number,
+  novelId: number,
+  userId: number
+): Promise<PluginWorkspaceNovel | null> {
+  const db = await requirePluginDb();
+  const rows = await db
+    .select(pluginNovelSelection)
+    .from(workspaceNovels)
+    .innerJoin(
+      workspaceWorkspaces,
+      and(
+        eq(workspaceWorkspaces.id, workspaceNovels.workspaceId),
+        pluginWorkspaceVisibleCondition(userId)
+      )
+    )
+    .innerJoin(novels, eq(novels.id, workspaceNovels.novelId))
+    .where(and(pluginNovelCondition(workspaceId, userId), eq(workspaceNovels.novelId, novelId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** Editorial episode pack = new_episode work item with package saleMode. */
+function pluginPackCondition() {
+  return and(
+    eq(workspaceEditorialWorkItems.workItemType, "new_episode"),
+    eq(workspaceEditorialWorkItems.saleMode, "package"),
+    eq(workspaceKanbanCards.status, "active"),
+    eq(workspaceKanbanBoards.slug, "editorial"),
+    eq(workspaceKanbanBoards.status, "active")
+  );
+}
+
+export type PluginWorkspacePack = {
+  packId: number;
+  workspaceNovelId: number;
+  novelId: number;
+  itemKey: string;
+  episodeNumber: string | null;
+  episodeTitle: string | null;
+  price: string | null;
+  isFree: boolean | null;
+  /** Kanban column key of the pack card (new/pending_check/... workflow stage). */
+  stage: string | null;
+};
+
+const pluginPackSelection = {
+  packId: workspaceEditorialWorkItems.id,
+  workspaceNovelId: workspaceEditorialWorkItems.workspaceNovelId,
+  novelId: novels.id,
+  itemKey: workspaceEditorialWorkItems.itemKey,
+  episodeNumber: workspaceEditorialWorkItems.episodeNumber,
+  episodeTitle: workspaceEditorialWorkItems.episodeTitle,
+  price: workspaceEditorialWorkItems.price,
+  isFree: workspaceEditorialWorkItems.isFree,
+  stage: workspaceKanbanColumns.key,
+};
+
+type PluginDb = Awaited<ReturnType<typeof requirePluginDb>>;
+
+function pluginPackQuery(db: PluginDb, userId: number) {
+  return db
+    .select(pluginPackSelection)
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(workspaceNovels, eq(workspaceNovels.id, workspaceEditorialWorkItems.workspaceNovelId))
+    .innerJoin(novels, eq(novels.id, workspaceNovels.novelId))
+    .innerJoin(workspaceKanbanCards, eq(workspaceKanbanCards.id, workspaceEditorialWorkItems.cardId))
+    .innerJoin(
+      workspaceKanbanBoards,
+      and(
+        eq(workspaceKanbanBoards.id, workspaceKanbanCards.boardId),
+        eq(workspaceKanbanBoards.workspaceId, workspaceNovels.workspaceId)
+      )
+    )
+    .leftJoin(workspaceKanbanColumns, eq(workspaceKanbanColumns.id, workspaceKanbanCards.columnId))
+    .innerJoin(
+      workspaceWorkspaces,
+      and(
+        eq(workspaceWorkspaces.id, workspaceNovels.workspaceId),
+        pluginWorkspaceVisibleCondition(userId)
+      )
+    );
+}
+
+export async function listPluginWorkspacePacks(
+  workspaceId: number,
+  userId: number
+): Promise<PluginWorkspacePack[]> {
+  const db = await requirePluginDb();
+  return await pluginPackQuery(db, userId)
+    .where(
+      and(
+        eq(workspaceNovels.workspaceId, workspaceId),
+        pluginPackCondition()
+      )
+    )
+    .orderBy(workspaceEditorialWorkItems.id);
+}
+
+export async function findPluginWorkspacePack(
+  workspaceId: number,
+  packId: number,
+  userId: number
+): Promise<PluginWorkspacePack | null> {
+  const db = await requirePluginDb();
+  const rows = await pluginPackQuery(db, userId)
+    .where(
+      and(
+        eq(workspaceNovels.workspaceId, workspaceId),
+        eq(workspaceEditorialWorkItems.id, packId),
+        pluginPackCondition()
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export type PluginPackChapter = {
+  chapterId: number;
+  packId: number;
+  sourceTabId: string;
+  tabOrder: number;
+  title: string;
+  chapterNumber: string | null;
+  chapterTitle: string | null;
+};
+
+const pluginChapterSelection = {
+  chapterId: workspaceEditorialDraftTabs.id,
+  packId: workspaceEditorialDrafts.workItemId,
+  sourceTabId: workspaceEditorialDraftTabs.sourceTabId,
+  tabOrder: workspaceEditorialDraftTabs.tabOrder,
+  title: workspaceEditorialDraftTabs.title,
+  chapterNumber: workspaceEditorialDraftTabs.chapterNumber,
+  chapterTitle: workspaceEditorialDraftTabs.chapterTitle,
+};
+
+/**
+ * Chapter tabs of the LATEST draft version of one visible pack. The pack's
+ * own tenancy predicate is joined INSIDE these queries, so a stale/foreign
+ * packId or chapterId matches no rows at all. (The latest-version and pack
+ * predicates are applied by each caller's WHERE - drizzle allows only one
+ * where() per builder.)
+ */
+function pluginChapterQuery(db: PluginDb, userId: number) {
+  return db    .select(pluginChapterSelection)
+    .from(workspaceEditorialDraftTabs)
+    .innerJoin(
+      workspaceEditorialDrafts,
+      eq(workspaceEditorialDrafts.id, workspaceEditorialDraftTabs.draftId)
+    )
+    .innerJoin(
+      workspaceEditorialWorkItems,
+      eq(workspaceEditorialWorkItems.id, workspaceEditorialDrafts.workItemId)
+    )
+    .innerJoin(workspaceNovels, eq(workspaceNovels.id, workspaceEditorialWorkItems.workspaceNovelId))
+    .innerJoin(workspaceKanbanCards, eq(workspaceKanbanCards.id, workspaceEditorialWorkItems.cardId))
+    .innerJoin(
+      workspaceKanbanBoards,
+      and(
+        eq(workspaceKanbanBoards.id, workspaceKanbanCards.boardId),
+        eq(workspaceKanbanBoards.workspaceId, workspaceNovels.workspaceId)
+      )
+    )
+    .innerJoin(
+      workspaceWorkspaces,
+      and(
+        eq(workspaceWorkspaces.id, workspaceKanbanBoards.workspaceId),
+        pluginWorkspaceVisibleCondition(userId)
+      )
+    );
+}
+
+export async function listPluginPackChapters(
+  workspaceId: number,
+  packId: number,
+  userId: number
+): Promise<PluginPackChapter[]> {
+  const db = await requirePluginDb();
+  const latestDraftVersion = sql`(
+    select max(latestVersions.version) from ${workspaceEditorialDrafts} latestVersions
+    where latestVersions.workItemId = ${workspaceEditorialDrafts.workItemId}
+  )`;
+  return await pluginChapterQuery(db, userId)
+    .where(
+      and(
+        eq(workspaceWorkspaces.id, workspaceId),
+        eq(workspaceEditorialWorkItems.id, packId),
+        pluginPackCondition(),
+        eq(workspaceEditorialDrafts.version, latestDraftVersion)
+      )
+    )
+    .orderBy(workspaceEditorialDraftTabs.tabOrder);
+}
+
+export async function findPluginPackChapter(
+  workspaceId: number,
+  chapterId: number,
+  userId: number
+): Promise<PluginPackChapter | null> {
+  const db = await requirePluginDb();
+  const latestDraftVersion = sql`(
+    select max(latestVersions.version) from ${workspaceEditorialDrafts} latestVersions
+    where latestVersions.workItemId = ${workspaceEditorialDrafts.workItemId}
+  )`;
+  const rows = await pluginChapterQuery(db, userId)
+    .where(
+      and(
+        eq(workspaceWorkspaces.id, workspaceId),
+        eq(workspaceEditorialDraftTabs.id, chapterId),
+        pluginPackCondition(),
+        eq(workspaceEditorialDrafts.version, latestDraftVersion)
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }

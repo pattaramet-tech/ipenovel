@@ -47,10 +47,8 @@ export const PluginPrincipalSchema = z
 export type PluginPrincipal = z.infer<typeof PluginPrincipalSchema>;
 
 /**
- * The identity.whoami result - the ONLY business data this milestone ever
- * returns. Deliberately excludes email, openId, and every novel/workspace
- * field: another ChatGPT account must not be able to learn anything about a
- * user beyond "this is user N" and their display name/role.
+ * The identity.whoami result - deliberately excludes email, openId, and
+ * every novel/workspace field beyond the bound identity itself.
  */
 export type WhoamiResult = {
   userId: number;
@@ -58,6 +56,83 @@ export type WhoamiResult = {
   role: "user" | "admin";
   scope: string;
   clientId: string;
+};
+
+// ---------------------------------------------------------------------------
+// IPE-PLUGIN-001C tenant read tool contracts. Every tool takes ONLY resource
+// locators (workspaceId/novelId/packId/chapterId) - never a userId, account,
+// or authority selector: the tenant set is derived server-side from the
+// token's bound users.id (workspaceWorkspaces.ownerUserId OR active
+// workspaceMembers). Cross-tenant ids resolve to NOT_FOUND (no existence
+// oracle), returned in-band as an isError tool result.
+// ---------------------------------------------------------------------------
+
+/** In-band tool failure when a resource id is out-of-tenant or unknown. */
+export const PLUGIN_TOOL_NOT_FOUND = "NOT_FOUND";
+
+const positiveInt = z.number().int().positive();
+
+export const WorkspaceListArgsSchema = z.object({}).strict();
+export const WorkspaceGetArgsSchema = z.object({ workspaceId: positiveInt }).strict();
+export const NovelListArgsSchema = z.object({ workspaceId: positiveInt }).strict();
+export const NovelGetArgsSchema = z
+  .object({ workspaceId: positiveInt, novelId: positiveInt })
+  .strict();
+export const PackListArgsSchema = z
+  .object({ workspaceId: positiveInt, novelId: positiveInt.optional() })
+  .strict();
+export const PackGetArgsSchema = z
+  .object({ workspaceId: positiveInt, packId: positiveInt })
+  .strict();
+export const ChapterListArgsSchema = z
+  .object({ workspaceId: positiveInt, packId: positiveInt })
+  .strict();
+export const ChapterGetArgsSchema = z
+  .object({ workspaceId: positiveInt, chapterId: positiveInt })
+  .strict();
+
+export type PluginWorkspaceSummary = {
+  workspaceId: number;
+  name: string;
+  /** Effective read role of the bound user in this workspace. */
+  viewerRole: "owner" | "editor" | "reviewer" | "viewer";
+};
+
+export type PluginWorkspaceDetail = PluginWorkspaceSummary & { ownerUserId: number };
+
+export type PluginNovelSummary = {
+  workspaceId: number;
+  workspaceNovelId: number;
+  novelId: number;
+  title: string;
+  slug: string;
+  publicationStatus: "published" | "archived";
+  storyStatus: "ongoing" | "finished";
+};
+
+export type PluginPackSummary = {
+  workspaceId: number;
+  packId: number;
+  workspaceNovelId: number;
+  novelId: number;
+  itemKey: string;
+  episodeNumber: string | null;
+  episodeTitle: string | null;
+  price: string | null;
+  isFree: boolean | null;
+  /** Kanban column key (new/pending_check/needs_fix/editing/pending_confirm/ready_to_publish/published). */
+  stage: string | null;
+};
+
+export type PluginChapterSummary = {
+  workspaceId: number;
+  packId: number;
+  chapterId: number;
+  sourceTabId: string;
+  tabOrder: number;
+  title: string;
+  chapterNumber: string | null;
+  chapterTitle: string | null;
 };
 
 /** JSON-RPC response builders - fixed shapes, no dynamic keys. */

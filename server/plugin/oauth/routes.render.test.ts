@@ -59,7 +59,7 @@ describe("buildPluginAuthorizationServerMetadata", () => {
   it("builds absolute URLs from the configured base only", () => {
     const metadata = buildPluginAuthorizationServerMetadata("https://ipenovel.com") as Record<string, unknown>;
     expect(metadata.issuer).toBe("https://ipenovel.com");
-    expect(metadata.scopes_supported).toEqual(["identity:read"]);
+    expect([...(metadata.scopes_supported as string[])].sort()).toEqual(["chapter:read","identity:read","novel:read","pack:read","workspace:read"]);
     expect(JSON.stringify(metadata)).not.toContain("undefined");
   });
 });

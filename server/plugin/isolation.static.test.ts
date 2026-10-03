@@ -112,12 +112,32 @@ describe("plugin read-only HTTP surface lock", () => {
     expect(names.size).toBe(6);
   });
 
-  it("keeps the capability registry at exactly one READ_ONLY tool", () => {
-    expect(Object.keys(PLUGIN_CAPABILITIES)).toEqual(["identity.whoami"]);
-    expect(PLUGIN_V1_ENABLED_CAPABILITIES).toEqual(["identity.whoami"]);
-    for (const definition of Object.values(PLUGIN_CAPABILITIES)) {
-      expect(definition.effect).toBe("READ_ONLY");
-      expect(PLUGIN_PERMISSION_SCOPES).toContain(definition.requiredScope);
+  it("keeps the capability registry at exactly the nine READ_ONLY tools (identity + tenant reads)", () => {
+    expect([...Object.keys(PLUGIN_CAPABILITIES)].sort()).toEqual(
+      [
+        "identity.whoami",
+        "workspace.list",
+        "workspace.get",
+        "novel.list",
+        "novel.get",
+        "pack.list",
+        "pack.get",
+        "chapter.list",
+        "chapter.get",
+      ].sort()
+    );
+    expect([...PLUGIN_V1_ENABLED_CAPABILITIES].sort()).toEqual([
+      ...Object.keys(PLUGIN_CAPABILITIES),
+    ].sort());
+    for (const [name, definition] of Object.entries(PLUGIN_CAPABILITIES)) {
+      expect(definition.effect, name).toBe("READ_ONLY");
+      expect(PLUGIN_PERMISSION_SCOPES, name).toContain(definition.requiredScope);
+    }
+  });
+
+  it("never exposes any mutation-flavored capability", () => {
+    for (const name of Object.keys(PLUGIN_CAPABILITIES)) {
+      expect(name, name).not.toMatch(/stage|publish|write|update|create|delete|approve|move|sync/i);
     }
   });
 });

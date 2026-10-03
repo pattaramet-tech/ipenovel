@@ -1,24 +1,32 @@
-// IPE-PLUGIN-001B control plane - the fail-closed capability surface for
-// external plugin (ChatGPT / MCP) access, deliberately mirroring the NQA
+// IPE-PLUGIN-001B/001C control plane - the fail-closed capability surface
+// for external plugin (ChatGPT / MCP) access, deliberately mirroring the NQA
 // control-plane pattern (server/nqa/controlPlane.ts): a frozen capability
 // registry, an allowlist of what is enabled, a pure authorization function,
 // and an audit-sink interface - no HTTP, no database, no framework here.
 //
-// READ-ONLY SLICE: exactly one capability exists ("identity.whoami") and
-// every definition is effect: "READ_ONLY". Anything else - workspace, novel,
-// pack, chapter, draft, checker, stage, publish, or any production mutation
-// - is structurally absent from this registry, and the static surface tests
-// (server/plugin/*.static.test.ts) fail if that ever changes without an
-// explicit milestone authorization.
+// READ-ONLY SURFACE: every definition is effect: "READ_ONLY". 001C adds the
+// tenant-scoped read family (workspace/novel/pack/chapter list+get) whose
+// visibility is derived server-side from the token's bound users.id via
+// workspaceMembers / workspaceWorkspaces.ownerUserId - the client can never
+// choose an authority or account. Anything else - draft/checker/stage/
+// publish, any mutation - is structurally absent from this registry, and the
+// static surface tests (server/plugin/*.static.test.ts) fail if that ever
+// changes without an explicit milestone authorization.
 
-export const PLUGIN_PERMISSION_SCOPES = ["identity:read"] as const;
+export const PLUGIN_PERMISSION_SCOPES = [
+  "identity:read",
+  "workspace:read",
+  "novel:read",
+  "pack:read",
+  "chapter:read",
+] as const;
 
 export type PluginPermissionScope = (typeof PLUGIN_PERMISSION_SCOPES)[number];
 
 export type PluginCapabilityDefinition = {
   /** The OAuth scope a token must carry for this capability. */
   requiredScope: PluginPermissionScope;
-  /** Frozen to READ_ONLY for the whole 001B surface. */
+  /** Frozen to READ_ONLY for the whole plugin surface (001B + 001C). */
   effect: "READ_ONLY";
   description: string;
 };
@@ -29,6 +37,47 @@ export const PLUGIN_CAPABILITIES = {
     effect: "READ_ONLY",
     description:
       "Resolve the IpeNovel user identity this plugin token is bound to (id, name, role, granted scope).",
+  },
+  "workspace.list": {
+    requiredScope: "workspace:read",
+    effect: "READ_ONLY",
+    description:
+      "List workspaces the bound user owns or is an active member of (active, not soft-deleted).",
+  },
+  "workspace.get": {
+    requiredScope: "workspace:read",
+    effect: "READ_ONLY",
+    description: "Read one workspace's metadata - only if the bound user can see it.",
+  },
+  "novel.list": {
+    requiredScope: "novel:read",
+    effect: "READ_ONLY",
+    description: "List novels actively bound to one visible workspace.",
+  },
+  "novel.get": {
+    requiredScope: "novel:read",
+    effect: "READ_ONLY",
+    description: "Read one workspace-bound novel - only if its workspace is visible to the bound user.",
+  },
+  "pack.list": {
+    requiredScope: "pack:read",
+    effect: "READ_ONLY",
+    description: "List editorial episode packs of one visible workspace (optionally per bound novel).",
+  },
+  "pack.get": {
+    requiredScope: "pack:read",
+    effect: "READ_ONLY",
+    description: "Read one editorial episode pack - only if its workspace is visible to the bound user.",
+  },
+  "chapter.list": {
+    requiredScope: "chapter:read",
+    effect: "READ_ONLY",
+    description: "List the latest-draft chapter tabs of one visible editorial episode pack.",
+  },
+  "chapter.get": {
+    requiredScope: "chapter:read",
+    effect: "READ_ONLY",
+    description: "Read one chapter tab of the latest draft - only if its pack's workspace is visible to the bound user.",
   },
 } as const satisfies Record<string, PluginCapabilityDefinition>;
 
@@ -41,6 +90,14 @@ export type PluginCapability = keyof typeof PLUGIN_CAPABILITIES;
  */
 export const PLUGIN_V1_ENABLED_CAPABILITIES = [
   "identity.whoami",
+  "workspace.list",
+  "workspace.get",
+  "novel.list",
+  "novel.get",
+  "pack.list",
+  "pack.get",
+  "chapter.list",
+  "chapter.get",
 ] as const satisfies readonly PluginCapability[];
 
 export type PluginAuthorizationDecision =
