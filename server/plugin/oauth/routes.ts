@@ -7,7 +7,12 @@ import { sdk } from "../../_core/sdk";
 import { PLUGIN_PERMISSION_SCOPES, type PluginAuditSink, type PluginPermissionScope } from "../controlPlane";
 import { createDbPluginAuditSink, newPluginCorrelationId } from "../audit";
 import { escapePluginHtml, sendPluginOAuthError } from "../errors";
-import { defaultLoadUserDisplay, defaultWorkspaceToolDeps, dispatchPluginMcpRequest } from "../mcp/protocol";
+import {
+  defaultEditorialToolDeps,
+  defaultLoadUserDisplay,
+  defaultWorkspaceToolDeps,
+  dispatchPluginMcpRequest,
+} from "../mcp/protocol";
 import {
   authenticatePluginBearer,
   beginPluginAuthorization,
@@ -288,6 +293,7 @@ export function registerPluginFoundationRoutes(app: Express) {
           now: () => new Date(),
           loadUserDisplay: defaultLoadUserDisplay,
           workspaceTools: defaultWorkspaceToolDeps(),
+          editorialTools: defaultEditorialToolDeps(),
         });
         if (outcome.kind === "notification_accepted") {
           res.status(202).end();

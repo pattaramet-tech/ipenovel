@@ -24,9 +24,15 @@ function productionPluginSources(): string[] {
 }
 
 describe("plugin namespace isolation boundary", () => {
-  it("never imports workspace, NQA, shared routers, or client surfaces", () => {
+  it("imports workspace surface ONLY via the mandated .service reuse (IPE-PLUGIN-001D); never NQA, shared routers, or client surfaces", () => {
+    // IPE-PLUGIN-001D authorization: the draft/checker tools MUST reuse the
+    // real Workspace services verbatim, so `server/workspace/<name>.service`
+    // imports are the single allowed workspace surface. Every other
+    // workspace import (domain helpers, internals, router, tests) stays
+    // banned, as do NQA, the shared router, and all client surfaces.
+    const workspaceImport = /from\s+["'][^"']*workspace[^"']*["']/gi;
+    const allowedWorkspaceImport = /from\s+["']\.\.\/\.\.\/workspace\/[a-zA-Z0-9]+\.service["']/;
     const forbiddenImportPatterns = [
-      /from\s+["'][^"']*workspace[^"']*["']/i,
       /from\s+["'][^"']*nqa[^"']*["']/i,
       /from\s+["'][^"']*routers?["']/i,
       /from\s+["'][^"']*client\/[^"']*["']/i,
@@ -35,6 +41,12 @@ describe("plugin namespace isolation boundary", () => {
 
     for (const file of productionPluginSources()) {
       const source = fs.readFileSync(file, "utf8");
+      for (const match of source.matchAll(workspaceImport)) {
+        expect(
+          allowedWorkspaceImport.test(match[0]),
+          `workspace import outside the mandated .service reuse in ${path.relative(PLUGIN_DIR, file)}: ${match[0]}`
+        ).toBe(true);
+      }
       for (const pattern of forbiddenImportPatterns) {
         expect(
           pattern.test(source),
@@ -112,32 +124,43 @@ describe("plugin read-only HTTP surface lock", () => {
     expect(names.size).toBe(6);
   });
 
-  it("keeps the capability registry at exactly the nine READ_ONLY tools (identity + tenant reads)", () => {
+  it("keeps the capability registry at exactly the thirteen tools (identity + tenant reads + 001D editorial slice)", () => {
     expect([...Object.keys(PLUGIN_CAPABILITIES)].sort()).toEqual(
       [
-        "identity.whoami",
-        "workspace.list",
-        "workspace.get",
-        "novel.list",
-        "novel.get",
-        "pack.list",
-        "pack.get",
-        "chapter.list",
+        "checker.get",
+        "checker.run",
         "chapter.get",
+        "chapter.list",
+        "draft.edit",
+        "draft.get",
+        "identity.whoami",
+        "novel.get",
+        "novel.list",
+        "pack.get",
+        "pack.list",
+        "workspace.get",
+        "workspace.list",
       ].sort()
     );
     expect([...PLUGIN_V1_ENABLED_CAPABILITIES].sort()).toEqual([
       ...Object.keys(PLUGIN_CAPABILITIES),
     ].sort());
     for (const [name, definition] of Object.entries(PLUGIN_CAPABILITIES)) {
-      expect(definition.effect, name).toBe("READ_ONLY");
+      expect(["READ_ONLY", "MUTATION"], name).toContain(definition.effect);
       expect(PLUGIN_PERMISSION_SCOPES, name).toContain(definition.requiredScope);
     }
   });
 
-  it("never exposes any mutation-flavored capability", () => {
+  it("keeps the 001D mutation surface at exactly draft.edit + checker.run", () => {
+    const mutations = Object.entries(PLUGIN_CAPABILITIES).filter(([, definition]) => definition.effect === "MUTATION");
+    expect(mutations.map(([name]) => name).sort()).toEqual(["checker.run", "draft.edit"]);
+  });
+
+  it("never exposes any surface beyond the bounded editorial slice", () => {
     for (const name of Object.keys(PLUGIN_CAPABILITIES)) {
-      expect(name, name).not.toMatch(/stage|publish|write|update|create|delete|approve|move|sync/i);
+      expect(name, name).not.toMatch(
+        /stage|publish|writeback|bulk|undo|exclude|restore|disposition|confirm|allowword|allow_word|transition|replace_tab|full_checker|fullchecker/i
+      );
     }
   });
 });
