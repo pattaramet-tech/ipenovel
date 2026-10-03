@@ -15,6 +15,8 @@ import { WorkspaceReviewSummaryPanel } from "./WorkspaceReviewSummaryPanel";
 import { WorkspaceWorkflowActions } from "./WorkspaceWorkflowActions";
 import {
   createStoryUiState,
+  editorDraftBelongsToSelectedPack,
+  groupStoriesByNovel,
   resolveStoryUiState,
   storyKeyFor,
   storyOverallStatus,
@@ -1410,6 +1412,19 @@ export default function WorkspacePage() {
     ) {
       return;
     }
+    // IPE-062R3 (P2-B) save-identity invariant: the finding editor's target
+    // draft must still BE the selected pack's latest draft. A pack switch
+    // (or a late autosave timer) must never submit the old draft under the
+    // new pack's work item — fail closed, no mutation.
+    if (
+      !editorDraftBelongsToSelectedPack(
+        editorTarget.draftId,
+        (editorialSourceDraft.data as any)?.latestDraft?.id
+      )
+    ) {
+      toast.error("Editor นี้เปิดจากแพ็กอื่น — ปิดแล้วเปิดใหม่ก่อนบันทึก");
+      return;
+    }
     const command =
       editorTarget.kind === "replace_paragraph"
         ? {
@@ -1488,6 +1503,19 @@ export default function WorkspacePage() {
       editEditorialDraft.isPending ||
       chapterEditorSaveProjection.text === chapterEditorTarget.expectedText
     ) {
+      return;
+    }
+    // IPE-062R3 (P2-B) save-identity invariant: the canvas editor's draft
+    // must still BE the selected pack's latest draft. If the operator moved
+    // to another pack, the stale target must NEVER be submitted under the
+    // new pack's work item — fail closed, no mutation.
+    if (
+      !editorDraftBelongsToSelectedPack(
+        chapterEditorTarget.draftId,
+        (editorialSourceDraft.data as any)?.latestDraft?.id
+      )
+    ) {
+      toast.error("Editor นี้เปิดจากแพ็กอื่น — ปิดแล้วเปิดใหม่ก่อนบันทึก");
       return;
     }
     editEditorialDraft.mutate({
@@ -2253,21 +2281,13 @@ export default function WorkspacePage() {
     !normalizedEpisodeNovelSearch ||
     [novel.title, novel.id, workspaceNovel.id].join(" ").toLocaleLowerCase("th").includes(normalizedEpisodeNovelSearch)
   );
-  const groupEditorialCardsByNovel = (cards: any[]) =>
-    Array.from(
-      cards.reduce((groups: Map<number, any>, card: any) => {
-        const key = Number(card.workspaceNovelId ?? card.novel?.id ?? card.id);
-        const existing = groups.get(key) ?? { workspaceNovelId: card.workspaceNovelId, novel: card.novel, cards: [] };
-        existing.cards.push(card);
-        groups.set(key, existing);
-        return groups;
-      }, new Map<number, any>()).values()
-    ).sort((a: any, b: any) => String(a.novel?.title ?? "").localeCompare(String(b.novel?.title ?? ""), "th"));
-
-  // IPE-062R2: the multi-story overview/focused work area must represent the
-  // complete board, independent of the legacy management-table search/filter.
-  const editorialNovelGroups = groupEditorialCardsByNovel(editorialCards);
-  const visibleEditorialNovelGroups = groupEditorialCardsByNovel(visibleEditorialCards);
+  // IPE-062R3 (P2-A): seed the daily multi-story workspace from every bound
+  // novel so stories with zero Episode Packs stay visible and focusable, and
+  // cards whose workspaceNovelId is missing still merge into their novel's
+  // group. Global management search/quick filters stay scoped to the legacy
+  // Table/Kanban projection — story totals come from the unfiltered board.
+  const editorialNovelGroups = groupStoriesByNovel(editorialCards, workspaceNovelOptions as any[]);
+  const visibleEditorialNovelGroups = groupStoriesByNovel(visibleEditorialCards);
 
   // ---------------------------------------------------------------------------
   // IPE-062: multi-story focus. The active story is the one whose pack list /
@@ -2293,29 +2313,40 @@ export default function WorkspacePage() {
     const fallback = groupWithSelection ?? editorialNovelGroups[0];
     return fallback ? storyKeyFor(fallback.workspaceNovelId, fallback.novel?.id) : null;
   })();
+  const discardChapterEditorForContextSwitch = (message: string) => {
+    if (!chapterEditorTarget) return true;
+    const dirty = chapterEditorText !== chapterEditorTarget.expectedText;
+    if (dirty && !window.confirm(message)) return false;
+    rememberChapterEditorScroll();
+    chapterEditorHistoryRef.current = createChapterCanvasHistory();
+    setChapterEditorTarget(undefined);
+    setChapterEditorParagraphs([]);
+    return true;
+  };
   const selectStory = (storyKey: string) => {
     if (storyKey === activeStoryKey) return true;
-    // Same unsaved-edit guard as switching chapters: never silently discard
-    // canvas edits when the operator moves to another story.
-    if (chapterEditorTarget) {
-      const dirty = chapterEditorText !== chapterEditorTarget.expectedText;
-      if (
-        dirty &&
-        !window.confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วเปลี่ยนเรื่องหรือไม่?")
-      ) {
-        return false;
-      }
-      rememberChapterEditorScroll();
-      chapterEditorHistoryRef.current = createChapterCanvasHistory();
-      setChapterEditorTarget(undefined);
-      setChapterEditorParagraphs([]);
+    // Never silently strand a chapter editor when the operator changes story.
+    if (!discardChapterEditorForContextSwitch("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วเปลี่ยนเรื่องหรือไม่?")) {
+      return false;
     }
     setSelectedStoryKey(storyKey);
+    return true;
+  };
+  const selectPackForActiveStory = (workItemId: number) => {
+    if (!Number.isInteger(workItemId)) return false;
+    if (workItemId === selectedSourceWorkItemId) return true;
+    // A same-story pack switch is also a context switch: clear the current
+    // chapter only after the same dirty-editor confirmation boundary passes.
+    if (!discardChapterEditorForContextSwitch("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วเปลี่ยนแพ็กหรือไม่?")) {
+      return false;
+    }
+    setSelectedSourceWorkItemId(workItemId);
     return true;
   };
   const selectPackAcrossStories = (card: any) => {
     if (!card?.workItemId) return false;
     const storyKey = storyKeyFor(card.workspaceNovelId, card.novel?.id);
+    if (storyKey === activeStoryKey) return selectPackForActiveStory(card.workItemId);
     if (!selectStory(storyKey)) return false;
     setSelectedSourceWorkItemId(card.workItemId);
     return true;
@@ -3436,11 +3467,12 @@ export default function WorkspacePage() {
                 selectedWorkItemId={selectedSourceWorkItemId}
                 bulkSelectedWorkItemIds={selectedEditorialSet}
                 bulkBusy={bulkBusy}
-                onSelectPack={(workItemId) => setSelectedSourceWorkItemId(workItemId)}
+                onSelectPack={selectPackForActiveStory}
                 onToggleBulk={toggleEditorialSelection}
                 onOpenEditor={(card) => {
-                  setSelectedSourceWorkItemId(card.workItemId);
-                  setPendingEditorOpenWorkItemId(card.workItemId);
+                  if (selectPackForActiveStory(card.workItemId)) {
+                    setPendingEditorOpenWorkItemId(card.workItemId);
+                  }
                 }}
                 onEditRange={(card, next) =>
                   updateEditorialEpisode.mutate({

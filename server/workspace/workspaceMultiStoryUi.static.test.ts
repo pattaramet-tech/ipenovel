@@ -35,11 +35,43 @@ describe("IPE-062 multi-story state model", () => {
     expect(model).toContain("export function storyOverallStatus");
     // No new readiness source: the summary consumes evidence the board loads.
     expect(page).toContain("summarizeStoryPacks(group.cards)");
-    // Story cards/focused work area use the complete board, while the legacy
-    // management table keeps its global search/quick-filter projection.
-    expect(page).toContain("groupEditorialCardsByNovel(editorialCards)");
-    expect(page).toContain("groupEditorialCardsByNovel(visibleEditorialCards)");
     expect(page).toContain("visibleEditorialNovelGroups.map");
+  });
+
+  it("seeds the daily story model from bound novels so zero-pack stories remain focusable (IPE-062R3 P2-A)", () => {
+    // The grouping is pure and unit-tested in workspaceMultiStory.test.ts
+    // (story with packs / without packs / NEW_STORY-only / mixed / filtering).
+    expect(model).toContain("export function groupStoriesByNovel");
+    expect(model).toContain("for (const { workspaceNovel, novel } of boundNovels)");
+    // Cards with a missing workspaceNovelId still merge into their novel's
+    // seeded group via the novel-id alias.
+    expect(model).toContain(
+      "const aliasKey = Number.isFinite(novelId) ? aliasByNovelId.get(novelId) : undefined;"
+    );
+    // The overview groups the COMPLETE unfiltered board; the filtered list
+    // stays scoped to the legacy management table.
+    expect(page).toContain("groupStoriesByNovel(editorialCards, workspaceNovelOptions as any[])");
+    expect(page).toContain("groupStoriesByNovel(visibleEditorialCards)");
+  });
+
+  it("enforces the editor save-identity invariant at runtime (IPE-062R3 P2-B)", () => {
+    // Pure invariant, unit-tested (match / mismatch / missing identity).
+    expect(model).toContain("export function editorDraftBelongsToSelectedPack");
+    expect(model).toContain("if (targetDraftId == null || selectedLatestDraftId == null) return false;");
+    // BOTH save paths refuse to mutate a stale editor target after a pack
+    // switch — the UI guard is never the only line of defense.
+    const editorEdit = page.slice(
+      page.indexOf('const submitEditorEdit = (source: "manual" | "autosave") => {'),
+      page.indexOf("const submitChapterEditorEdit = () => {")
+    );
+    expect(editorEdit).toContain("editorDraftBelongsToSelectedPack(");
+    expect(editorEdit).toContain("Editor นี้เปิดจากแพ็กอื่น");
+    const chapterEdit = page.slice(
+      page.indexOf("const submitChapterEditorEdit = () => {"),
+      page.indexOf("idempotencyKey: `editor-tab:")
+    );
+    expect(chapterEdit).toContain("editorDraftBelongsToSelectedPack(");
+    expect(chapterEdit).toContain("Editor นี้เปิดจากแพ็กอื่น");
   });
 });
 
@@ -185,9 +217,18 @@ describe("IPE-062 page-level multi-story wiring", () => {
     expect(page).toContain("onFocusStory={selectStory}");
   });
 
+  it("guards same-story pack switches before changing the selected work item", () => {
+    expect(page).toContain("const selectPackForActiveStory = (workItemId: number) => {");
+    expect(page).toContain("if (workItemId === selectedSourceWorkItemId) return true;");
+    expect(page).toContain("ต้องการทิ้งการแก้ไขแล้วเปลี่ยนแพ็กหรือไม่?");
+    expect(page).toContain("onSelectPack={selectPackForActiveStory}");
+    expect(page).toContain("if (selectPackForActiveStory(card.workItemId)) {");
+  });
+
   it("keeps cross-story management-table selections synchronized with story focus", () => {
     expect(page).toContain("const selectPackAcrossStories = (card: any) => {");
     expect(page).toContain("const storyKey = storyKeyFor(card.workspaceNovelId, card.novel?.id);");
+    expect(page).toContain("if (storyKey === activeStoryKey) return selectPackForActiveStory(card.workItemId);");
     expect(page).toContain("if (!selectStory(storyKey)) return false;");
     expect(page).toContain("onClick={() => selectPackAcrossStories(card)}");
     expect(page).toContain("selectPackAcrossStories(card);");

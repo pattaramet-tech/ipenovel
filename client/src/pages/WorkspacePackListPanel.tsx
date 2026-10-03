@@ -23,7 +23,7 @@ const STATUS_BADGE_CLASS: Record<StoryPackStatus, string> = {
 };
 
 export interface WorkspacePackListCard {
-  id: number | string;
+  id?: number | string | null;
   workItemId?: number | null;
   workItemVersion?: number | null;
   workItemType?: string;
@@ -108,7 +108,7 @@ export function WorkspacePackListPanel({
             const selected = workItemId != null && workItemId === selectedWorkItemId;
             return (
               <div
-                key={String(card.id)}
+                key={String(card.id ?? card.workItemId ?? "pack")}
                 data-testid="workspace-pack-row"
                 data-selected={selected ? "true" : undefined}
                 className={`rounded-md border p-2 ${selected ? "border-primary bg-primary/5 ring-1 ring-primary/20" : "hover:bg-muted/20"}`}

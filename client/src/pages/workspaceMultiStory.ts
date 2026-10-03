@@ -178,3 +178,98 @@ export function sortPacksByEpisode<T extends { episodeNumber?: string | null }>(
       })
     );
 }
+
+// ---------------------------------------------------------------------------
+// IPE-062R3 (P2-A): the daily story model must cover EVERY story in the
+// workspace — stories that only have packs, NEW_STORY stories, and bound
+// novels that have no Episode Pack yet. Groups are keyed by storyKeyFor and
+// seeded from the workspace's bound novels so zero-pack stories stay visible
+// and focusable. Cards whose workspaceNovelId is missing still merge into
+// their novel's seeded group via a novel-id alias.
+// ---------------------------------------------------------------------------
+
+export interface StoryGroupInputCard {
+  workspaceNovelId?: number | null;
+  novel?: { id?: number | null; title?: string | null } | null;
+}
+
+export interface StoryGroup<T extends StoryGroupInputCard = StoryGroupInputCard> {
+  workspaceNovelId: number | null;
+  novel: { id?: number | null; title?: string | null } | null;
+  cards: T[];
+}
+
+export function groupStoriesByNovel<T extends StoryGroupInputCard>(
+  cards: T[],
+  boundNovels: Array<{ workspaceNovel?: { id?: number | null } | null; novel?: { id?: number | null; title?: string | null } | null }> = []
+): Array<StoryGroup<T>> {
+  const groups = new Map<string, StoryGroup<T>>();
+  const aliasByNovelId = new Map<number, string>();
+  const registerAlias = (novelId: unknown, key: string) => {
+    const id = Number(novelId);
+    if (Number.isFinite(id) && !aliasByNovelId.has(id)) aliasByNovelId.set(id, key);
+  };
+
+  for (const { workspaceNovel, novel } of boundNovels) {
+    const key = storyKeyFor(workspaceNovel?.id, novel?.id);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        workspaceNovelId: workspaceNovel?.id ?? null,
+        novel: novel ?? null,
+        cards: [],
+      });
+    }
+    registerAlias(novel?.id, key);
+  }
+
+  for (const card of cards) {
+    const key = storyKeyFor(card.workspaceNovelId, card.novel?.id);
+    let group = groups.get(key);
+    if (!group) {
+      const novelId = Number(card.novel?.id);
+      const aliasKey = Number.isFinite(novelId) ? aliasByNovelId.get(novelId) : undefined;
+      if (aliasKey && groups.has(aliasKey)) {
+        group = groups.get(aliasKey)!;
+        groups.set(key, group);
+      } else {
+        group = {
+          workspaceNovelId: card.workspaceNovelId ?? null,
+          novel: card.novel ?? null,
+          cards: [],
+        };
+        groups.set(key, group);
+        registerAlias(card.novel?.id, key);
+      }
+    }
+    group.cards.push(card);
+  }
+
+  return Array.from(new Set(groups.values())).sort((left, right) =>
+    String(left.novel?.title ?? "").localeCompare(String(right.novel?.title ?? ""), "th")
+  );
+}
+
+// ---------------------------------------------------------------------------
+// IPE-062R3 (P2-B): runtime save-identity invariant. The editor target's
+// draft must BE the currently selected pack's latest draft before any save
+// mutation fires. The selected pack's draft id comes from the selection-keyed
+// source-draft query, so a pack switch makes every older editor target
+// mismatch — mismatch means DO NOT SAVE (fail closed), independent of the
+// UI guard.
+// ---------------------------------------------------------------------------
+
+export function editorDraftBelongsToSelectedPack(
+  targetDraftId: unknown,
+  selectedLatestDraftId: unknown
+): boolean {
+  if (targetDraftId == null || selectedLatestDraftId == null) return false;
+  const target = Number(targetDraftId);
+  const selected = Number(selectedLatestDraftId);
+  return (
+    Number.isFinite(target) &&
+    Number.isFinite(selected) &&
+    target > 0 &&
+    selected > 0 &&
+    target === selected
+  );
+}
