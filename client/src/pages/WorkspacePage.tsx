@@ -3461,6 +3461,7 @@ export default function WorkspacePage() {
 
             <div className="grid items-start gap-4 xl:grid-cols-[minmax(250px,0.65fr)_minmax(0,2.1fr)_minmax(280px,0.85fr)]" data-testid="workspace-master-detail">
             {activeStoryGroup ? (
+                <>
               <WorkspacePackListPanel
                 storyTitle={activeStoryGroup.novel?.title ?? "Untitled novel"}
                 packs={activeStoryPacks}
@@ -3517,7 +3518,200 @@ export default function WorkspacePage() {
                 editSalePending={updateEditorialEpisodeSale.isPending}
                 editNotePending={updateEditorialWorkItemNote.isPending}
                 removePending={removeEditorialEpisode.isPending}
+                chapters={filteredChapterEditorTabs.map((tab: any) => {
+                  const status = chapterEditorStatusByTab.get(tab.sourceTabId);
+                  return {
+                    sourceTabId: tab.sourceTabId,
+                    title: tab.title,
+                    issueCount: status?.issueCount ?? 0,
+                    foreignFindingCount: status?.foreignFindingCount ?? 0,
+                    structuralIssueCount: status?.structuralIssueCount ?? 0,
+                    progressState: (status?.progressState ?? "unchecked") as "passed" | "pending" | "confirmed" | "unchecked",
+                    empty: (tab.paragraphs?.length ?? 0) === 0,
+                  };
+                })}
+                activeChapterTabId={chapterEditorTarget?.sourceTabId ?? null}
+                onSelectChapter={(row) => {
+                  const tab = chapterEditorTabs.find((candidate: any) => candidate.sourceTabId === row.sourceTabId);
+                  if (tab) openChapterEditor(tab);
+                }}
               />
+              {selectedSourceWorkItemId && (
+                <Card className="space-y-2 p-3" data-testid="workspace-chapter-tools">
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {draftStructureSummary.sequenceIssues.length > 0 && (
+                      <span className="rounded-full border px-2 py-0.5">
+                        เลขแท็บไม่เรียง {draftStructureSummary.sequenceIssues.length}
+                      </span>
+                    )}
+                    {draftStructureSummary.emptyTabs.length > 0 && (
+                      <span className="rounded-full border px-2 py-0.5">
+                        แท็บว่าง {draftStructureSummary.emptyTabs.length}
+                      </span>
+                    )}
+                    {draftStructureSummary.unnumberedTabs.length > 0 && (
+                      <span className="rounded-full border px-2 py-0.5">
+                        ไม่มีเลขแท็บ {draftStructureSummary.unnumberedTabs.length}
+                      </span>
+                    )}
+                    {draftStructureSummary.shortTabs.length > 0 && (
+                      <span className="rounded-full border px-2 py-0.5">
+                        เนื้อหาสั้นผิดปกติ {draftStructureSummary.shortTabs.length}
+                      </span>
+                    )}
+                    {draftStructureSummary.warningTabs.length > 0 && (
+                      <span className="rounded-full border px-2 py-0.5">
+                        warning {draftStructureSummary.warningTabs.length}
+                      </span>
+                    )}
+                  </div>
+                  {(draftStructureSummary.sequenceIssues.length > 0 ||
+                    draftStructureSummary.emptyTabs.length > 0 ||
+                    draftStructureSummary.unnumberedTabs.length > 0 ||
+                    draftStructureSummary.shortTabs.length > 0) && (
+                    <div className="space-y-1 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                      {draftStructureSummary.sequenceIssues.length > 0 && (
+                        <div>ลำดับ: {draftStructureSummary.sequenceIssues.join(", ")}</div>
+                      )}
+                      {draftStructureSummary.emptyTabs.length > 0 && (
+                        <div>
+                          ไม่มีเนื้อหา: {compactTabTitles(draftStructureSummary.emptyTabs)}
+                        </div>
+                      )}
+                      {draftStructureSummary.unnumberedTabs.length > 0 && (
+                        <div>
+                          อ่านเลขแท็บไม่ได้: {compactTabTitles(draftStructureSummary.unnumberedTabs)}
+                        </div>
+                      )}
+                      {draftStructureSummary.shortTabs.length > 0 && (
+                        <div>
+                          สั้นผิดปกติ: {draftStructureSummary.shortTabs
+                            .slice(0, 6)
+                            .map(tab => `${tab.title} (${tab.characterCount} ตัวอักษร)`)
+                            .join(", ")}
+                          {draftStructureSummary.shortTabs.length > 6
+                            ? ` และอีก ${draftStructureSummary.shortTabs.length - 6}`
+                            : ""}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-2">
+                      <div className="font-medium">
+                        แท็บใน Draft · {filteredChapterEditorTabs.length}/{chapterEditorTabs.length}
+                      </div>
+                      <div className="flex flex-wrap gap-1 text-xs">
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-800">
+                          ผ่าน {chapterEditorProgress.passed}
+                        </span>
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-900">
+                          ค้าง {chapterEditorProgress.pending}
+                        </span>
+                        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-800">
+                          ยืนยันแล้ว {chapterEditorProgress.confirmed}
+                        </span>
+                        {chapterEditorProgress.unchecked > 0 && (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                            ยังไม่ตรวจ {chapterEditorProgress.unchecked}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {([
+                        ["all", "ทั้งหมด"],
+                        ["issue", "มีปัญหา"],
+                        ["unedited", "ยังไม่แก้"],
+                        ["edited", "แก้แล้ว"],
+                      ] as const).map(([value, label]) => (
+                        <Button
+                          key={value}
+                          type="button"
+                          size="sm"
+                          variant={chapterEditorTabFilter === value ? "secondary" : "outline"}
+                          onClick={() => setChapterEditorTabFilter(value)}
+                        >
+                          {label}
+                        </Button>
+                      ))}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={!nextIssueChapterTab || editEditorialDraft.isPending}
+                        onClick={() =>
+                          nextIssueChapterTab && openChapterEditor(nextIssueChapterTab)
+                        }
+                      >
+                        บทมีปัญหาถัดไป
+                        <ChevronRight className="ml-1 h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          !editorialEditorData?.canUndo ||
+                          !latestEditorialDraft ||
+                          undoEditorialEdit.isPending
+                        }
+                        onClick={() => {
+                          if (!latestEditorialDraft) return;
+                          undoEditorialEdit.mutate({
+                            workspaceId: selectedWorkspaceId,
+                            workItemId: selectedSourceWorkItemId,
+                            expectedDraftId: latestEditorialDraft.id,
+                            expectedDraftVersion: latestEditorialDraft.version,
+                            expectedDraftSha256: latestEditorialDraft.draftSha256,
+                            idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
+                          });
+                        }}
+                      >
+                        {undoEditorialEdit.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        Undo
+                      </Button>
+                      {/* IPE-062R4D: tab exclusion for the open chapter — the
+                          exclusion control stays on the visible draft structure
+                          (tools rail) after the old per-row buttons retired. */}
+                      {chapterEditorTarget && editorialEditorData?.latestDraft && (() => {
+                        const draftTab = (editorialEditorData.tabs ?? []).find(
+                          (candidate: any) => candidate.sourceTabId === chapterEditorTarget.sourceTabId
+                        );
+                        if (!draftTab) return null;
+                        return (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={excludeEditorialTab.isPending || editorialEditorData.tabs.length <= 1}
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `นำแท็บ ${chapterEditorTarget.title} ออกจาก Draft นี้หรือไม่? ระบบจะสร้าง Draft revision ใหม่ และต้องตรวจ QC/ยืนยันใหม่`
+                                )
+                              ) {
+                                excludeEditorialTab.mutate({
+                                  workspaceId: selectedWorkspaceId!,
+                                  workItemId: selectedSourceWorkItemId!,
+                                  expectedDraftId: editorialEditorData.latestDraft.id,
+                                  expectedDraftSha256: editorialEditorData.latestDraft.draftSha256,
+                                  sourceTabId: draftTab.sourceTabId,
+                                });
+                              }
+                            }}
+                          >
+                            นำออก
+                          </Button>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </Card>
+              )}
+                </>
             ) : (
               <Card className="space-y-3 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -3536,64 +3730,229 @@ export default function WorkspacePage() {
                 )}
               </Card>
             )}
-            <div className="min-w-0">
-            <Card className="space-y-4 p-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <FileCheck2 className="h-5 w-5 text-primary" />
-                  <h2 className="text-xl font-semibold">Episode Pack Detail</h2>
-                </div>
-              </div>
-
-              {selectedSourceWorkItemId && (
-                <div className="flex gap-1 rounded-md border bg-muted/10 p-1" data-testid="pack-detail-tabs" role="tablist" aria-label="ส่วนของ Episode Pack">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={packDetailTab === "editor"}
-                    data-testid="pack-detail-tab-editor"
-                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "editor" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
-                    onClick={() => setPackDetailTab("editor")}
-                  >
-                    Editor
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={packDetailTab === "qc"}
-                    data-testid="pack-detail-tab-qc"
-                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "qc" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
-                    onClick={() => setPackDetailTab("qc")}
-                  >
-                    QC
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={packDetailTab === "stage"}
-                    data-testid="pack-detail-tab-stage"
-                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "stage" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
-                    onClick={() => setPackDetailTab("stage")}
-                  >
-                    Stage
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={packDetailTab === "publish"}
-                    data-testid="pack-detail-tab-publish"
-                    className={`flex-1 rounded px-2 py-1.5 text-sm ${packDetailTab === "publish" ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:bg-background/60"}`}
-                    onClick={() => setPackDetailTab("publish")}
-                  >
-                    Publish
-                  </button>
-                </div>
-              )}
-
+            {/* IPE-062R4D: editor-first center — the MAIN CHAPTER EDITOR is the
+                primary surface; pack metadata/source import collapse below it. */}
+            <div className="min-w-0 space-y-3">
               {!selectedSourceWorkItemId ? (
-                <EmptyState>เลือกแพ็กจากรายการด้านซ้ายเพื่อเปิด Episode Pack Detail</EmptyState>
+                <Card className="space-y-4 p-4">
+                  <EmptyState>เลือกแพ็กจากรายการด้านซ้ายเพื่อเริ่มแก้ตอน</EmptyState>
+                </Card>
               ) : (
                 <>
+                  <Card className="space-y-3 p-4" data-testid="workspace-main-editor">
+                    <div id="workspace-chapter-editor" className="rounded-md border bg-muted/10 p-3">
+                      <div className="min-w-0 space-y-3" data-testid="workspace-chapter-editor-pane">
+                    {chapterEditorTarget ? (
+                      <div className="space-y-3 rounded-xl border bg-muted/10 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="text-lg font-semibold">Chapter Editor</div>
+                            <div className="text-sm text-muted-foreground">
+                              {chapterEditorTarget.title} · Draft v{chapterEditorTarget.draftVersion}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-1 text-xs">
+                              <span
+                                className={
+                                  currentChapterStatus?.edited
+                                    ? "rounded-full bg-blue-100 px-2 py-0.5 text-blue-800"
+                                    : "rounded-full bg-muted px-2 py-0.5 text-muted-foreground"
+                                }
+                              >
+                                {currentChapterStatus?.edited ? "แก้แล้ว" : "ยังไม่แก้"}
+                              </span>
+                              {(currentChapterStatus?.foreignFindingCount ?? 0) > 0 && (
+                                <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-900">
+                                  มีคำต่างประเทศ {currentChapterStatus?.foreignFindingCount}
+                                </span>
+                              )}
+                              {(currentChapterStatus?.structuralIssueCount ?? 0) > 0 && (
+                                <span className="rounded-full bg-orange-100 px-2 py-0.5 text-orange-900">
+                                  มี structural issue {currentChapterStatus?.structuralIssueCount}
+                                </span>
+                              )}
+                              {chapterEditorDirty && (
+                                <span className="rounded-full bg-red-100 px-2 py-0.5 text-red-800">
+                                  ยังไม่บันทึก
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {/* IPE-058-F: sticky toolbar — Prev/Next, state chip,
+                              issue count and ONE primary CTA derived from the
+                              canonical state machine (no count shortcuts). */}
+                          <div className="sticky top-0 z-20 -mx-3 space-y-2 border-b bg-background/95 px-3 py-2 backdrop-blur">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={!previousChapterTab || editEditorialDraft.isPending}
+                              onClick={() => previousChapterTab && openChapterEditor(previousChapterTab)}
+                            >
+                              <ChevronLeft className="mr-1 h-4 w-4" />
+                              ก่อนหน้า
+                            </Button>
+                            <span className="text-xs text-muted-foreground">
+                              {chapterEditorCurrentIndex >= 0
+                                ? `${chapterEditorCurrentIndex + 1}/${chapterEditorTabs.length}`
+                                : "—"}
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={!nextChapterTab || editEditorialDraft.isPending}
+                              onClick={() => nextChapterTab && openChapterEditor(nextChapterTab)}
+                            >
+                              ถัดไป
+                              <ChevronRight className="ml-1 h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={editEditorialDraft.isPending}
+                              onClick={closeChapterEditor}
+                            >
+                              ปิด Editor
+                            </Button>
+                          </div>
+                          <WorkspaceEditorialToolbar
+                            dirty={chapterEditorDirty}
+                            saving={editEditorialDraft.isPending}
+                            checkerState={editorialCheckerState}
+                            unresolvedCount={editorialCheckerData?.unresolvedCount}
+                            issueCount={chapterEditorIssueItems.length}
+                            hasDraft={Boolean(latestEditorialDraft)}
+                            approvalValid={Boolean(
+                              editorialApprovalData?.approvalStatus?.valid
+                            )}
+                            readyToPublish={Boolean(
+                              editorialApprovalData?.readyToPublish
+                            )}
+                            positionLabel={
+                              chapterEditorCurrentIndex >= 0
+                                ? `${chapterEditorCurrentIndex + 1}/${chapterEditorTabs.length}`
+                                : "—"
+                            }
+                            onPrev={() =>
+                              previousChapterTab &&
+                              openChapterEditor(previousChapterTab)
+                            }
+                            onNext={() =>
+                              nextChapterTab && openChapterEditor(nextChapterTab)
+                            }
+                            prevDisabled={!previousChapterTab}
+                            nextDisabled={!nextChapterTab}
+                            onSaveCheck={submitChapterEditorEdit}
+                            onRunChecker={runCheckerForCurrentDraft}
+                            onConfirm={submitApprovalConfirm}
+                            onStage={submitStageDraft}
+                            confirmDisabled={
+                              !editorialApprovalData?.latestDraft ||
+                              !editorialApprovalData?.qc?.ready ||
+                              !editorialApprovalData?.qc?.checkerRunId ||
+                              !editorialApprovalData?.qc?.qcEvidenceSha256 ||
+                              Boolean(editorialApprovalData?.approvalStatus?.valid)
+                            }
+                            stageDisabled={
+                              !editorialApprovalData?.approvalStatus?.valid ||
+                              !editorialApprovalData?.approval?.id ||
+                              !editorialApprovalData?.stagePlan?.ready ||
+                              Boolean(editorialApprovalData?.stageStatus?.valid)
+                            }
+                          />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2 text-sm">
+                          <span className="rounded-md border px-2 py-1 font-medium">ข้อความบท</span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={chapterEditorHighlight ? "secondary" : "outline"}
+                            onClick={() => setChapterEditorHighlight(value => !value)}
+                          >
+                            ไฮไลต์คำต่างประเทศ {chapterEditorHighlight ? "เปิด" : "ปิด"}
+                          </Button>
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            {chapterEditorText.length.toLocaleString()} ตัวอักษร
+                          </span>
+                        </div>
+
+
+                        <div
+                          ref={chapterEditorScrollRef}
+                          className="min-h-[30rem] max-h-[48rem] overflow-y-auto rounded-lg border bg-background p-5 shadow-inner"
+                          onScroll={event => {
+                            const sourceTabId = chapterEditorTarget?.sourceTabId;
+                            if (!sourceTabId) return;
+                            const scrollTop = event.currentTarget.scrollTop;
+                            chapterEditorScrollByTab.current.set(sourceTabId, scrollTop);
+                            window.sessionStorage.setItem(
+                              chapterEditorScrollStorageKey(sourceTabId),
+                              String(scrollTop)
+                            );
+                          }}
+                        >
+                          {/* IPE-058-C: ONE continuous editing surface. The
+                              paragraph model lives in
+                              workspaceChapterCanvas.ts — no per-paragraph
+                              textareas. */}
+                          <ChapterEditorCanvas
+                            value={chapterEditorText}
+                            flatFindings={chapterEditorCanvasFindings}
+                            highlight={chapterEditorHighlight}
+                            disabled={editEditorialDraft.isPending}
+                            placeholder={
+                              chapterEditorParagraphs.length <= 1 &&
+                              !chapterEditorText
+                                ? "เริ่มเขียนหรือวางเนื้อหาของบทนี้..."
+                                : undefined
+                            }
+                            textareaRef={chapterEditorCanvasRef}
+                            onChange={(value, _caret) =>
+                              applyChapterEditorCanvasChange(value, false)
+                            }
+                            onKeyDown={chapterEditorCanvasKeyDown}
+                            onPaste={chapterEditorCanvasPaste}
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-xs text-muted-foreground">
+                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · Ctrl/Cmd+Z / Ctrl+Y = เลิก/ทำซ้ำ · วางจาก ChatGPT/Google Docs จะจัดย่อหน้าอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
+                          </div>
+                          <Button
+                            type="button"
+                            disabled={
+                              editEditorialDraft.isPending ||
+                              chapterEditorSaveProjection.text === chapterEditorTarget.expectedText
+                            }
+                            onClick={submitChapterEditorEdit}
+                          >
+                            {editEditorialDraft.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            บันทึก Draft + ตรวจซ้ำ
+                          </Button>
+                        </div>
+                        <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                          การบันทึกสร้าง Draft revision ใหม่เท่านั้น ไม่ Publish อัตโนมัติ และต้องผ่าน QC/Confirm เดิมก่อน Stage/Publish
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="workspace-chapter-editor-empty">
+                        เลือกตอนจากรายการด้านซ้าย — Editor จะเปิดในพื้นที่นี้ทันที ไม่ต้องเลื่อนหา
+                      </div>
+                    )}
+                      </div>
+                    </div>
+                  </Card>
+
+                  <details className="rounded-lg border bg-background" data-testid="workspace-pack-secondary">
+                    <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">รายละเอียดแพ็ก · แหล่งข้อความ · สถานะ Draft</summary>
+                    <div className="space-y-3 border-t p-3">
                   <div className="rounded-md border bg-muted/20 p-3 text-sm">
                     <strong>{selectedSourceCard?.novel?.title ?? "Editorial work item"}</strong>
                     {selectedSourceCard?.workItemType === "NEW_EPISODE" && (
@@ -3603,7 +3962,6 @@ export default function WorkspacePage() {
                     )}
                     <span className="ml-2 text-xs text-muted-foreground">Work item #{selectedSourceWorkItemId}</span>
                   </div>
-
                   <details className="rounded-md border bg-muted/20 p-3 text-sm" data-testid="workspace-pack-imports">
                     <summary className="cursor-pointer select-none text-sm font-medium">แหล่งข้อความ / นำเข้า (Google Docs · ไฟล์)</summary>
                   <div className={packDetailTab === "editor" ? "grid gap-3 lg:grid-cols-2" : "hidden"}>
@@ -3726,10 +4084,6 @@ export default function WorkspacePage() {
                     </form>
                   </div>
                   </details>
-
-                  {editorialSourceDraft.isLoading ? (
-                    <div className="flex min-h-24 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>
-                  ) : (
                     <div className="grid gap-3 md:grid-cols-3">
                       <div className="rounded-md border p-3 text-sm">
                         <div className="font-medium">Source</div>
@@ -3764,9 +4118,70 @@ export default function WorkspacePage() {
                         </div>
                       </div>
                     </div>
-                  )}
-
-                  <div className={packDetailTab === "qc" ? "space-y-3 rounded-md border p-3" : "hidden"}>
+                    {(editorialEditorData?.excludedTabs ?? []).length > 0 && (
+                      <details className="rounded-md border bg-background">
+                        <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                          แท็บที่นำออก {editorialEditorData.excludedTabs.length}
+                        </summary>
+                        <div className="space-y-2 border-t p-3">
+                          {editorialEditorData.excludedTabs.map((tab: any) => (
+                            <div key={tab.sourceTabId} className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-sm">
+                              <span>{tab.title}</span>
+                              <Button type="button" size="sm" variant="outline" disabled={restoreEditorialTab.isPending} onClick={() => restoreEditorialTab.mutate({ workspaceId: selectedWorkspaceId!, workItemId: selectedSourceWorkItemId!, expectedDraftId: editorialEditorData.latestDraft.id, expectedDraftSha256: editorialEditorData.latestDraft.draftSha256, sourceTabId: tab.sourceTabId })}>คืนแท็บ</Button>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    </div>
+                  </details>
+                </>
+              )}
+            </div>
+            {/* IPE-062: right pane — compact review summary + primary actions */}
+            <div className="space-y-3" data-testid="workspace-side-panel">
+              {selectedSourceWorkItemId ? (
+                <>
+                  <WorkspaceReviewSummaryPanel
+                    packLabel={(() => {
+                      const card = selectedSourceCard;
+                      if (!card) return `Work item #${selectedSourceWorkItemId}`;
+                      return `${card.novel?.title ?? ""} ${card.episodeNumber ?? ""}`.trim() || `Work item #${selectedSourceWorkItemId}`;
+                    })()}
+                    chapters={reviewChapters}
+                    anomalyCount={currentCheckerAnomalies.length}
+                    issuesOnly={chapterEditorTabFilter === "issue"}
+                    onToggleIssuesOnly={() =>
+                      setChapterEditorTabFilter(chapterEditorTabFilter === "issue" ? "all" : "issue")
+                    }
+                    onJumpToChapter={jumpToReviewChapter}
+                    checkerCurrent={editorialCheckerCurrent}
+                    checkerStale={editorialCheckerRunStale}
+                    notRun={editorialCheckerState === "NOT_RUN"}
+                  />
+                  <WorkspaceWorkflowActions
+                    hasDraft={Boolean(latestEditorialDraft)}
+                    savePending={editEditorialDraft.isPending}
+                    dirty={chapterEditorDirty}
+                    onSaveCheck={submitChapterEditorEdit}
+                    confirmDisabled={
+                      !editorialApprovalData?.latestDraft ||
+                      !editorialApprovalData?.qc?.ready ||
+                      !editorialApprovalData?.qc?.checkerRunId ||
+                      !editorialApprovalData?.qc?.qcEvidenceSha256 ||
+                      Boolean(editorialApprovalData?.approvalStatus?.valid)
+                    }
+                    confirming={approveEditorialDraft.isPending}
+                    onConfirm={submitApprovalConfirm}
+                    stageDisabled={false}
+                    staging={stageEditorialEpisode.isPending}
+                    onGoStage={() => { const section = document.getElementById("workspace-stage-section"); if (section) { section.setAttribute("open", "true"); section.scrollIntoView({ behavior: "smooth", block: "start" }); } }}
+                    publishReady={Boolean(editorialApprovalData?.readyToPublish)}
+                    onGoPublish={() => { const section = document.getElementById("workspace-publish-section"); if (section) { section.setAttribute("open", "true"); section.scrollIntoView({ behavior: "smooth", block: "start" }); } }}
+                  />
+                  <details id="workspace-checker-section" className="rounded-lg border bg-background" data-testid="workspace-checker-section">
+                    <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">3. ตรวจ / ตรวจซ้ำ (QC)</summary>
+                    <div className="space-y-3 border-t p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <div className="font-medium">3. ตรวจ / ตรวจซ้ำ</div>
@@ -4018,518 +4433,11 @@ export default function WorkspacePage() {
                         </div>
                       ))}
                     </div>
-                  </div>
-
-
-                  <details
-                    id="workspace-chapter-editor"
-                    className={packDetailTab === "editor" ? "rounded-md border bg-muted/10" : "hidden"}
-                    open={chapterEditorTarget ? true : undefined}
-                  >
-                    <summary className="cursor-pointer list-none p-3">
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="font-medium">
-                            Workspace Editor · {draftStructureSummary.totalTabs} แท็บ
-                          </div>
-                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                            <span>Draft v{latestEditorialDraft?.version ?? "—"}</span>
-                            <span title={latestEditorialDraft?.draftSha256 ?? ""} className="Advanced">SHA {shortHash(latestEditorialDraft?.draftSha256)}</span>
-                            <span>แก้ไข {editorialEditorData?.history?.length ?? 0}</span>
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2 text-xs">
-                          {draftStructureSummary.sequenceIssues.length > 0 && (
-                            <span className="rounded-full border px-2 py-0.5">
-                              เลขแท็บไม่เรียง {draftStructureSummary.sequenceIssues.length}
-                            </span>
-                          )}
-                          {draftStructureSummary.emptyTabs.length > 0 && (
-                            <span className="rounded-full border px-2 py-0.5">
-                              แท็บว่าง {draftStructureSummary.emptyTabs.length}
-                            </span>
-                          )}
-                          {draftStructureSummary.unnumberedTabs.length > 0 && (
-                            <span className="rounded-full border px-2 py-0.5">
-                              ไม่มีเลขแท็บ {draftStructureSummary.unnumberedTabs.length}
-                            </span>
-                          )}
-                          {draftStructureSummary.shortTabs.length > 0 && (
-                            <span className="rounded-full border px-2 py-0.5">
-                              เนื้อหาสั้นผิดปกติ {draftStructureSummary.shortTabs.length}
-                            </span>
-                          )}
-                          {draftStructureSummary.warningTabs.length > 0 && (
-                            <span className="rounded-full border px-2 py-0.5">
-                              warning {draftStructureSummary.warningTabs.length}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </summary>
-                      <div className="grid gap-3 xl:grid-cols-[minmax(200px,240px)_minmax(0,1fr)]" data-testid="workspace-editor-split">
-                      <div className="space-y-2 xl:max-h-[52rem] xl:overflow-auto xl:pr-1" data-testid="workspace-chapter-list-pane">
-                    <div className="space-y-3 border-t p-3">
-                      {(draftStructureSummary.sequenceIssues.length > 0 ||
-                        draftStructureSummary.emptyTabs.length > 0 ||
-                        draftStructureSummary.unnumberedTabs.length > 0 ||
-                        draftStructureSummary.shortTabs.length > 0) && (
-                        <div className="space-y-1 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                          {draftStructureSummary.sequenceIssues.length > 0 && (
-                            <div>ลำดับ: {draftStructureSummary.sequenceIssues.join(", ")}</div>
-                          )}
-                          {draftStructureSummary.emptyTabs.length > 0 && (
-                            <div>
-                              ไม่มีเนื้อหา: {compactTabTitles(draftStructureSummary.emptyTabs)}
-                            </div>
-                          )}
-                          {draftStructureSummary.unnumberedTabs.length > 0 && (
-                            <div>
-                              อ่านเลขแท็บไม่ได้: {compactTabTitles(draftStructureSummary.unnumberedTabs)}
-                            </div>
-                          )}
-                          {draftStructureSummary.shortTabs.length > 0 && (
-                            <div>
-                              สั้นผิดปกติ: {draftStructureSummary.shortTabs
-                                .slice(0, 6)
-                                .map(tab => `${tab.title} (${tab.characterCount} ตัวอักษร)`)
-                                .join(", ")}
-                              {draftStructureSummary.shortTabs.length > 6
-                                ? ` และอีก ${draftStructureSummary.shortTabs.length - 6}`
-                                : ""}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="space-y-2">
-                          <div className="font-medium">
-                            แท็บใน Draft · {filteredChapterEditorTabs.length}/{chapterEditorTabs.length}
-                          </div>
-                          <div className="flex flex-wrap gap-1 text-xs">
-                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-800">
-                              ผ่าน {chapterEditorProgress.passed}
-                            </span>
-                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-900">
-                              ค้าง {chapterEditorProgress.pending}
-                            </span>
-                            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-800">
-                              ยืนยันแล้ว {chapterEditorProgress.confirmed}
-                            </span>
-                            {chapterEditorProgress.unchecked > 0 && (
-                              <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
-                                ยังไม่ตรวจ {chapterEditorProgress.unchecked}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          {([
-                            ["all", "ทั้งหมด"],
-                            ["issue", "มีปัญหา"],
-                            ["unedited", "ยังไม่แก้"],
-                            ["edited", "แก้แล้ว"],
-                          ] as const).map(([value, label]) => (
-                            <Button
-                              key={value}
-                              type="button"
-                              size="sm"
-                              variant={chapterEditorTabFilter === value ? "secondary" : "outline"}
-                              onClick={() => setChapterEditorTabFilter(value)}
-                            >
-                              {label}
-                            </Button>
-                          ))}
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={!nextIssueChapterTab || editEditorialDraft.isPending}
-                            onClick={() =>
-                              nextIssueChapterTab && openChapterEditor(nextIssueChapterTab)
-                            }
-                          >
-                            บทมีปัญหาถัดไป
-                            <ChevronRight className="ml-1 h-4 w-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={
-                              !editorialEditorData?.canUndo ||
-                              !latestEditorialDraft ||
-                              undoEditorialEdit.isPending
-                            }
-                            onClick={() => {
-                              if (!latestEditorialDraft) return;
-                              undoEditorialEdit.mutate({
-                                workspaceId: selectedWorkspaceId,
-                                workItemId: selectedSourceWorkItemId,
-                                expectedDraftId: latestEditorialDraft.id,
-                                expectedDraftVersion: latestEditorialDraft.version,
-                                expectedDraftSha256: latestEditorialDraft.draftSha256,
-                                idempotencyKey: `editor-undo:${latestEditorialDraft.id}:${latestEditorialDraft.version}`,
-                              });
-                            }}
-                          >
-                            {undoEditorialEdit.isPending && (
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            )}
-                            Undo
-                          </Button>
-                        </div>
-                      </div>
-
-                      {!!chapterEditorTabs.length ? (
-                        filteredChapterEditorTabs.length ? (
-                        <div className="space-y-2">
-                          {filteredChapterEditorTabs.map((tab: any) => (
-                            <div key={tab.id} className="rounded-md border bg-background p-3 text-sm">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div>
-                                  <div>{tab.title}</div>
-                                  {(() => {
-                                    const status = chapterEditorStatusByTab.get(tab.sourceTabId);
-                                    return (
-                                      <div className="mt-1 flex flex-wrap gap-1 text-xs">
-                                        <span
-                                          className={
-                                            status?.edited
-                                              ? "rounded-full bg-blue-100 px-2 py-0.5 text-blue-800"
-                                              : "rounded-full bg-muted px-2 py-0.5 text-muted-foreground"
-                                          }
-                                        >
-                                          {status?.edited ? "แก้แล้ว" : "ยังไม่แก้"}
-                                        </span>
-                                        {(status?.foreignFindingCount ?? 0) > 0 && (
-                                          <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-900">
-                                            คำต่างประเทศ {status?.foreignFindingCount}
-                                          </span>
-                                        )}
-                                        {(status?.structuralIssueCount ?? 0) > 0 && (
-                                          <span className="rounded-full bg-orange-100 px-2 py-0.5 text-orange-900">
-                                            structural issue {status?.structuralIssueCount}
-                                          </span>
-                                        )}
-                                      </div>
-                                    );
-                                  })()}
-                                  <div className="mt-1 text-xs text-muted-foreground">
-                                    {tab.paragraphs.length} paragraphs · <span title={tab.structuralSha256} className="Advanced">{shortHash(tab.structuralSha256)}</span>
-                                    {tab.chapterNumber
-                                      ? ` · บทที่ ${tab.chapterNumber}${tab.chapterTitle ? ` · ${tab.chapterTitle}` : ""}`
-                                      : ""}
-                                    {tab.warnings?.length ? ` · ${tab.warnings.join(", ")}` : ""}
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant={tab.paragraphs.length ? "outline" : "default"}
-                                    disabled={!latestEditorialDraft || editEditorialDraft.isPending}
-                                    onClick={() => openChapterEditor(tab)}
-                                  >
-                                    {tab.paragraphs.length ? "เปิด Editor" : "เติมเนื้อหา"}
-                                  </Button>
-                                  {editorialEditorData?.latestDraft && (() => {
-                                    const draftTab = (editorialEditorData.tabs ?? []).find(
-                                      (candidate: any) => candidate.sourceTabId === tab.sourceTabId
-                                    );
-                                    if (!draftTab) return null;
-                                    return (
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        disabled={
-                                          excludeEditorialTab.isPending ||
-                                          editorialEditorData.tabs.length <= 1
-                                        }
-                                        onClick={() => {
-                                          if (
-                                            window.confirm(
-                                              `นำแท็บ ${tab.title} ออกจาก Draft นี้หรือไม่? ระบบจะสร้าง Draft revision ใหม่ และต้องตรวจ QC/ยืนยันใหม่`
-                                            )
-                                          ) {
-                                            excludeEditorialTab.mutate({
-                                              workspaceId: selectedWorkspaceId!,
-                                              workItemId: selectedSourceWorkItemId!,
-                                              expectedDraftId: editorialEditorData.latestDraft.id,
-                                              expectedDraftSha256:
-                                                editorialEditorData.latestDraft.draftSha256,
-                                              sourceTabId: draftTab.sourceTabId,
-                                            });
-                                          }
-                                        }}
-                                      >
-                                        นำออก
-                                      </Button>
-                                    );
-                                  })()}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                        ) : (
-                          <EmptyState>ไม่พบแท็บตามตัวกรอง</EmptyState>
-                        )
-                      ) : (
-                        <EmptyState>ยังไม่มีแท็บใน Draft</EmptyState>
-                      )}
-
-                      {(editorialEditorData?.excludedTabs ?? []).length > 0 && (
-                        <details className="rounded-md border bg-background">
-                          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
-                            แท็บที่นำออก {editorialEditorData.excludedTabs.length}
-                          </summary>
-                          <div className="space-y-2 border-t p-3">
-                            {editorialEditorData.excludedTabs.map((tab: any) => (
-                              <div
-                                key={tab.sourceTabId}
-                                className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-sm"
-                              >
-                                <span>{tab.title}</span>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={restoreEditorialTab.isPending}
-                                  onClick={() =>
-                                    restoreEditorialTab.mutate({
-                                      workspaceId: selectedWorkspaceId!,
-                                      workItemId: selectedSourceWorkItemId!,
-                                      expectedDraftId: editorialEditorData.latestDraft.id,
-                                      expectedDraftSha256:
-                                        editorialEditorData.latestDraft.draftSha256,
-                                      sourceTabId: tab.sourceTabId,
-                                    })
-                                  }
-                                >
-                                  คืนแท็บ
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      )}
-
-                      </div>
-                      <div className="min-w-0 space-y-3" data-testid="workspace-chapter-editor-pane">
-                    {chapterEditorTarget ? (
-                      <div className="space-y-3 rounded-xl border bg-muted/10 p-3">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <div className="text-lg font-semibold">Chapter Editor</div>
-                            <div className="text-sm text-muted-foreground">
-                              {chapterEditorTarget.title} · Draft v{chapterEditorTarget.draftVersion}
-                            </div>
-                            <div className="mt-2 flex flex-wrap gap-1 text-xs">
-                              <span
-                                className={
-                                  currentChapterStatus?.edited
-                                    ? "rounded-full bg-blue-100 px-2 py-0.5 text-blue-800"
-                                    : "rounded-full bg-muted px-2 py-0.5 text-muted-foreground"
-                                }
-                              >
-                                {currentChapterStatus?.edited ? "แก้แล้ว" : "ยังไม่แก้"}
-                              </span>
-                              {(currentChapterStatus?.foreignFindingCount ?? 0) > 0 && (
-                                <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-900">
-                                  มีคำต่างประเทศ {currentChapterStatus?.foreignFindingCount}
-                                </span>
-                              )}
-                              {(currentChapterStatus?.structuralIssueCount ?? 0) > 0 && (
-                                <span className="rounded-full bg-orange-100 px-2 py-0.5 text-orange-900">
-                                  มี structural issue {currentChapterStatus?.structuralIssueCount}
-                                </span>
-                              )}
-                              {chapterEditorDirty && (
-                                <span className="rounded-full bg-red-100 px-2 py-0.5 text-red-800">
-                                  ยังไม่บันทึก
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          {/* IPE-058-F: sticky toolbar — Prev/Next, state chip,
-                              issue count and ONE primary CTA derived from the
-                              canonical state machine (no count shortcuts). */}
-                          <div className="sticky top-0 z-20 -mx-3 space-y-2 border-b bg-background/95 px-3 py-2 backdrop-blur">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={!previousChapterTab || editEditorialDraft.isPending}
-                              onClick={() => previousChapterTab && openChapterEditor(previousChapterTab)}
-                            >
-                              <ChevronLeft className="mr-1 h-4 w-4" />
-                              ก่อนหน้า
-                            </Button>
-                            <span className="text-xs text-muted-foreground">
-                              {chapterEditorCurrentIndex >= 0
-                                ? `${chapterEditorCurrentIndex + 1}/${chapterEditorTabs.length}`
-                                : "—"}
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={!nextChapterTab || editEditorialDraft.isPending}
-                              onClick={() => nextChapterTab && openChapterEditor(nextChapterTab)}
-                            >
-                              ถัดไป
-                              <ChevronRight className="ml-1 h-4 w-4" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={editEditorialDraft.isPending}
-                              onClick={closeChapterEditor}
-                            >
-                              ปิด Editor
-                            </Button>
-                          </div>
-                          <WorkspaceEditorialToolbar
-                            dirty={chapterEditorDirty}
-                            saving={editEditorialDraft.isPending}
-                            checkerState={editorialCheckerState}
-                            unresolvedCount={editorialCheckerData?.unresolvedCount}
-                            issueCount={chapterEditorIssueItems.length}
-                            hasDraft={Boolean(latestEditorialDraft)}
-                            approvalValid={Boolean(
-                              editorialApprovalData?.approvalStatus?.valid
-                            )}
-                            readyToPublish={Boolean(
-                              editorialApprovalData?.readyToPublish
-                            )}
-                            positionLabel={
-                              chapterEditorCurrentIndex >= 0
-                                ? `${chapterEditorCurrentIndex + 1}/${chapterEditorTabs.length}`
-                                : "—"
-                            }
-                            onPrev={() =>
-                              previousChapterTab &&
-                              openChapterEditor(previousChapterTab)
-                            }
-                            onNext={() =>
-                              nextChapterTab && openChapterEditor(nextChapterTab)
-                            }
-                            prevDisabled={!previousChapterTab}
-                            nextDisabled={!nextChapterTab}
-                            onSaveCheck={submitChapterEditorEdit}
-                            onRunChecker={runCheckerForCurrentDraft}
-                            onConfirm={submitApprovalConfirm}
-                            onStage={submitStageDraft}
-                            confirmDisabled={
-                              !editorialApprovalData?.latestDraft ||
-                              !editorialApprovalData?.qc?.ready ||
-                              !editorialApprovalData?.qc?.checkerRunId ||
-                              !editorialApprovalData?.qc?.qcEvidenceSha256 ||
-                              Boolean(editorialApprovalData?.approvalStatus?.valid)
-                            }
-                            stageDisabled={
-                              !editorialApprovalData?.approvalStatus?.valid ||
-                              !editorialApprovalData?.approval?.id ||
-                              !editorialApprovalData?.stagePlan?.ready ||
-                              Boolean(editorialApprovalData?.stageStatus?.valid)
-                            }
-                          />
-                          </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2 text-sm">
-                          <span className="rounded-md border px-2 py-1 font-medium">ข้อความบท</span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={chapterEditorHighlight ? "secondary" : "outline"}
-                            onClick={() => setChapterEditorHighlight(value => !value)}
-                          >
-                            ไฮไลต์คำต่างประเทศ {chapterEditorHighlight ? "เปิด" : "ปิด"}
-                          </Button>
-                          <span className="ml-auto text-xs text-muted-foreground">
-                            {chapterEditorText.length.toLocaleString()} ตัวอักษร
-                          </span>
-                        </div>
-
-
-                        <div
-                          ref={chapterEditorScrollRef}
-                          className="min-h-[30rem] max-h-[48rem] overflow-y-auto rounded-lg border bg-background p-5 shadow-inner"
-                          onScroll={event => {
-                            const sourceTabId = chapterEditorTarget?.sourceTabId;
-                            if (!sourceTabId) return;
-                            const scrollTop = event.currentTarget.scrollTop;
-                            chapterEditorScrollByTab.current.set(sourceTabId, scrollTop);
-                            window.sessionStorage.setItem(
-                              chapterEditorScrollStorageKey(sourceTabId),
-                              String(scrollTop)
-                            );
-                          }}
-                        >
-                          {/* IPE-058-C: ONE continuous editing surface. The
-                              paragraph model lives in
-                              workspaceChapterCanvas.ts — no per-paragraph
-                              textareas. */}
-                          <ChapterEditorCanvas
-                            value={chapterEditorText}
-                            flatFindings={chapterEditorCanvasFindings}
-                            highlight={chapterEditorHighlight}
-                            disabled={editEditorialDraft.isPending}
-                            placeholder={
-                              chapterEditorParagraphs.length <= 1 &&
-                              !chapterEditorText
-                                ? "เริ่มเขียนหรือวางเนื้อหาของบทนี้..."
-                                : undefined
-                            }
-                            textareaRef={chapterEditorCanvasRef}
-                            onChange={(value, _caret) =>
-                              applyChapterEditorCanvasChange(value, false)
-                            }
-                            onKeyDown={chapterEditorCanvasKeyDown}
-                            onPaste={chapterEditorCanvasPaste}
-                          />
-                        </div>
-
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="text-xs text-muted-foreground">
-                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · Ctrl/Cmd+Z / Ctrl+Y = เลิก/ทำซ้ำ · วางจาก ChatGPT/Google Docs จะจัดย่อหน้าอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
-                          </div>
-                          <Button
-                            type="button"
-                            disabled={
-                              editEditorialDraft.isPending ||
-                              chapterEditorSaveProjection.text === chapterEditorTarget.expectedText
-                            }
-                            onClick={submitChapterEditorEdit}
-                          >
-                            {editEditorialDraft.isPending && (
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            )}
-                            บันทึก Draft + ตรวจซ้ำ
-                          </Button>
-                        </div>
-                        <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-                          การบันทึกสร้าง Draft revision ใหม่เท่านั้น ไม่ Publish อัตโนมัติ และต้องผ่าน QC/Confirm เดิมก่อน Stage/Publish
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="workspace-chapter-editor-empty">
-                        เลือกตอนจากรายการด้านซ้าย — Editor จะเปิดในพื้นที่นี้ทันที ไม่ต้องเลื่อนหา
-                      </div>
-                    )}
-                      </div>
-
-                      </div>
-                  </div>
+                    </div>
                   </details>
-
-                  <div className={packDetailTab === "stage" ? "space-y-3 rounded-md border p-3" : "hidden"}>
+                  <details id="workspace-stage-section" className="rounded-lg border bg-background" data-testid="workspace-stage-section">
+                    <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">4. ยืนยัน Draft ปัจจุบัน · 5. Stage</summary>
+                    <div className="space-y-3 border-t p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <div className="font-medium">4. ยืนยัน Draft ปัจจุบัน</div>
@@ -4883,9 +4791,11 @@ export default function WorkspacePage() {
                           : "5. Stage"}
                       </Button>
                     </div>
-                  </div>
-
-                  <div className={packDetailTab === "publish" ? "space-y-3" : "hidden"}>
+                    </div>
+                  </details>
+                  <details id="workspace-publish-section" className="rounded-lg border bg-background" data-testid="workspace-publish-section">
+                    <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">6. Publish</summary>
+                    <div className="space-y-3 border-t p-3">
                     {editorialApprovalData?.readyToPublish ? (
                       <div className="space-y-2 rounded-md border p-3 text-sm">
                         <div className="font-medium">6. Publish</div>
@@ -4928,52 +4838,8 @@ export default function WorkspacePage() {
                         ยังไม่พร้อมเผยแพร่ — ตรวจความพร้อมและทำ Stage ในแท็บ Stage
                       </div>
                     )}
-                  </div>
-                </>
-              )}
-            </Card>
-            </div>
-            {/* IPE-062: right pane — compact review summary + primary actions */}
-            <div className="space-y-3" data-testid="workspace-side-panel">
-              {selectedSourceWorkItemId ? (
-                <>
-                  <WorkspaceReviewSummaryPanel
-                    packLabel={(() => {
-                      const card = selectedSourceCard;
-                      if (!card) return `Work item #${selectedSourceWorkItemId}`;
-                      return `${card.novel?.title ?? ""} ${card.episodeNumber ?? ""}`.trim() || `Work item #${selectedSourceWorkItemId}`;
-                    })()}
-                    chapters={reviewChapters}
-                    anomalyCount={currentCheckerAnomalies.length}
-                    issuesOnly={chapterEditorTabFilter === "issue"}
-                    onToggleIssuesOnly={() =>
-                      setChapterEditorTabFilter(chapterEditorTabFilter === "issue" ? "all" : "issue")
-                    }
-                    onJumpToChapter={jumpToReviewChapter}
-                    checkerCurrent={editorialCheckerCurrent}
-                    checkerStale={editorialCheckerRunStale}
-                    notRun={editorialCheckerState === "NOT_RUN"}
-                  />
-                  <WorkspaceWorkflowActions
-                    hasDraft={Boolean(latestEditorialDraft)}
-                    savePending={editEditorialDraft.isPending}
-                    dirty={chapterEditorDirty}
-                    onSaveCheck={submitChapterEditorEdit}
-                    confirmDisabled={
-                      !editorialApprovalData?.latestDraft ||
-                      !editorialApprovalData?.qc?.ready ||
-                      !editorialApprovalData?.qc?.checkerRunId ||
-                      !editorialApprovalData?.qc?.qcEvidenceSha256 ||
-                      Boolean(editorialApprovalData?.approvalStatus?.valid)
-                    }
-                    confirming={approveEditorialDraft.isPending}
-                    onConfirm={submitApprovalConfirm}
-                    stageDisabled={false}
-                    staging={stageEditorialEpisode.isPending}
-                    onGoStage={() => setPackDetailTab("stage")}
-                    publishReady={Boolean(editorialApprovalData?.readyToPublish)}
-                    onGoPublish={() => setPackDetailTab("publish")}
-                  />
+                    </div>
+                  </details>
                   <div className="space-y-2" data-testid="workspace-assist-pane">
                         <details className="rounded-lg border bg-background">
                           <summary className="cursor-pointer list-none px-3 py-2">

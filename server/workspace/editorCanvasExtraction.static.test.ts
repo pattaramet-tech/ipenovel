@@ -1,7 +1,7 @@
-// IPE-062R4A — editor canvas extraction static contract. Pins the
-// three-pane editor surface: a pure navigation rail, ONE central canvas
-// owning the active editor, and a QC/assistance rail. Per repo convention
-// (no jsdom/RTL) these read the sources.
+// IPE-062R4A/R4D — editor-first workspace static contract. The center pane
+// IS the main chapter editor; the pack/chapter navigator is a selector tree;
+// QC/workflow actions live only in the right rail. Per repo convention (no
+// jsdom/RTL) these read the sources.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +9,7 @@ const root = new URL("../../", import.meta.url);
 const source = (path: string) => readFileSync(new URL(path, root), "utf8").replace(/\r\n/g, "\n");
 
 const page = source("client/src/pages/WorkspacePage.tsx");
+const packPanel = source("client/src/pages/WorkspacePackListPanel.tsx");
 
 function sliceBetween(startMarker: string, endMarker: string) {
   const start = page.indexOf(startMarker);
@@ -18,167 +19,130 @@ function sliceBetween(startMarker: string, endMarker: string) {
   return page.slice(start, end);
 }
 
-describe("IPE-062R4A — three-pane editor surface", () => {
-  const navigator = sliceBetween(
-    'data-testid="workspace-chapter-list-pane"',
-    'data-testid="workspace-chapter-editor-pane"'
-  );
-  // IPE-062R4C: the assist rail moved to the OUTER right panel, so the
-  // canvas pane slice runs to the stage panel that follows the editor.
-  const canvasPane = sliceBetween(
-    'data-testid="workspace-chapter-editor-pane"',
-    '<div className={packDetailTab === "stage"'
-  );
-  const assist = page.slice(page.indexOf('data-testid="workspace-assist-pane"'));
+describe("IPE-062R4D — editor-first center surface", () => {
+  const mainEditor = page.slice(page.indexOf('data-testid="workspace-main-editor"'));
 
-  it("A. renders the tab navigator as a pure selector (no editor textarea inside)", () => {
-    expect(navigator).not.toContain("<textarea");
-    expect(navigator).not.toContain("ChapterEditorCanvas");
-    expect(navigator).not.toContain("workspace-chapter-editor-canvas");
-    // Navigator keeps navigation data: titles, status chips, issue counts.
-    expect(navigator).toContain("แท็บใน Draft");
-    expect(navigator).toContain("chapterEditorStatusByTab.get(tab.sourceTabId)");
-    expect(navigator).toContain("คำต่างประเทศ");
-    expect(navigator).toContain("structural issue");
-    expect(navigator).toContain("openChapterEditor(tab)");
+  it("A. Episode Pack Detail shell and its tabs are no longer the primary center navigation", () => {
+    expect(page).not.toContain('>Episode Pack Detail</h2>');
+    expect(page).not.toContain('data-testid="pack-detail-tabs"');
+    expect(page).not.toContain('data-testid="pack-detail-tab-editor"');
+    // The redundant Workspace Editor wrapper heading is gone too.
+    expect(page).not.toContain("Workspace Editor ·");
+    expect(page).not.toContain("workspace-editor-split");
   });
 
-  it("B. renders the selected chapter's editor in the central canvas at full remaining width", () => {
-    expect(canvasPane).toContain("<ChapterEditorCanvas");
-    // The canvas component itself carries the editing textarea (defined once
-    // at module level, invoked exactly here).
+  it("B. the center is the ChapterEditorCanvas as the primary surface", () => {
+    expect(page).toContain('data-testid="workspace-main-editor"');
+    expect(mainEditor.indexOf("<ChapterEditorCanvas")).toBeGreaterThan(-1);
+    expect(mainEditor).toContain("chapterEditorTarget.title");
     const canvasComponent = page.slice(
       page.indexOf("function ChapterEditorCanvas"),
       page.indexOf("export default function WorkspacePage")
     );
     expect(canvasComponent).toContain('id="workspace-chapter-editor-canvas"');
-    expect(canvasPane).toContain("chapterEditorTarget.title");
-    // IPE-062R4C: the inner editor split is TWO columns — a bounded
-    // navigator rail and the editor taking ALL remaining width (min-w-0,
-    // no fixed assist column inside the Episode Pack Detail).
-    expect(page).toContain("xl:grid-cols-[minmax(200px,240px)_minmax(0,1fr)]");
-    const editorPaneOpen = page.indexOf('data-testid="workspace-chapter-editor-pane"');
-    const editorPaneLine = page.slice(page.lastIndexOf("<div", editorPaneOpen), editorPaneOpen);
-    expect(editorPaneLine).toContain("min-w-0");
+    // Full-width editing: no fixed-width grid wraps the canvas anymore.
+    expect(page).not.toContain("minmax(260px,0.9fr)]\" data-testid=");
   });
 
-  it("B2. the editor split has exactly TWO direct columns and the assist rail lives in the outer right panel", () => {
-    // Codex P1 + staging acceptance regression: a third assist column nested
-    // inside the Episode Pack Detail squeezed the canvas back to a narrow
-    // column. Pin the structure directly:
-    const lines = page.split("\n");
-    const balanceFrom = (marker: string) => {
-      const open = lines.findIndex((l) => l.includes(marker));
-      let bal = 0;
-      for (let i = open; i < lines.length; i++) {
-        const l = lines[i];
-        bal +=
-          (l.match(/<div\b/g) ?? []).length -
-          (l.match(/<div\b[^>]*\/>/g) ?? []).length -
-          (l.match(/<\/div>/g) ?? []).length;
-        if (bal === 0) return { open: open + 1, close: i + 1 };
-      }
-      return null;
-    };
-    const split = balanceFrom('data-testid="workspace-editor-split"');
-    const editor = balanceFrom('data-testid="workspace-chapter-editor-pane"');
-    const navigator = balanceFrom('data-testid="workspace-chapter-list-pane"');
-    const assist = balanceFrom('data-testid="workspace-assist-pane"');
-    const sidePanel = page.indexOf('data-testid="workspace-side-panel"');
-    expect(split).not.toBeNull();
-    expect(editor).not.toBeNull();
-    expect(navigator).not.toBeNull();
-    expect(assist).not.toBeNull();
-    // Both inner panes close INSIDE the split (direct children)...
-    expect(editor!.close).toBeLessThan(split!.close);
-    expect(navigator!.close).toBeLessThan(split!.close);
-    // ...and the assist pane is NOT a third child: it opens after the whole
-    // split closed, inside the outer side panel.
-    expect(assist!.open).toBeGreaterThan(split!.close);
-    const sidePanelLine = page
-      .slice(0, page.indexOf('data-testid="workspace-side-panel"'))
-      .split("\n").length;
-    expect(sidePanelLine).toBeGreaterThan(0);
-    expect(assist!.open).toBeGreaterThan(sidePanelLine);
-    // No second nested grid template inside the Episode Pack Detail.
-    expect(page).not.toContain("minmax(260px,0.9fr)]\" data-testid=\"workspace-assist-pane\"");
+  it("C. the canvas appears BEFORE secondary pack metadata in source order", () => {
+    const editorIdx = page.indexOf('data-testid="workspace-main-editor"');
+    const secondaryIdx = page.indexOf('data-testid="workspace-pack-secondary"');
+    expect(editorIdx).toBeGreaterThan(-1);
+    expect(secondaryIdx).toBeGreaterThan(editorIdx);
+    // Source/Latest Draft/Refresh cards live in the collapsed secondary block.
+    const secondary = page.slice(secondaryIdx);
+    expect(secondary).toContain("md:grid-cols-3");
+    expect(secondary).toContain("Refresh safety");
   });
 
-  it("C. keeps exactly ONE active editor surface (no per-tab editors mounted)", () => {
-    // The canvas is the only full-content editor: the central pane renders no
-    // raw <textarea> other than the canvas component itself, and the legacy
-    // per-tab paragraph-tools block is gone.
-    expect((canvasPane.match(/<textarea/g) ?? []).length).toBe(0);
-    expect(page).not.toContain("เครื่องมือแก้ไขรายย่อหน้า");
-    // Canvas component is invoked exactly once.
+  it("F. exactly ONE ChapterEditorCanvas is mounted, gated on the single target", () => {
     expect((page.match(/<ChapterEditorCanvas/g) ?? []).length).toBe(1);
-    // The editor renders only when a single chapterEditorTarget exists.
     expect(page).toContain("chapterEditorTarget ? (");
     expect(page).toContain('data-testid="workspace-chapter-editor-empty"');
   });
 
-  it("D. switching chapters updates the canvas through the existing open path", () => {
-    // Navigator buttons, prev/next, and the issue-first jump all route
-    // through openChapterEditor — one owner of the active target.
-    expect(navigator).toContain("openChapterEditor(tab)");
-    expect(navigator).toContain("openChapterEditor(nextIssueChapterTab)");
-    expect(canvasPane).toContain("previousChapterTab && openChapterEditor(previousChapterTab)");
-    expect(canvasPane).toContain("nextChapterTab && openChapterEditor(nextChapterTab)");
-    // Dirty guard still lives in openChapterEditor.
+  it("G. the navigator (pack/chapter tree) never renders an editor textarea", () => {
+    expect(packPanel).not.toContain("<textarea");
+    expect(packPanel).not.toContain("ChapterEditorCanvas");
+    expect(packPanel).toContain('data-testid="workspace-chapter-row"');
+    expect(packPanel).toContain('data-testid="workspace-pack-expand"');
+  });
+
+  it("N. collapsed packs mount no editor and no chapter rows (metadata-only tree)", () => {
+    // Chapter rows render only for the expanded AND selected pack.
+    expect(packPanel).toContain("const showChapters = expanded && selected && workItemId != null && !!chapters?.length;");
+    // Rows carry navigation metadata only.
+    expect(packPanel).toContain("chapter.foreignFindingCount");
+    expect(packPanel).toContain("chapter.structuralIssueCount");
+    expect(packPanel).toContain('เติมเนื้อหา');
+  });
+});
+
+describe("IPE-062R4D — pack/chapter tree navigation", () => {
+  it("D. pack rows expand/collapse and chapter rows appear under the expanded pack", () => {
+    expect(packPanel).toContain("expandedPackIds");
+    expect(packPanel).toContain('aria-expanded={expanded}');
+    expect(packPanel).toContain('data-testid="workspace-pack-chapters"');
+    // Expanding a non-selected pack selects it first so its tabs load.
+    expect(packPanel).toContain("if (!selected && workItemId != null) onSelectPack(workItemId);");
+  });
+
+  it("E. chapter row click routes to the single active editor (no extra open button)", () => {
+    // One click: openChapterEditor — the dirty guard lives inside it.
+    expect(page).toContain("onSelectChapter={(row) => {");
+    expect(page).toContain("if (tab) openChapterEditor(tab);");
+    // The old per-row เปิด Editor button is gone from the tree rows.
+    expect(packPanel).not.toContain('">เปิด Editor</Button>');
+  });
+
+  it("M. selected pack + selected chapter state stay wired", () => {
+    expect(page).toContain("activeChapterTabId={chapterEditorTarget?.sourceTabId ?? null}");
+    expect(page).toContain("chapters={filteredChapterEditorTabs.map((tab: any) => {");
+  });
+});
+
+describe("IPE-062R4D — guards and invariants (R3/R4A preserved)", () => {
+  it("H. dirty chapter switching uses the existing guard", () => {
     expect(page).toContain("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วเปิดแท็บอื่นหรือไม่?");
   });
 
-  it("E. dirty chapter switches use the guard before disposing (no silent discard)", () => {
-    // Same confirmation boundary for story and pack switches.
-    expect(page).toContain("ต้องการทิ้งการแก้ไขแล้วเปลี่ยนเรื่องหรือไม่?");
-    expect(page).toContain("ต้องการทิ้งการแก้ไขแล้วเปลี่ยนแพ็กหรือไม่?");
+  it("I. dirty pack/story switching uses the context-switch guards", () => {
     expect(page).toContain("discardChapterEditorForContextSwitch");
+    expect(page).toContain("ต้องการทิ้งการแก้ไขแล้วเปลี่ยนแพ็กหรือไม่?");
+    expect(page).toContain("ต้องการทิ้งการแก้ไขแล้วเปลี่ยนเรื่องหรือไม่?");
   });
 
-  it("F. Cancel keeps the original editor (guard returns false before any state change)", () => {
-    // The guard must return BEFORE clearing target/paragraphs when declined.
-    const guard = page.slice(
-      page.indexOf("const discardChapterEditorForContextSwitch"),
-      page.indexOf("const selectStory =")
-    );
-    expect(guard).toContain("if (dirty && !window.confirm(message)) return false;");
-    expect(guard.indexOf("return false")).toBeGreaterThan(-1);
-    expect(guard).toContain("setChapterEditorTarget(undefined)");
-    // selectPackForActiveStory only selects after the guard passes.
-    const selectPack = page.slice(
-      page.indexOf("const selectPackForActiveStory"),
-      page.indexOf("const selectPackAcrossStories")
-    );
-    expect(selectPack.indexOf("return false")).toBeLessThan(selectPack.indexOf("setSelectedSourceWorkItemId(workItemId)"));
-  });
-
-  it("G. save + autosave use the active editor identity (R3 invariant intact)", () => {
+  it("J. save/autosave identity invariant enforced in both paths", () => {
     expect((page.match(/editorDraftBelongsToSelectedPack\(/g) ?? []).length).toBe(2);
     expect(page).toContain('submitEditorEdit("autosave")');
     expect(page).toContain("Editor นี้เปิดจากแพ็กอื่น");
-    // Canvas save button submits the active canvas editor.
-    expect(canvasPane).toContain("onClick={submitChapterEditorEdit}");
+  });
+});
+
+describe("IPE-062R4D — right rail is the single workflow authority", () => {
+  const sidePanel = page.slice(page.indexOf('data-testid="workspace-side-panel"'));
+
+  it("K. QC/checker, Issue Queue, Full Checker and Safe Transform live in the right rail only", () => {
+    expect(sidePanel).toContain('data-testid="workspace-checker-section"');
+    expect(sidePanel).toContain("3. ตรวจ / ตรวจซ้ำ (QC)");
+    expect(sidePanel).toContain("editorTarget && editorTarget.findingId === finding.id");
+    expect(sidePanel).toContain("Issue Queue · {chapterEditorIssueItems.length}");
+    expect(sidePanel).toContain("Full Checker vNext");
+    expect(sidePanel).toContain("Safe Transform Preview");
   });
 
-  it("H. QC/finding data follows the active chapter from the outer right rail", () => {
-    // IPE-062R4C: assist content renders in the outer side panel, not as a
-    // nested third column inside the Episode Pack Detail.
-    const sidePanel = page.indexOf('data-testid="workspace-side-panel"');
-    const assistStart = page.indexOf('data-testid="workspace-assist-pane"');
-    expect(sidePanel).toBeGreaterThan(-1);
-    expect(assistStart).toBeGreaterThan(sidePanel);
-    expect(assist).toContain("Issue Queue · {chapterEditorIssueItems.length}");
-    expect(assist).toContain("chapterEditorIssueItems.map");
-    expect(assist).toContain("navigateRelativeChapterEditorIssue");
-    expect(assist).toContain("Safe Transform Preview");
-    expect(assist).toContain("Full Checker vNext");
-    // Finding quick-edit cards stay in the rail (never inside tab cards).
-    expect(assist).toContain("editorTarget && !editorTarget.findingId");
-  });
-
-  it("I. R3 pack-switch + story-switch guards remain wired", () => {
-    expect(page).toContain("onSelectPack={selectPackForActiveStory}");
-    expect(page).toContain("if (storyKey === activeStoryKey) return selectPackForActiveStory(card.workItemId);");
-    expect(page).toContain("onFocusStory={selectStory}");
+  it("L. Stage/Publish have no duplicate primary controls in the center", () => {
+    expect(sidePanel).toContain('data-testid="workspace-stage-section"');
+    expect(sidePanel).toContain('data-testid="workspace-publish-section"');
+    // Center secondary block never carries workflow actions.
+    const center = page.slice(
+      page.indexOf('data-testid="workspace-main-editor"'),
+      page.indexOf('data-testid="workspace-side-panel"')
+    );
+    expect(center).not.toContain("requestEditorialPublish");
+    expect(center).not.toContain("stageEditorialEpisode.mutate");
+    // ไป Stage / Publish scroll to the rail sections instead of switching tabs.
+    expect(page).toContain('document.getElementById("workspace-stage-section")');
+    expect(page).toContain('document.getElementById("workspace-publish-section")');
   });
 });

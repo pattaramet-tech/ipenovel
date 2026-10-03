@@ -89,16 +89,16 @@ describe("Workspace Editorial editor static boundaries", () => {
 
   it("provides sentence edit, paragraph edit, autosave, recheck and undo UX without requiring AI", () => {
     const page = source("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("Workspace Editor");
+    // IPE-062R4D: the center IS the chapter editor (no Workspace Editor shell).
+    expect(page).toContain("Chapter Editor");
     expect(page).toContain("แก้ประโยค");
     expect(page).toContain("แก้ย่อหน้า");
     expect(page).toContain("editorTarget && editorTarget.findingId === finding.id");
     expect(page).toContain("editorTarget && !editorTarget.findingId");
     expect(page).toContain('submitEditorEdit("autosave")');
     expect(page).toContain("บันทึกทันที + ตรวจซ้ำ");
-    expect(page).toContain("Workspace Editor");
+    expect(page).toContain("Chapter Editor");
     expect(page).toContain('id="workspace-chapter-editor"');
-    expect(page).toContain("Workspace Editor ·");
     expect(page).toContain("แท็บใน Draft");
     expect(page).toContain("แท็บที่นำออก");
     // IPE-062R4A: the legacy per-tab paragraph-tools block is superseded by
@@ -115,12 +115,13 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("ChapterEditorCanvas");
     expect(page).toContain("workspace-chapter-editor-canvas");
     expect(page).not.toContain("ChapterEditorParagraphBlock");
-    // IPE-062R4A: the canvas is the ONLY full-content editor surface — no
-    // other textarea may render chapter content (finding quick-edits and the
-    // bulk finding editor remain single-purpose, non-chapter textareas).
+    // IPE-062R4A/R4D: the canvas is the ONLY full-content editor surface —
+    // the main-editor card contains no raw <textarea> other than the canvas
+    // component itself (finding quick-edits live in the right rail, the bulk
+    // finding editor in Advanced — single-purpose, non-chapter textareas).
     const canvasPane = page.slice(
-      page.indexOf('data-testid="workspace-chapter-editor-pane"'),
-      page.indexOf('data-testid="workspace-assist-pane"')
+      page.indexOf('data-testid="workspace-main-editor"'),
+      page.indexOf('data-testid="workspace-pack-secondary"')
     );
     expect(canvasPane).toContain("ChapterEditorCanvas");
     expect((canvasPane.match(/<textarea/g) ?? []).length).toBe(0);

@@ -1,7 +1,9 @@
 // IPE-062 — compact pack list for the focused story (left pane of the
-// multi-story work area). Replaces the full table as the daily surface:
-// search, status badge per pack, bulk checkbox, and the shared actions menu.
+// multi-story work area). IPE-062R4D: expandable pack/chapter tree — each
+// pack row can expand to its chapter navigation rows (metadata only, never
+// an editing surface; the single active editor lives in the center).
 import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { EditorialPackRowActionsMenu } from "./EditorialPackRowActionsMenu";
@@ -21,6 +23,30 @@ const STATUS_BADGE_CLASS: Record<StoryPackStatus, string> = {
   anomalous: "border-red-300 bg-red-50 text-red-700",
   not_checked: "border-slate-300 bg-slate-50 text-slate-600",
 };
+
+const CHAPTER_STATE_LABEL: Record<string, string> = {
+  passed: "ผ่าน",
+  pending: "ต้องแก้",
+  confirmed: "ยืนยันแล้ว",
+  unchecked: "ยังไม่ตรวจ",
+};
+
+const CHAPTER_STATE_CLASS: Record<string, string> = {
+  passed: "border-teal-200 bg-teal-50 text-teal-700",
+  pending: "border-orange-200 bg-orange-50 text-orange-700",
+  confirmed: "border-blue-200 bg-blue-50 text-blue-800",
+  unchecked: "border-slate-200 bg-slate-50 text-slate-600",
+};
+
+export interface WorkspacePackChapterRow {
+  sourceTabId: string;
+  title: string;
+  issueCount: number;
+  foreignFindingCount: number;
+  structuralIssueCount: number;
+  progressState: "passed" | "pending" | "confirmed" | "unchecked";
+  empty: boolean;
+}
 
 export interface WorkspacePackListCard {
   id?: number | string | null;
@@ -50,6 +76,10 @@ interface WorkspacePackListPanelProps {
   onEditSale: (card: any, mode: "free" | "paid", price?: string) => void;
   onEditNote: (card: any, next: string) => void;
   onRemove: (card: any) => void;
+  /** Chapter navigation rows for the SELECTED pack (metadata only). */
+  chapters?: WorkspacePackChapterRow[];
+  activeChapterTabId?: string | null;
+  onSelectChapter?: (row: WorkspacePackChapterRow) => void;
   editRangePending?: boolean;
   editSalePending?: boolean;
   editNotePending?: boolean;
@@ -69,12 +99,20 @@ export function WorkspacePackListPanel({
   onEditSale,
   onEditNote,
   onRemove,
+  chapters,
+  activeChapterTabId,
+  onSelectChapter,
   editRangePending,
   editSalePending,
   editNotePending,
   removePending,
 }: WorkspacePackListPanelProps) {
   const [query, setQuery] = useState("");
+  // IPE-062R4D: transient expand/collapse per pack row. Expanding a
+  // non-selected pack also selects it so its chapter tabs load; chapter
+  // rows render ONLY for the pack whose tabs are loaded, and they carry
+  // navigation metadata — never an editor surface.
+  const [expandedPackIds, setExpandedPackIds] = useState<Set<string>>(new Set());
   const visiblePacks = useMemo(
     () => sortPacksByEpisode(filterPacksByQuery(packs, query)),
     [packs, query]
@@ -106,11 +144,15 @@ export function WorkspacePackListPanel({
             const status = derivePackStatus(card.evidence);
             const workItemId = card.workItemId ?? null;
             const selected = workItemId != null && workItemId === selectedWorkItemId;
+            const rowKey = String(card.id ?? card.workItemId ?? "pack");
+            const expanded = expandedPackIds.has(rowKey);
+            const showChapters = expanded && selected && workItemId != null && !!chapters?.length;
             return (
               <div
-                key={String(card.id ?? card.workItemId ?? "pack")}
+                key={rowKey}
                 data-testid="workspace-pack-row"
                 data-selected={selected ? "true" : undefined}
+                data-expanded={expanded ? "true" : undefined}
                 className={`rounded-md border p-2 ${selected ? "border-primary bg-primary/5 ring-1 ring-primary/20" : "hover:bg-muted/20"}`}
               >
                 <div className="flex items-center gap-2">
@@ -153,6 +195,27 @@ export function WorkspacePackListPanel({
                       </div>
                     ) : null}
                   </button>
+                  <button
+                    type="button"
+                    aria-label={expanded ? "ย่อรายการบท" : "แสดงรายการบท"}
+                    aria-expanded={expanded}
+                    data-testid="workspace-pack-expand"
+                    className="rounded border px-1.5 py-1 text-muted-foreground hover:bg-muted/30"
+                    disabled={!workItemId}
+                    onClick={() => {
+                      setExpandedPackIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(rowKey)) next.delete(rowKey);
+                        else next.add(rowKey);
+                        return next;
+                      });
+                      // Chapter tabs load only for the selected pack —
+                      // expanding a non-selected pack selects it first.
+                      if (!selected && workItemId != null) onSelectPack(workItemId);
+                    }}
+                  >
+                    {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  </button>
                   <EditorialPackRowActionsMenu
                     card={card}
                     onOpenEditor={onOpenEditor}
@@ -166,6 +229,54 @@ export function WorkspacePackListPanel({
                     removePending={removePending}
                   />
                 </div>
+                {expanded ? (
+                  showChapters ? (
+                    <div className="mt-1 space-y-0.5 border-t pt-1" data-testid="workspace-pack-chapters">
+                      {(chapters ?? []).map((chapter) => {
+                        const active = chapter.sourceTabId === activeChapterTabId;
+                        return (
+                          <button
+                            key={chapter.sourceTabId}
+                            type="button"
+                            data-testid="workspace-chapter-row"
+                            data-active={active ? "true" : undefined}
+                            className={`flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs ${active ? "bg-primary/10 font-medium" : "hover:bg-muted/30"}`}
+                            onClick={() => onSelectChapter?.(chapter)}
+                            title="คลิกเพื่อเปิดบทนี้ใน Editor"
+                          >
+                            <span className="min-w-0 flex-1 truncate">{chapter.title}</span>
+                            {chapter.empty ? (
+                              <span className="inline-flex shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-800">
+                                เติมเนื้อหา
+                              </span>
+                            ) : null}
+                            {chapter.foreignFindingCount > 0 ? (
+                              <span className="inline-flex shrink-0 rounded-full border border-yellow-200 bg-yellow-50 px-1.5 py-0.5 text-[10px] text-yellow-900">
+                                คำต่างประเทศ {chapter.foreignFindingCount}
+                              </span>
+                            ) : null}
+                            {chapter.structuralIssueCount > 0 ? (
+                              <span className="inline-flex shrink-0 rounded-full border border-orange-200 bg-orange-50 px-1.5 py-0.5 text-[10px] text-orange-900">
+                                structural {chapter.structuralIssueCount}
+                              </span>
+                            ) : null}
+                            <span
+                              className={`inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${CHAPTER_STATE_CLASS[chapter.progressState]}`}
+                            >
+                              {CHAPTER_STATE_LABEL[chapter.progressState]}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="mt-1 border-t pt-1 text-[11px] text-muted-foreground" data-testid="workspace-pack-chapters-empty">
+                      {selected
+                        ? "ยังไม่มีรายการบท — ต้องมี Draft ก่อน"
+                        : "กำลังโหลดรายการบทของแพ็กนี้…"}
+                    </div>
+                  )
+                ) : null}
               </div>
             );
           })

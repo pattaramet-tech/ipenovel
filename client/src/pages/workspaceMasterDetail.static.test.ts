@@ -87,31 +87,39 @@ describe("IPE-060 compact rows + overflow actions menu", () => {
 describe("IPE-060 tabbed inline detail panel", () => {
   const page = source("client/src/pages/WorkspacePage.tsx");
 
-  it("provides Editor/QC/Stage/Publish tabs on the detail panel", () => {
-    expect(page).toContain('data-testid="pack-detail-tabs"');
-    expect(page).toContain('data-testid="pack-detail-tab-editor"');
-    expect(page).toContain('data-testid="pack-detail-tab-qc"');
-    expect(page).toContain('data-testid="pack-detail-tab-stage"');
-    expect(page).toContain('data-testid="pack-detail-tab-publish"');
+  it("IPE-062R4D: detail tabs are gone — the center is the main editor and workflow lives in the rail", () => {
+    // IPE-062R4D removed the Editor/QC/Stage/Publish tab bar as primary
+    // navigation: the center hosts the chapter editor directly, QC/workflow
+    // sections live in the right rail (editorCanvasExtraction pins K/L).
+    expect(page).not.toContain('data-testid="pack-detail-tabs"');
+    expect(page).not.toContain('data-testid="pack-detail-tab-editor"');
+    expect(page).toContain('data-testid="workspace-main-editor"');
+    expect(page).toContain('data-testid="workspace-checker-section"');
+    expect(page).toContain('data-testid="workspace-stage-section"');
+    expect(page).toContain('data-testid="workspace-publish-section"');
+    // The per-tab packDetailTab state remains only as a harmless persisted
+    // UI preference from the multi-story state model.
     expect(page).toContain('useState<"editor" | "qc" | "stage" | "publish">("editor")');
   });
 
-  it("keeps every panel mounted via hidden-class toggling (no unmount of editor state)", () => {
-    expect(page).toContain('packDetailTab === "editor" ? "grid gap-3 lg:grid-cols-2" : "hidden"');
-    expect(page).toContain('packDetailTab === "qc" ? "space-y-3 rounded-md border p-3" : "hidden"');
-    expect(page).toContain('packDetailTab === "editor" ? "rounded-md border bg-muted/10" : "hidden"');
-    expect(page).toContain('packDetailTab === "stage" ? "space-y-3 rounded-md border p-3" : "hidden"');
-    expect(page).toContain('packDetailTab === "publish" ? "space-y-3" : "hidden"');
+  it("keeps the workflow sections always mounted in the rail (collapsed details, no unmount)", () => {
+    // Collapsed <details> keep QC/Stage/Publish mounted without hidden-class
+    // tab gating.
+    expect(page).toContain('<details id="workspace-checker-section"');
+    expect(page).toContain('<details id="workspace-stage-section"');
+    expect(page).toContain('<details id="workspace-publish-section"');
   });
 
-  it("publish tab explains not-ready state instead of silently hiding", () => {
+  it("publish section explains not-ready state instead of silently hiding", () => {
     expect(page).toContain("ยังไม่พร้อมเผยแพร่ — ตรวจความพร้อมและทำ Stage ในแท็บ Stage");
   });
 
-  it("cross-tab jumps switch to the editor tab before scrolling", () => {
-    // openChapterEditor and the stage-blocker fallback both force the editor tab.
-    expect(page).toContain("setPackDetailTab(\"editor\");\n    window.requestAnimationFrame(");
-    expect(page).toContain('setPackDetailTab("editor");\n                            document\n                              .getElementById("workspace-chapter-editor")');
+  it("cross-tab jumps scroll to the editor and rail sections", () => {
+    // openChapterEditor and the stage-blocker fallback still scroll to the
+    // editor anchor; ไป Stage/Publish scroll to the rail sections.
+    expect(page).toContain('id="workspace-chapter-editor"');
+    expect(page).toContain('document.getElementById("workspace-stage-section")');
+    expect(page).toContain('document.getElementById("workspace-publish-section")');
   });
 
   it("leaves readiness evidence as the single shared source (board + detail read the same query)", () => {
@@ -130,20 +138,26 @@ describe("IPE-060 tabbed inline detail panel", () => {
 describe("IPE-060R2 — review repairs", () => {
   const page = source("client/src/pages/WorkspacePage.tsx");
 
-  it("renders the publish panel as a sibling of the stage panel (never nested inside it)", () => {
-    // Codex P1: nesting the publish panel inside the hidden stage panel made
-    // the Publish tab permanently blank. The stage panel's <div> (and every
-    // div it opens) must close BEFORE the publish panel's <div> starts.
-    const stageClass = page.indexOf('packDetailTab === "stage" ? "space-y-3 rounded-md border p-3" : "hidden"');
-    const publishClass = page.indexOf('packDetailTab === "publish" ? "space-y-3" : "hidden"');
-    expect(stageClass).toBeGreaterThan(-1);
-    expect(publishClass).toBeGreaterThan(stageClass);
-    const stageDivStart = page.lastIndexOf("<div", stageClass);
-    const publishDivStart = page.lastIndexOf("<div", publishClass);
-    const between = page.slice(stageDivStart, publishDivStart);
-    const opens = (between.match(/<div\b/g) ?? []).length - (between.match(/<div\b[^>]*\/>/g) ?? []).length;
-    const closes = (between.match(/<\/div>/g) ?? []).length;
-    expect(opens - closes).toBe(0);
+  it("renders the publish section as a sibling of the stage section inside the right rail", () => {
+    // Superseded contract (was: publish panel sibling of stage panel inside
+    // the detail tabs): both workflow sections are now collapsed <details>
+    // siblings in the right rail — never nested in one another.
+    const stageId = page.indexOf('id="workspace-stage-section"');
+    const publishId = page.indexOf('id="workspace-publish-section"');
+    expect(stageId).toBeGreaterThan(-1);
+    expect(publishId).toBeGreaterThan(stageId);
+    // The publish details opens after the stage details fully closes
+    // (details-balance from the stage marker).
+    const lines = page.split("\n");
+    const stageLine = lines.findIndex((l) => l.includes('id="workspace-stage-section"'));
+    let bal = 0;
+    let stageClose = -1;
+    for (let i = stageLine; i < lines.length; i++) {
+      bal += (lines[i].match(/<details\b/g) ?? []).length - (lines[i].match(/<\/details>/g) ?? []).length;
+      if (bal === 0) { stageClose = i; break; }
+    }
+    const publishLine = lines.findIndex((l) => l.includes('id="workspace-publish-section"'));
+    expect(publishLine).toBeGreaterThan(stageClose);
   });
 
   it("disables the destructive remove action for cards without a work item", () => {

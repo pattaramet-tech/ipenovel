@@ -150,14 +150,18 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).not.toContain("publish runs/outbox · ownership evidence");
   });
 
-  it("exposes the table-selected Episode Pack detail workflow with numbered actions and no helper paragraph", () => {
+  it("exposes the editor-first chapter workflow with numbered actions and no helper paragraph", () => {
     const source = page();
-    expect(source).toContain("Episode Pack Detail");
-    expect(source).toContain("3. ตรวจ / ตรวจซ้ำ");
+    // IPE-062R4D: the center IS the chapter editor; the numbered workflow
+    // sections live in the right rail.
+    expect(source).toContain("Chapter Editor");
+    expect(source).toContain('data-testid="workspace-main-editor"');
+    expect(source).not.toContain(">Episode Pack Detail</h2>");
+    expect(source).toContain("3. ตรวจ / ตรวจซ้ำ (QC)");
     expect(source).toContain("4. ยืนยัน Draft ปัจจุบัน");
     expect(source).toContain("5. Stage");
     expect(source).toContain("6. Publish");
-    expect(source).toContain("เลือกแพ็กจากรายการด้านซ้ายเพื่อเปิด Episode Pack Detail");
+    expect(source).toContain("เลือกแพ็กจากรายการด้านซ้ายเพื่อเริ่มแก้ตอน");
     expect(source).not.toContain("Google Docs Import → Draft → Checker → แก้ประโยค → Confirm → Stage → Controlled Publish");
   });
 
@@ -195,15 +199,15 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).not.toContain("การยืนยันผูกกับ Draft SHA256");
   });
 
-  it("puts deterministic checker before the consolidated Workspace Editor", () => {
+  it("keeps the deterministic checker and the consolidated editor in one workflow (editor-first center)", () => {
     const source = page();
-    const checker = source.indexOf("3. ตรวจ / ตรวจซ้ำ");
-    const editor = source.indexOf("Workspace Editor ·");
-    expect(checker).toBeGreaterThan(-1);
-    expect(editor).toBeGreaterThan(checker);
+    // IPE-062R4D: the main editor is the primary center surface; the checker
+    // panel lives in the right rail which follows the center in source order.
+    const editor = source.indexOf('data-testid="workspace-main-editor"');
+    const checker = source.indexOf('data-testid="workspace-checker-section"');
+    expect(editor).toBeGreaterThan(-1);
+    expect(checker).toBeGreaterThan(editor);
     expect(source).toContain('id="workspace-chapter-editor"');
-    // IPE-060: editor surface is tab-gated (hidden class when another tab is active).
-    expect(source).toContain('packDetailTab === "editor" ? "rounded-md border bg-muted/10" : "hidden"');
   });
   it("keeps Workspace Editor structure anomaly details visible while collapsed", () => {
     const source = page();
