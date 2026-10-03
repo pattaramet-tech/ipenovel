@@ -52,6 +52,16 @@ export const IPE007_UNSUPPORTED_DIRECT_TABLES = [
   "workspaceEditorialWorkItems",
   "adminGiftEntitlements",
   "adminGiftWalletAdjustments",
+  // IPE-PLUGIN-001B - plugin OAuth grants are explicit consent decisions by a
+  // specific human account; re-parenting them onto a merge target would
+  // fabricate consent the target never gave, so a source holding any of
+  // these refuses the merge (UNSUPPORTED_OWNERSHIP_DOMAIN), exactly like the
+  // workspace consent/connection tables above.
+  "pluginOAuthConsentAttempts",
+  "pluginOAuthAuthorizations",
+  "pluginOAuthAuthorizationCodes",
+  "pluginAccessGrants",
+  "pluginRefreshGrants",
 ] as const;
 
 export const IPE007_HANDLED_INDIRECT_TABLES = ["cartItems"] as const;

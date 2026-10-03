@@ -212,6 +212,42 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "user_owned_hard_block",
     reason: "Workspace connection state is user-scoped and must not be silently reassigned during recovery.",
   },
+  {
+    table: "pluginOAuthConsentAttempts",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin OAuth consent-attempt state is user-scoped and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginOAuthAuthorizations",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin OAuth grants are explicit user consent records and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginOAuthAuthorizationCodes",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin authorization codes are bound to the consenting user and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginAccessGrants",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin access tokens are bound to the consented user and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginRefreshGrants",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin refresh tokens are bound to the consented user and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginAuditLogs",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Plugin audit actor provenance is append-only historical evidence, not mutable account-owned state.",
+  },
 
   {
     table: "workspaceEditorialWorkItems",

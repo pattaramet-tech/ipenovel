@@ -428,6 +428,13 @@
       "when": 1790461800000,
       "tag": "0060_workspace_editorial_structural_confirmations",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "5",
+      "when": 1790463600000,
+      "tag": "0061_plugin_foundation",
+      "breakpoints": true
     }
   ]
 }

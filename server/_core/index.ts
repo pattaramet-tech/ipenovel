@@ -19,6 +19,8 @@ import { registerHealthReadinessRoutes } from "./healthReadiness";
 import { createUnattendedPublishWorker } from "../workspace/publishUnattendedWorker";
 import { registerWorkspaceGoogleDocsOAuthRoutes } from "../workspace/googleDocs.oauth";
 import { registerNqaPrivateInferenceBridgeRoutes } from "../nqa/semantic/privateBridge";
+import { registerPluginFoundationRoutes } from "../plugin/oauth/routes";
+import { createPluginTokenSweeper } from "../plugin/pluginTokenSweeper";
 
 // Procedures that have caused "No procedure found on path ..." client errors
 // in production when an older server build was still deployed after the
@@ -83,6 +85,12 @@ async function startServer() {
   // and the execution/provider gates must all pass or startup fails closed.
   const unattendedPublishWorker = createUnattendedPublishWorker();
 
+  // IPE-PLUGIN-001B - OAuth + MCP foundation. Routes are registered
+  // unconditionally but every handler fails closed to 404 unless
+  // PLUGIN_FOUNDATION_ENABLED is exactly "true"; the expired-artifact
+  // sweeper is a separate, independently-flagged no-op worker by default.
+  const pluginTokenSweeper = createPluginTokenSweeper();
+
   // STEP 4: construct the Express application.
   const app = express();
   // Trust the first hop reverse proxy (e.g. Manus production) so Express
@@ -123,6 +131,11 @@ async function startServer() {
   // separate from sign-in OAuth because it requests durable read-only Docs
   // scopes and stores only an encrypted refresh credential.
   registerWorkspaceGoogleDocsOAuthRoutes(app);
+  // IPE-PLUGIN-001B - /api/plugin/* OAuth 2.1 + PKCE, MCP transport
+  // skeleton, and well-known metadata. Every handler inside fails closed
+  // to 404 unless PLUGIN_FOUNDATION_ENABLED is exactly "true", so this is
+  // a no-op for any deployment that has not opted in.
+  registerPluginFoundationRoutes(app);
 
   // Dynamic sitemap (published novels only) - must be registered before the
   // Vite/static-file fallback below, otherwise /sitemap.xml would 404 and
@@ -156,10 +169,15 @@ async function startServer() {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
+  // Keep the original single-expression close handler for the publish
+  // worker (asserted verbatim by publishUnattendedWorker.static.test.ts);
+  // the plugin sweeper registers its own independent close listener.
   server.on("close", () => unattendedPublishWorker.stop());
+  server.on("close", () => pluginTokenSweeper.stop());
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
     unattendedPublishWorker.start();
+    pluginTokenSweeper.start();
     // Check upload service health
     checkUploadServiceHealth();
   });

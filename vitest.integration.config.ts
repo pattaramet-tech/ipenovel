@@ -44,6 +44,24 @@ export default defineConfig({
     // only, scoped to the integration vitest project - it has no effect on
     // Production or Preview, and this project deliberately never relies on
     // Coolify (or any other external source) to set it for tests to pass.
+    //
+    // IPE-PLUGIN-001B-Q1 - JWT_SECRET / VITE_APP_ID / PLUGIN_FOUNDATION_
+    // ENABLED follow exactly the same "TEST config only, scoped to this
+    // project" pattern, and MUST live here rather than in a test file's
+    // vi.hoisted(): vitest.integration.setupfile.ts STATICALLY imports
+    // server/db.ts, which imports server/_core/env.ts, so in every
+    // integration worker the module-level ENV const is constructed BEFORE
+    // any test file's own code (hoisted or not) has run - an in-file env
+    // pinning is always too late. Config-level env is applied to the worker
+    // process before setupFiles import, making the three values
+    // deterministic for the whole project. The values are obviously fake,
+    // non-production test fixtures (the secret signs throwaway test-session
+    // JWTs against the disposable ipenovel_test database only); setting
+    // PLUGIN_FOUNDATION_ENABLED="true" only decides whether the
+    // server/plugin/* routes' existing fail-closed flag gate (checked fresh
+    // in every handler) is open - it changes no plugin behavior, and the
+    // flag-off 404 contract is pinned by the UNIT project's
+    // routes.flagOff.test.ts, which sets its own explicit non-"true" value.
     env: {
       R2_PRIVATE_ACCOUNT_ID: "test-account",
       R2_PRIVATE_ACCESS_KEY_ID: "test-access-key-id",
@@ -52,6 +70,9 @@ export default defineConfig({
       R2_PRIVATE_BUCKET_NAME: "test-private-bucket",
       R2_PRIVATE_SIGNED_URL_EXPIRES_SECONDS: "900",
       OCR_ENABLED: "false",
+      JWT_SECRET: "integration-test-only-jwt-secret-0123456789abcdef",
+      VITE_APP_ID: "ipenovel-integration-test-app",
+      PLUGIN_FOUNDATION_ENABLED: "true",
     },
     globalSetup: ["./vitest.integration.globalsetup.ts"],
     // Runs inside each worker's own module registry, unlike globalSetup -
