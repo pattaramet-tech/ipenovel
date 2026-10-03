@@ -4067,7 +4067,7 @@ export default function WorkspacePage() {
                         </div>
                       </div>
                     </summary>
-                      <div className="grid gap-3 xl:grid-cols-[minmax(220px,0.55fr)_minmax(0,2.6fr)_minmax(260px,0.9fr)]" data-testid="workspace-editor-split">
+                      <div className="grid gap-3 xl:grid-cols-[minmax(200px,240px)_minmax(0,1fr)]" data-testid="workspace-editor-split">
                       <div className="space-y-2 xl:max-h-[52rem] xl:overflow-auto xl:pr-1" data-testid="workspace-chapter-list-pane">
                     <div className="space-y-3 border-t p-3">
                       {(draftStructureSummary.sequenceIssues.length > 0 ||
@@ -4525,456 +4525,6 @@ export default function WorkspacePage() {
                     )}
                       </div>
 
-                      <div className="space-y-2 xl:max-h-[52rem] xl:overflow-auto xl:pr-1" data-testid="workspace-assist-pane">
-                        <details className="rounded-lg border bg-background">
-                          <summary className="cursor-pointer list-none px-3 py-2">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div>
-                                <div className="font-medium">
-                                  Issue Queue · {chapterEditorIssueItems.length}
-                                </div>
-                                <div className="text-xs text-muted-foreground">
-                                  คำต่างประเทศ {chapterEditorIssueCounts.findings} · structural {chapterEditorIssueCounts.structural}
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                {chapterEditorIssueItems.length > 0
-                                  ? `${Math.min(
-                                      chapterEditorIssueIndex + 1,
-                                      chapterEditorIssueItems.length
-                                    )}/${chapterEditorIssueItems.length}`
-                                  : "ไม่มี issue"}
-                              </div>
-                            </div>
-                          </summary>
-                          <div className="space-y-2 border-t p-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="text-xs text-muted-foreground">
-                                ใช้ Previous/Next หรือปุ่ม action เพื่อไปยังจุดตรวจ · foreign finding และ structural issue อยู่ในคิวเดียวกัน
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={
-                                    !chapterEditorIssueItems.length ||
-                                    chapterEditorIssueIndex <= 0
-                                  }
-                                  onClick={() => navigateRelativeChapterEditorIssue(-1)}
-                                >
-                                  <ChevronLeft className="mr-1 h-4 w-4" />
-                                  Previous finding
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={
-                                    !chapterEditorIssueItems.length ||
-                                    chapterEditorIssueIndex >=
-                                      chapterEditorIssueItems.length - 1
-                                  }
-                                  onClick={() => navigateRelativeChapterEditorIssue(1)}
-                                >
-                                  Next finding
-                                  <ChevronRight className="ml-1 h-4 w-4" />
-                                </Button>
-                              </div>
-                            </div>
-
-                            {chapterEditorIssueItems.length ? (
-                              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-                                {chapterEditorIssueItems.map((issue, issueIndex) => {
-                                  const selected =
-                                    selectedChapterEditorIssue?.key === issue.key;
-                                  if (issue.kind === "finding") {
-                                    const finding = issue.finding as any;
-                                    const canAccept =
-                                      finding.disposition !== "accepted" &&
-                                      finding.ruleKey !== "long_english" &&
-                                      finding.ruleKey !== "source_junk";
-                                    return (
-                                      <div
-                                        key={issue.key}
-                                        className={
-                                          selected
-                                            ? "rounded-md border border-primary bg-primary/5 p-2 text-sm"
-                                            : "rounded-md border p-2 text-sm"
-                                        }
-                                      >
-                                        <div className="flex flex-wrap items-start justify-between gap-2">
-                                          <div className="min-w-0 flex-1">
-                                            <div className="font-medium">
-                                              {finding.token}
-                                            </div>
-                                            <div className="mt-1 text-xs text-muted-foreground">
-                                              {finding.ruleKey} · paragraph{" "}
-                                              {finding.paragraphOrder} ·{" "}
-                                              {finding.startOffset}-
-                                              {finding.endOffset}
-                                            </div>
-                                          </div>
-                                          <StatusPill
-                                            value={finding.disposition ?? "open"}
-                                          />
-                                        </div>
-                                        <div className="mt-2 flex flex-wrap gap-2">
-                                          <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() =>
-                                              navigateChapterEditorIssue(
-                                                issue,
-                                                issueIndex
-                                              )
-                                            }
-                                          >
-                                            ไปยังจุด
-                                          </Button>
-                                          {finding.disposition === "open" && (
-                                            <Button
-                                              type="button"
-                                              size="sm"
-                                              variant="outline"
-                                              disabled={
-                                                editorialCheckerRunStale ||
-                                                resolveEditorialFinding.isPending
-                                              }
-                                              onClick={() =>
-                                                resolveEditorialFinding.mutate({
-                                                  workspaceId:
-                                                    selectedWorkspaceId!,
-                                                  workItemId:
-                                                    selectedSourceWorkItemId!,
-                                                  findingId: finding.id,
-                                                  disposition: "fixed",
-                                                  expectedVersion:
-                                                    finding.resolutionVersion ?? 0,
-                                                  idempotencyKey: `editorial-inline-fixed:${finding.id}:${finding.resolutionVersion ?? 0}`,
-                                                })
-                                              }
-                                            >
-                                              Mark fixed
-                                            </Button>
-                                          )}
-                                          {(finding.disposition === "fixed" ||
-                                            finding.disposition === "ignored") && (
-                                            <Button
-                                              type="button"
-                                              size="sm"
-                                              variant="outline"
-                                              disabled={
-                                                editorialCheckerRunStale ||
-                                                resolveEditorialFinding.isPending
-                                              }
-                                              onClick={() =>
-                                                resolveEditorialFinding.mutate({
-                                                  workspaceId:
-                                                    selectedWorkspaceId!,
-                                                  workItemId:
-                                                    selectedSourceWorkItemId!,
-                                                  findingId: finding.id,
-                                                  disposition: "open",
-                                                  expectedVersion:
-                                                    finding.resolutionVersion ?? 0,
-                                                  idempotencyKey: `editorial-inline-reopen:${finding.id}:${finding.resolutionVersion ?? 0}`,
-                                                })
-                                              }
-                                            >
-                                              Reopen
-                                            </Button>
-                                          )}
-                                          {canAccept && (
-                                            <Button
-                                              type="button"
-                                              size="sm"
-                                              variant="outline"
-                                              disabled={
-                                                editorialCheckerRunStale ||
-                                                allowEditorialFinding.isPending
-                                              }
-                                              onClick={() =>
-                                                allowEditorialFinding.mutate({
-                                                  workspaceId:
-                                                    selectedWorkspaceId!,
-                                                  workItemId:
-                                                    selectedSourceWorkItemId!,
-                                                  findingId: finding.id,
-                                                  expectedVersion:
-                                                    finding.resolutionVersion ?? 0,
-                                                  idempotencyKey: `editorial-inline-allow:${finding.id}:${finding.resolutionVersion ?? 0}`,
-                                                })
-                                              }
-                                            >
-                                              ยอมรับคำนี้
-                                            </Button>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  }
-                                  const anomaly = issue.anomaly as any;
-                                  const relatedTabs =
-                                    structuralNavigationTabs(anomaly);
-                                  const confirmedSourceNote =
-                                    anomaly.disposition ===
-                                    "confirmed_source_note";
-                                  const repairLabel =
-                                    anomaly.anomalyType === "empty_tab"
-                                      ? "เติมเนื้อหา"
-                                      : anomaly.anomalyType ===
-                                            "heading_only_tab" ||
-                                          anomaly.anomalyType === "end_only_tab"
-                                        ? "เปิดจุดซ่อม"
-                                        : "ไปยัง structural issue";
-                                  return (
-                                    <div
-                                      key={issue.key}
-                                      className={
-                                        selected
-                                          ? "rounded-md border border-orange-500 bg-orange-50 p-2 text-sm"
-                                          : "rounded-md border p-2 text-sm"
-                                      }
-                                    >
-                                      <div className="flex flex-wrap items-start justify-between gap-2">
-                                        <div className="min-w-0 flex-1">
-                                          <div className="font-medium">
-                                            Structural · {anomaly.anomalyType}
-                                          </div>
-                                          <div className="mt-1 text-xs text-muted-foreground">
-                                            {anomaly.message}
-                                          </div>
-                                        </div>
-                                        <div className="flex flex-wrap gap-1">
-                                          {confirmedSourceNote && (
-                                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">
-                                              confirmed source note
-                                            </span>
-                                          )}
-                                          <span
-                                            className={
-                                              anomaly.severity === "error"
-                                                ? "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
-                                                : "rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-900"
-                                            }
-                                          >
-                                            {anomaly.severity}
-                                          </span>
-                                        </div>
-                                      </div>
-                                      <div className="mt-2 rounded-md bg-muted/40 p-2 text-xs text-muted-foreground">
-                                        {chapterEditorStructuralRepairGuidance(
-                                          anomaly.anomalyType
-                                        )}
-                                      </div>
-                                      <div className="mt-2 flex flex-wrap gap-2">
-                                        <Button
-                                          type="button"
-                                          size="sm"
-                                          variant="outline"
-                                          onClick={() =>
-                                            navigateChapterEditorIssue(
-                                              issue,
-                                              issueIndex
-                                            )
-                                          }
-                                        >
-                                          {repairLabel}
-                                        </Button>
-                                        {relatedTabs.map((tab: any) => (
-                                          <Button
-                                            key={tab.sourceTabId}
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            disabled={
-                                              editEditorialDraft.isPending
-                                            }
-                                            onClick={() =>
-                                              openChapterEditor(tab)
-                                            }
-                                          >
-                                            {anomaly.anomalyType ===
-                                            "missing_expected_chapter"
-                                              ? "เปิดแท็บใกล้เคียง"
-                                              : "เปิดแท็บ"}{" "}
-                                            {tab.title}
-                                          </Button>
-                                        ))}
-                                        {anomaly.anomalyType ===
-                                          "source_note_only" && (
-                                          <Button
-                                            type="button"
-                                            size="sm"
-                                            variant={
-                                              confirmedSourceNote
-                                                ? "outline"
-                                                : "default"
-                                            }
-                                            disabled={
-                                              editorialCheckerRunStale ||
-                                              setStructuralConfirmation.isPending
-                                            }
-                                            onClick={() =>
-                                              setStructuralConfirmation.mutate({
-                                                workspaceId:
-                                                  selectedWorkspaceId!,
-                                                workItemId:
-                                                  selectedSourceWorkItemId!,
-                                                anomalyId: anomaly.id,
-                                                confirmed:
-                                                  !confirmedSourceNote,
-                                                expectedVersion:
-                                                  anomaly.confirmationVersion ??
-                                                  0,
-                                              })
-                                            }
-                                          >
-                                            {confirmedSourceNote
-                                              ? "ยกเลิกยืนยันหมายเหตุต้นฉบับ"
-                                              : "ยืนยันว่าเป็นหมายเหตุต้นฉบับ"}
-                                          </Button>
-                                        )}
-                                        <Button
-                                          type="button"
-                                          size="sm"
-                                          variant="ghost"
-                                          disabled={
-                                            !latestEditorialDraft ||
-                                            runEditorialForeignChecker.isPending
-                                          }
-                                          onClick={() => {
-                                            if (!latestEditorialDraft) return;
-                                            runEditorialForeignChecker.mutate({
-                                              workspaceId:
-                                                selectedWorkspaceId!,
-                                              workItemId:
-                                                selectedSourceWorkItemId!,
-                                              expectedDraftId:
-                                                latestEditorialDraft.id,
-                                            });
-                                          }}
-                                        >
-                                          ตรวจ structural ซ้ำ
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                                ไม่พบ foreign finding หรือ structural issue ในบทนี้
-                              </div>
-                            )}
-                          </div>
-                        </details>
-                    {editorTarget && !editorTarget.findingId && (
-                      <div className="space-y-2 rounded-md border bg-muted/20 p-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <div className="font-medium">{editorTarget.label}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {editorTarget.kind} · Draft v{editorTarget.draftVersion} · auto-save หลังหยุดพิมพ์ 3 วินาที
-                            </div>
-                          </div>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={editEditorialDraft.isPending}
-                            onClick={() => {
-                              setEditorTarget(undefined);
-                              setEditorText("");
-                            }}
-                          >
-                            ยกเลิก
-                          </Button>
-                        </div>
-                        <textarea
-                          className="min-h-28 w-full rounded-md border bg-background p-3 text-sm"
-                          value={editorText}
-                          maxLength={200000}
-                          disabled={editEditorialDraft.isPending}
-                          onChange={(event) => setEditorText(event.target.value)}
-                        />
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                          <span>
-                            {editorText.length.toLocaleString()} ตัวอักษร · ห้ามสร้างบรรทัดใหม่ใน mutation เดียว
-                          </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            disabled={
-                              editEditorialDraft.isPending ||
-                              editorText === editorTarget.expectedText
-                            }
-                            onClick={() => submitEditorEdit("manual")}
-                          >
-                            {editEditorialDraft.isPending && (
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            )}
-                            บันทึกทันที + ตรวจซ้ำ
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                      {editorialFullCheckerData?.checker && (
-                        <div className="space-y-2 rounded-lg border bg-background p-3">
-                          <div className="font-medium">Full Checker vNext</div>
-                          <div className="text-xs text-muted-foreground">
-                            {editorialFullCheckerData.checker.engineVersion} · {editorialFullCheckerData.checker.findingCount} findings · {editorialFullCheckerData.checker.status}
-                          </div>
-                          {(editorialFullCheckerData.checker.findings ?? []).slice(0, 8).map((finding: any) => (
-                            <div key={finding.findingId} className="rounded border p-2 text-xs">
-                              <span className="font-medium">{finding.code}</span> · {finding.evidence}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      <div className="space-y-2 rounded-lg border bg-background p-3">
-                        <div className="text-sm font-medium">Safe Transform Preview</div>
-                        <div className="text-xs text-muted-foreground">Preview เท่านั้น · ไม่มีการ apply อัตโนมัติ</div>
-                        {[...(editorialFullCheckerData?.transforms ?? []), editorialFullCheckerData?.allSafe]
-                          .filter((preview: any) => preview?.changed)
-                          .map((preview: any) => (
-                            <div key={preview.transformId} className="rounded border p-2 text-xs">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="font-medium">{preview.ruleCode} · {preview.safetyClass} · {preview.changedParagraphCount} paragraphs · {preview.idempotent ? "idempotent" : "idempotency failed"}</div>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  disabled={!latestEditorialDraft || !preview.idempotent || applyEditorialFullCheckerTransform.isPending}
-                                  onClick={() => {
-                                    if (!latestEditorialDraft) return;
-                                    applyEditorialFullCheckerTransform.mutate({
-                                      workspaceId: selectedWorkspaceId!,
-                                      workItemId: selectedSourceWorkItemId!,
-                                      expectedDraftId: latestEditorialDraft.id,
-                                      expectedDraftVersion: latestEditorialDraft.version,
-                                      expectedDraftSha256: latestEditorialDraft.draftSha256,
-                                      transformCode: preview.ruleCode,
-                                      expectedTransformId: preview.transformId,
-                                      idempotencyKey: `full-checker:${latestEditorialDraft.id}:${preview.transformId}`,
-                                    });
-                                  }}
-                                >
-                                  Apply เป็น Draft revision ใหม่
-                                </Button>
-                              </div>
-                              {(preview.changes ?? []).slice(0, 4).map((change: any, index: number) => (
-                                <div key={index} className="mt-1 grid gap-1 rounded bg-muted/30 p-2 md:grid-cols-2">
-                                  <div>ก่อน: {change.before || "(empty)"}</div>
-                                  <div>หลัง: {change.after || "(empty)"}</div>
-                                </div>
-                              ))}
-                            </div>
-                          ))}
-                      </div>
-                      </div>
                       </div>
                   </div>
                   </details>
@@ -5424,6 +4974,456 @@ export default function WorkspacePage() {
                     publishReady={Boolean(editorialApprovalData?.readyToPublish)}
                     onGoPublish={() => setPackDetailTab("publish")}
                   />
+                  <div className="space-y-2" data-testid="workspace-assist-pane">
+                        <details className="rounded-lg border bg-background">
+                          <summary className="cursor-pointer list-none px-3 py-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <div className="font-medium">
+                                  Issue Queue · {chapterEditorIssueItems.length}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  คำต่างประเทศ {chapterEditorIssueCounts.findings} · structural {chapterEditorIssueCounts.structural}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                {chapterEditorIssueItems.length > 0
+                                  ? `${Math.min(
+                                      chapterEditorIssueIndex + 1,
+                                      chapterEditorIssueItems.length
+                                    )}/${chapterEditorIssueItems.length}`
+                                  : "ไม่มี issue"}
+                              </div>
+                            </div>
+                          </summary>
+                          <div className="space-y-2 border-t p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-xs text-muted-foreground">
+                                ใช้ Previous/Next หรือปุ่ม action เพื่อไปยังจุดตรวจ · foreign finding และ structural issue อยู่ในคิวเดียวกัน
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    !chapterEditorIssueItems.length ||
+                                    chapterEditorIssueIndex <= 0
+                                  }
+                                  onClick={() => navigateRelativeChapterEditorIssue(-1)}
+                                >
+                                  <ChevronLeft className="mr-1 h-4 w-4" />
+                                  Previous finding
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    !chapterEditorIssueItems.length ||
+                                    chapterEditorIssueIndex >=
+                                      chapterEditorIssueItems.length - 1
+                                  }
+                                  onClick={() => navigateRelativeChapterEditorIssue(1)}
+                                >
+                                  Next finding
+                                  <ChevronRight className="ml-1 h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+
+                            {chapterEditorIssueItems.length ? (
+                              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                                {chapterEditorIssueItems.map((issue, issueIndex) => {
+                                  const selected =
+                                    selectedChapterEditorIssue?.key === issue.key;
+                                  if (issue.kind === "finding") {
+                                    const finding = issue.finding as any;
+                                    const canAccept =
+                                      finding.disposition !== "accepted" &&
+                                      finding.ruleKey !== "long_english" &&
+                                      finding.ruleKey !== "source_junk";
+                                    return (
+                                      <div
+                                        key={issue.key}
+                                        className={
+                                          selected
+                                            ? "rounded-md border border-primary bg-primary/5 p-2 text-sm"
+                                            : "rounded-md border p-2 text-sm"
+                                        }
+                                      >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                          <div className="min-w-0 flex-1">
+                                            <div className="font-medium">
+                                              {finding.token}
+                                            </div>
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                              {finding.ruleKey} · paragraph{" "}
+                                              {finding.paragraphOrder} ·{" "}
+                                              {finding.startOffset}-
+                                              {finding.endOffset}
+                                            </div>
+                                          </div>
+                                          <StatusPill
+                                            value={finding.disposition ?? "open"}
+                                          />
+                                        </div>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                              navigateChapterEditorIssue(
+                                                issue,
+                                                issueIndex
+                                              )
+                                            }
+                                          >
+                                            ไปยังจุด
+                                          </Button>
+                                          {finding.disposition === "open" && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                resolveEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                resolveEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  disposition: "fixed",
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-fixed:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              Mark fixed
+                                            </Button>
+                                          )}
+                                          {(finding.disposition === "fixed" ||
+                                            finding.disposition === "ignored") && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                resolveEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                resolveEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  disposition: "open",
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-reopen:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              Reopen
+                                            </Button>
+                                          )}
+                                          {canAccept && (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                editorialCheckerRunStale ||
+                                                allowEditorialFinding.isPending
+                                              }
+                                              onClick={() =>
+                                                allowEditorialFinding.mutate({
+                                                  workspaceId:
+                                                    selectedWorkspaceId!,
+                                                  workItemId:
+                                                    selectedSourceWorkItemId!,
+                                                  findingId: finding.id,
+                                                  expectedVersion:
+                                                    finding.resolutionVersion ?? 0,
+                                                  idempotencyKey: `editorial-inline-allow:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                                                })
+                                              }
+                                            >
+                                              ยอมรับคำนี้
+                                            </Button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+                                  const anomaly = issue.anomaly as any;
+                                  const relatedTabs =
+                                    structuralNavigationTabs(anomaly);
+                                  const confirmedSourceNote =
+                                    anomaly.disposition ===
+                                    "confirmed_source_note";
+                                  const repairLabel =
+                                    anomaly.anomalyType === "empty_tab"
+                                      ? "เติมเนื้อหา"
+                                      : anomaly.anomalyType ===
+                                            "heading_only_tab" ||
+                                          anomaly.anomalyType === "end_only_tab"
+                                        ? "เปิดจุดซ่อม"
+                                        : "ไปยัง structural issue";
+                                  return (
+                                    <div
+                                      key={issue.key}
+                                      className={
+                                        selected
+                                          ? "rounded-md border border-orange-500 bg-orange-50 p-2 text-sm"
+                                          : "rounded-md border p-2 text-sm"
+                                      }
+                                    >
+                                      <div className="flex flex-wrap items-start justify-between gap-2">
+                                        <div className="min-w-0 flex-1">
+                                          <div className="font-medium">
+                                            Structural · {anomaly.anomalyType}
+                                          </div>
+                                          <div className="mt-1 text-xs text-muted-foreground">
+                                            {anomaly.message}
+                                          </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-1">
+                                          {confirmedSourceNote && (
+                                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">
+                                              confirmed source note
+                                            </span>
+                                          )}
+                                          <span
+                                            className={
+                                              anomaly.severity === "error"
+                                                ? "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
+                                                : "rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-900"
+                                            }
+                                          >
+                                            {anomaly.severity}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="mt-2 rounded-md bg-muted/40 p-2 text-xs text-muted-foreground">
+                                        {chapterEditorStructuralRepairGuidance(
+                                          anomaly.anomalyType
+                                        )}
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-2">
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() =>
+                                            navigateChapterEditorIssue(
+                                              issue,
+                                              issueIndex
+                                            )
+                                          }
+                                        >
+                                          {repairLabel}
+                                        </Button>
+                                        {relatedTabs.map((tab: any) => (
+                                          <Button
+                                            key={tab.sourceTabId}
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={
+                                              editEditorialDraft.isPending
+                                            }
+                                            onClick={() =>
+                                              openChapterEditor(tab)
+                                            }
+                                          >
+                                            {anomaly.anomalyType ===
+                                            "missing_expected_chapter"
+                                              ? "เปิดแท็บใกล้เคียง"
+                                              : "เปิดแท็บ"}{" "}
+                                            {tab.title}
+                                          </Button>
+                                        ))}
+                                        {anomaly.anomalyType ===
+                                          "source_note_only" && (
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant={
+                                              confirmedSourceNote
+                                                ? "outline"
+                                                : "default"
+                                            }
+                                            disabled={
+                                              editorialCheckerRunStale ||
+                                              setStructuralConfirmation.isPending
+                                            }
+                                            onClick={() =>
+                                              setStructuralConfirmation.mutate({
+                                                workspaceId:
+                                                  selectedWorkspaceId!,
+                                                workItemId:
+                                                  selectedSourceWorkItemId!,
+                                                anomalyId: anomaly.id,
+                                                confirmed:
+                                                  !confirmedSourceNote,
+                                                expectedVersion:
+                                                  anomaly.confirmationVersion ??
+                                                  0,
+                                              })
+                                            }
+                                          >
+                                            {confirmedSourceNote
+                                              ? "ยกเลิกยืนยันหมายเหตุต้นฉบับ"
+                                              : "ยืนยันว่าเป็นหมายเหตุต้นฉบับ"}
+                                          </Button>
+                                        )}
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="ghost"
+                                          disabled={
+                                            !latestEditorialDraft ||
+                                            runEditorialForeignChecker.isPending
+                                          }
+                                          onClick={() => {
+                                            if (!latestEditorialDraft) return;
+                                            runEditorialForeignChecker.mutate({
+                                              workspaceId:
+                                                selectedWorkspaceId!,
+                                              workItemId:
+                                                selectedSourceWorkItemId!,
+                                              expectedDraftId:
+                                                latestEditorialDraft.id,
+                                            });
+                                          }}
+                                        >
+                                          ตรวจ structural ซ้ำ
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                                ไม่พบ foreign finding หรือ structural issue ในบทนี้
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                    {editorTarget && !editorTarget.findingId && (
+                      <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="font-medium">{editorTarget.label}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {editorTarget.kind} · Draft v{editorTarget.draftVersion} · auto-save หลังหยุดพิมพ์ 3 วินาที
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={editEditorialDraft.isPending}
+                            onClick={() => {
+                              setEditorTarget(undefined);
+                              setEditorText("");
+                            }}
+                          >
+                            ยกเลิก
+                          </Button>
+                        </div>
+                        <textarea
+                          className="min-h-28 w-full rounded-md border bg-background p-3 text-sm"
+                          value={editorText}
+                          maxLength={200000}
+                          disabled={editEditorialDraft.isPending}
+                          onChange={(event) => setEditorText(event.target.value)}
+                        />
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                          <span>
+                            {editorText.length.toLocaleString()} ตัวอักษร · ห้ามสร้างบรรทัดใหม่ใน mutation เดียว
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={
+                              editEditorialDraft.isPending ||
+                              editorText === editorTarget.expectedText
+                            }
+                            onClick={() => submitEditorEdit("manual")}
+                          >
+                            {editEditorialDraft.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            บันทึกทันที + ตรวจซ้ำ
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                      {editorialFullCheckerData?.checker && (
+                        <div className="space-y-2 rounded-lg border bg-background p-3">
+                          <div className="font-medium">Full Checker vNext</div>
+                          <div className="text-xs text-muted-foreground">
+                            {editorialFullCheckerData.checker.engineVersion} · {editorialFullCheckerData.checker.findingCount} findings · {editorialFullCheckerData.checker.status}
+                          </div>
+                          {(editorialFullCheckerData.checker.findings ?? []).slice(0, 8).map((finding: any) => (
+                            <div key={finding.findingId} className="rounded border p-2 text-xs">
+                              <span className="font-medium">{finding.code}</span> · {finding.evidence}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="space-y-2 rounded-lg border bg-background p-3">
+                        <div className="text-sm font-medium">Safe Transform Preview</div>
+                        <div className="text-xs text-muted-foreground">Preview เท่านั้น · ไม่มีการ apply อัตโนมัติ</div>
+                        {[...(editorialFullCheckerData?.transforms ?? []), editorialFullCheckerData?.allSafe]
+                          .filter((preview: any) => preview?.changed)
+                          .map((preview: any) => (
+                            <div key={preview.transformId} className="rounded border p-2 text-xs">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="font-medium">{preview.ruleCode} · {preview.safetyClass} · {preview.changedParagraphCount} paragraphs · {preview.idempotent ? "idempotent" : "idempotency failed"}</div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={!latestEditorialDraft || !preview.idempotent || applyEditorialFullCheckerTransform.isPending}
+                                  onClick={() => {
+                                    if (!latestEditorialDraft) return;
+                                    applyEditorialFullCheckerTransform.mutate({
+                                      workspaceId: selectedWorkspaceId!,
+                                      workItemId: selectedSourceWorkItemId!,
+                                      expectedDraftId: latestEditorialDraft.id,
+                                      expectedDraftVersion: latestEditorialDraft.version,
+                                      expectedDraftSha256: latestEditorialDraft.draftSha256,
+                                      transformCode: preview.ruleCode,
+                                      expectedTransformId: preview.transformId,
+                                      idempotencyKey: `full-checker:${latestEditorialDraft.id}:${preview.transformId}`,
+                                    });
+                                  }}
+                                >
+                                  Apply เป็น Draft revision ใหม่
+                                </Button>
+                              </div>
+                              {(preview.changes ?? []).slice(0, 4).map((change: any, index: number) => (
+                                <div key={index} className="mt-1 grid gap-1 rounded bg-muted/30 p-2 md:grid-cols-2">
+                                  <div>ก่อน: {change.before || "(empty)"}</div>
+                                  <div>หลัง: {change.after || "(empty)"}</div>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                      </div>
+                  </div>
                 </>
               ) : (
                 <Card className="p-4 text-sm text-muted-foreground">

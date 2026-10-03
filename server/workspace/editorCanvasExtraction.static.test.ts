@@ -23,9 +23,11 @@ describe("IPE-062R4A — three-pane editor surface", () => {
     'data-testid="workspace-chapter-list-pane"',
     'data-testid="workspace-chapter-editor-pane"'
   );
+  // IPE-062R4C: the assist rail moved to the OUTER right panel, so the
+  // canvas pane slice runs to the stage panel that follows the editor.
   const canvasPane = sliceBetween(
     'data-testid="workspace-chapter-editor-pane"',
-    'data-testid="workspace-assist-pane"'
+    '<div className={packDetailTab === "stage"'
   );
   const assist = page.slice(page.indexOf('data-testid="workspace-assist-pane"'));
 
@@ -41,7 +43,7 @@ describe("IPE-062R4A — three-pane editor surface", () => {
     expect(navigator).toContain("openChapterEditor(tab)");
   });
 
-  it("B. renders the selected chapter's editor in the central canvas", () => {
+  it("B. renders the selected chapter's editor in the central canvas at full remaining width", () => {
     expect(canvasPane).toContain("<ChapterEditorCanvas");
     // The canvas component itself carries the editing textarea (defined once
     // at module level, invoked exactly here).
@@ -51,14 +53,19 @@ describe("IPE-062R4A — three-pane editor surface", () => {
     );
     expect(canvasComponent).toContain('id="workspace-chapter-editor-canvas"');
     expect(canvasPane).toContain("chapterEditorTarget.title");
-    // Canvas is primary: it spans the majority of the editor grid.
-    expect(page).toContain("xl:grid-cols-[minmax(220px,0.55fr)_minmax(0,2.6fr)_minmax(260px,0.9fr)]");
+    // IPE-062R4C: the inner editor split is TWO columns — a bounded
+    // navigator rail and the editor taking ALL remaining width (min-w-0,
+    // no fixed assist column inside the Episode Pack Detail).
+    expect(page).toContain("xl:grid-cols-[minmax(200px,240px)_minmax(0,1fr)]");
+    const editorPaneOpen = page.indexOf('data-testid="workspace-chapter-editor-pane"');
+    const editorPaneLine = page.slice(page.lastIndexOf("<div", editorPaneOpen), editorPaneOpen);
+    expect(editorPaneLine).toContain("min-w-0");
   });
 
-  it("B2. the three panes are direct grid siblings (assist rail never nests in the editor pane)", () => {
-    // Div-balance from each pane marker to its wrapper close: the editor
-    // pane must close BEFORE the assist pane opens (Codex P1 on the first
-    // cut rendered the rail inside the hidden-height editor wrapper).
+  it("B2. the editor split has exactly TWO direct columns and the assist rail lives in the outer right panel", () => {
+    // Codex P1 + staging acceptance regression: a third assist column nested
+    // inside the Episode Pack Detail squeezed the canvas back to a narrow
+    // column. Pin the structure directly:
     const lines = page.split("\n");
     const balanceFrom = (marker: string) => {
       const open = lines.findIndex((l) => l.includes(marker));
@@ -73,11 +80,28 @@ describe("IPE-062R4A — three-pane editor surface", () => {
       }
       return null;
     };
+    const split = balanceFrom('data-testid="workspace-editor-split"');
     const editor = balanceFrom('data-testid="workspace-chapter-editor-pane"');
+    const navigator = balanceFrom('data-testid="workspace-chapter-list-pane"');
     const assist = balanceFrom('data-testid="workspace-assist-pane"');
+    const sidePanel = page.indexOf('data-testid="workspace-side-panel"');
+    expect(split).not.toBeNull();
     expect(editor).not.toBeNull();
+    expect(navigator).not.toBeNull();
     expect(assist).not.toBeNull();
-    expect(assist!.open).toBeGreaterThan(editor!.close);
+    // Both inner panes close INSIDE the split (direct children)...
+    expect(editor!.close).toBeLessThan(split!.close);
+    expect(navigator!.close).toBeLessThan(split!.close);
+    // ...and the assist pane is NOT a third child: it opens after the whole
+    // split closed, inside the outer side panel.
+    expect(assist!.open).toBeGreaterThan(split!.close);
+    const sidePanelLine = page
+      .slice(0, page.indexOf('data-testid="workspace-side-panel"'))
+      .split("\n").length;
+    expect(sidePanelLine).toBeGreaterThan(0);
+    expect(assist!.open).toBeGreaterThan(sidePanelLine);
+    // No second nested grid template inside the Episode Pack Detail.
+    expect(page).not.toContain("minmax(260px,0.9fr)]\" data-testid=\"workspace-assist-pane\"");
   });
 
   it("C. keeps exactly ONE active editor surface (no per-tab editors mounted)", () => {
@@ -136,7 +160,13 @@ describe("IPE-062R4A — three-pane editor surface", () => {
     expect(canvasPane).toContain("onClick={submitChapterEditorEdit}");
   });
 
-  it("H. QC/finding data follows the active chapter in the assist rail", () => {
+  it("H. QC/finding data follows the active chapter from the outer right rail", () => {
+    // IPE-062R4C: assist content renders in the outer side panel, not as a
+    // nested third column inside the Episode Pack Detail.
+    const sidePanel = page.indexOf('data-testid="workspace-side-panel"');
+    const assistStart = page.indexOf('data-testid="workspace-assist-pane"');
+    expect(sidePanel).toBeGreaterThan(-1);
+    expect(assistStart).toBeGreaterThan(sidePanel);
     expect(assist).toContain("Issue Queue · {chapterEditorIssueItems.length}");
     expect(assist).toContain("chapterEditorIssueItems.map");
     expect(assist).toContain("navigateRelativeChapterEditorIssue");
