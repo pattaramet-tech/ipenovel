@@ -2,9 +2,11 @@
 import { readFileSync } from "node:fs";
 const read = (p: string) => readFileSync(p, "utf8");
 describe("IPE-056-K discoverability + public reader TOC regression", () => {
-  it("puts tab exclusion directly on visible Draft structure rows", () => {
+  it("puts tab exclusion directly on the visible draft structure (tools rail)", () => {
     const page = read("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("candidate.sourceTabId === tab.sourceTabId");
+    // IPE-062R4D: exclusion targets the open chapter's tab via the same
+    // guarded mutation (the old per-row buttons retired with the navigator).
+    expect(page).toContain("candidate.sourceTabId === chapterEditorTarget.sourceTabId");
     expect(page).toContain("excludeEditorialTab.mutate");
   });
   it("allows anonymous users to fetch only published episode TOC metadata", () => {

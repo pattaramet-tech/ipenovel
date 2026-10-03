@@ -174,27 +174,30 @@ describe("IPE-062 primary workflow actions", () => {
     expect(page).toContain("<WorkspaceWorkflowActions");
     expect(page).toContain("onSaveCheck={submitChapterEditorEdit}");
     expect(page).toContain("onConfirm={submitApprovalConfirm}");
-    expect(page).toContain('onGoStage={() => setPackDetailTab("stage")}');
-    expect(page).toContain('onGoPublish={() => setPackDetailTab("publish")}');
+    // IPE-062R4D: ไป Stage / Publish scroll to the rail sections instead of
+    // switching detail tabs.
+    expect(page).toContain('document.getElementById("workspace-stage-section")');
+    expect(page).toContain('document.getElementById("workspace-publish-section")');
   });
 });
 
-describe("IPE-062 in-place editor split (no scroll-to-editor)", () => {
-  it("splits the editor detail into chapter list | canvas panes", () => {
-    expect(page).toContain('data-testid="workspace-editor-split"');
-    expect(page).toContain('data-testid="workspace-chapter-list-pane"');
+describe("IPE-062R4D editor-first center (supersedes the in-place split)", () => {
+  it("hosts the chapter editor directly in the center with an empty-selection hint", () => {
+    // The R4A inner split (chapter list | canvas) is superseded: the chapter
+    // navigator is the pack/chapter tree in the left rail.
+    expect(page).toContain('data-testid="workspace-main-editor"');
     expect(page).toContain('data-testid="workspace-chapter-editor-pane"');
-    // The editor opens in place; an empty selection explains itself.
+    expect(page).not.toContain('data-testid="workspace-editor-split"');
     expect(page).toContain('data-testid="workspace-chapter-editor-empty"');
     expect(page).toContain("Editor จะเปิดในพื้นที่นี้ทันที ไม่ต้องเลื่อนหา");
   });
 
-  it("collapses pack import sources out of the editor surface", () => {
+  it("collapses pack import sources below the editor surface", () => {
     expect(page).toContain('data-testid="workspace-pack-imports"');
+    // Secondary block sits AFTER the main editor in source order.
+    const editorStart = page.indexOf('data-testid="workspace-main-editor"');
     const importsStart = page.indexOf('data-testid="workspace-pack-imports"');
-    const gridStart = page.indexOf('packDetailTab === "editor" ? "grid gap-3 lg:grid-cols-2" : "hidden"');
-    expect(importsStart).toBeGreaterThan(-1);
-    expect(gridStart).toBeGreaterThan(importsStart);
+    expect(importsStart).toBeGreaterThan(editorStart);
   });
 });
 
