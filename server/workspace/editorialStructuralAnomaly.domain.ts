@@ -87,6 +87,18 @@ function isSourceNote(value: string) {
   return SOURCE_NOTE_RE.test(normalizeForShape(value));
 }
 
+/**
+ * IPE-060B: the single canonical source-note heading that portals emit as an
+ * intentional non-narrative tab. Exact-match only, after the same editorial
+ * normalization the shape checks use — no contains/startsWith/broad regex.
+ * Every other source-note spelling keeps the existing blocking behavior.
+ */
+export const EXACT_ACCEPTED_SOURCE_NOTE_TEXT = "หมายเหตุจากต้นฉบับ";
+
+export function isExactAcceptedSourceNote(value: string) {
+  return normalizeForShape(value) === EXACT_ACCEPTED_SOURCE_NOTE_TEXT;
+}
+
 function parseIntegerChapterNumber(value: string | null | undefined) {
   const match = String(value ?? "").match(/^0*(\d+)$/);
   if (!match) return null;
@@ -205,6 +217,16 @@ function classifyTab(tab: EditorialStructuralTabInput) {
   if (meaningful.length === 0) return "empty_tab" as const;
   if (withoutEnd.length === 0) return "end_only_tab" as const;
   if (titleLooksLikeSourceNote && narrativeRows.length === 0) {
+    // IPE-060B: a tab identified by the exact canonical source note whose
+    // content is only that note (optionally plus an end marker) is an
+    // intentional non-narrative tab — accepted as-is, not an anomaly.
+    if (
+      (isExactAcceptedSourceNote(tab.tabTitle) ||
+        isExactAcceptedSourceNote(tab.chapterTitle ?? "")) &&
+      meaningful.every(text => isExactAcceptedSourceNote(text) || isEndMarker(text))
+    ) {
+      return null;
+    }
     return "source_note_only" as const;
   }
   if (

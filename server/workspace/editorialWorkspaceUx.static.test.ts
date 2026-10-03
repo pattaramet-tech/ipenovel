@@ -202,7 +202,8 @@ describe("Workspace Editorial Preview UX", () => {
     expect(checker).toBeGreaterThan(-1);
     expect(editor).toBeGreaterThan(checker);
     expect(source).toContain('id="workspace-chapter-editor"');
-    expect(source).toContain('className="rounded-md border bg-muted/10"');
+    // IPE-060: editor surface is tab-gated (hidden class when another tab is active).
+    expect(source).toContain('packDetailTab === "editor" ? "rounded-md border bg-muted/10" : "hidden"');
   });
   it("keeps Workspace Editor structure anomaly details visible while collapsed", () => {
     const source = page();

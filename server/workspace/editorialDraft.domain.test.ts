@@ -30,6 +30,41 @@ describe("editorial draft Production-derived preparation", () => {
     expect(normalizeEditorialText("\uFEFFบทที่\u00A0๑\r\n")).toBe("บทที่1");
   });
 
+  it("IPE-060R1: maps every Thai digit ๐-๙ character-by-character", () => {
+    expect(thaiDigitsToArabic("๑๒๓๔๕๖๗๘๙๐")).toBe("1234567890");
+  });
+
+  it("IPE-060R1: preserves leading zeros, punctuation and separators", () => {
+    expect(thaiDigitsToArabic("๐๐๑")).toBe("001");
+    expect(thaiDigitsToArabic("๑,๒๕๐.๕๐")).toBe("1,250.50");
+    expect(thaiDigitsToArabic("ตอน ๑๒/๒๐")).toBe("ตอน 12/20");
+    expect(thaiDigitsToArabic("ตอนที่ ๑๒๓")).toBe("ตอนที่ 123");
+    expect(thaiDigitsToArabic("ปี ๒๕๖๙")).toBe("ปี 2569");
+  });
+
+  it("IPE-060R1: handles mixed Thai/Arabic digits without touching other text", () => {
+    expect(thaiDigitsToArabic("ตอน 12 และ ๓๔")).toBe("ตอน 12 และ 34");
+    expect(thaiDigitsToArabic("เลข ๑๒๓ และ 456 และ ๗๘")).toBe("เลข 123 และ 456 และ 78");
+    expect(thaiDigitsToArabic("บทที่ 123")).toBe("บทที่ 123");
+  });
+
+  it("IPE-060R1: normalization is idempotent", () => {
+    const samples = [
+      "๑๒๓๔๕๖๗๘๙๐",
+      "ตอนที่ ๑๒๓",
+      "๐๐๑",
+      "๑,๒๕๐.๕๐",
+      "ตอน ๑๒/๒๐",
+      "ตอน 12 และ ๓๔",
+      "หมายเหตุ ๑๒๓",
+    ];
+    for (const sample of samples) {
+      const once = normalizeEditorialText(sample);
+      expect(normalizeEditorialText(once)).toBe(once);
+      expect(thaiDigitsToArabic(thaiDigitsToArabic(sample))).toBe(thaiDigitsToArabic(sample));
+    }
+  });
+
   it("normalizes chapter prefixes while keeping title on the same paragraph", () => {
     expect(normalizeChapterHeading("ตอนที่ ๑๒： ชื่อบท")).toBe(
       "บทที่ 12 ชื่อบท"

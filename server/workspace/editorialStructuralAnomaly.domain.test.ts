@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   editorialDuplicateSimilarity,
   evaluateEditorialStructuralAnomalies,
+  isExactAcceptedSourceNote,
   parseEditorialEpisodeRange,
   type EditorialStructuralTabInput,
 } from "./editorialStructuralAnomaly.domain";
@@ -244,5 +245,129 @@ describe("Editorial Structural Anomaly domain", () => {
         row.anomalyType.startsWith("duplicate_content")
       )
     ).toHaveLength(0);
+  });
+});
+
+  it("IPE-060B B. exact canonical source-note tab is accepted, not a blocking anomaly", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "205",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "205",
+          chapterTitle: "หมายเหตุจากต้นฉบับ",
+          tabTitle: "หมายเหตุจากต้นฉบับ",
+          paragraphs: ["หมายเหตุจากต้นฉบับ", "จบตอน"],
+        }),
+      ],
+    });
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+    expect(result.summary.counts.source_note_only).toBe(0);
+  });
+
+  it("IPE-060B C. numbered heading with source note keeps the original blocking behavior", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "138",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "138",
+          chapterTitle: "หมายเหตุจากต้นฉบับ",
+          tabTitle: "บทที่ 138 หมายเหตุจากต้นฉบับ",
+          paragraphs: ["บทที่ 138 หมายเหตุจากต้นฉบับ", "จบตอน"],
+        }),
+      ],
+    });
+    expect(result.summary.counts.source_note_only).toBe(1);
+    expect(result.summary.blockingAnomalyCount).toBe(1);
+  });
+
+  it("IPE-060B D. near-miss spelling หมายเหตุต้นฉบับ keeps the original behavior", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "7",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "7",
+          chapterTitle: "หมายเหตุต้นฉบับ",
+          tabTitle: "หมายเหตุต้นฉบับ",
+          paragraphs: ["หมายเหตุต้นฉบับ", "จบตอน"],
+        }),
+      ],
+    });
+    expect(result.summary.counts.source_note_only).toBe(1);
+    expect(result.summary.blockingAnomalyCount).toBe(1);
+  });
+
+  it("IPE-060B G. whitespace-variant note spelling is NOT exempt and stays ordinary content", () => {
+    // IPE-060R2 review pin: normalizeForShape collapses whitespace runs but
+    // keeps a single space, so "หมายเหตุ จากต้นฉบับ" cannot equal the
+    // space-free accepted constant — the exception must stay exact. The
+    // resulting "no anomaly" outcome comes from the tab being ordinary
+    // content (the broad SOURCE_NOTE_RE never matched spaced spellings,
+    // before IPE-060B as well), not from the exact-note exemption.
+    expect(isExactAcceptedSourceNote("  หมายเหตุ  จากต้นฉบับ  ")).toBe(false);
+    expect(isExactAcceptedSourceNote("หมายเหตุจากต้นฉบับ")).toBe(true);
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "205",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "205",
+          chapterTitle: "  หมายเหตุ  จากต้นฉบับ  ",
+          tabTitle: "  หมายเหตุ  จากต้นฉบับ  ",
+          paragraphs: ["  หมายเหตุ   จากต้นฉบับ  "],
+        }),
+      ],
+    });
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+  });
+
+describe("IPE-060R1 — Thai numeral normalization interaction", () => {
+  it("classifies upstream-normalized Thai-digit content identically to Arabic digits", () => {
+    // Draft pipeline normalizes ๑๒๓ -> 123 before structural evaluation,
+    // so Thai-digit source text must classify exactly like Arabic text.
+    const thai = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "1-2",
+      tabs: [
+        tab({ sourceTabId: "t1", tabOrder: 0, chapterNumber: "1", paragraphs: ["บทที่ 1 จุดเริ่มต้น", "เนื้อหา", "จบตอน"] }),
+        tab({ sourceTabId: "t2", tabOrder: 1, chapterNumber: "2", paragraphs: ["บทที่ 2 ต่อ", "เนื้อหา", "จบตอน"] }),
+      ],
+    });
+    const arabic = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "1-2",
+      tabs: [
+        tab({ sourceTabId: "t1", tabOrder: 0, chapterNumber: "1", paragraphs: ["บทที่ 1 จุดเริ่มต้น", "เนื้อหา", "จบตอน"] }),
+        tab({ sourceTabId: "t2", tabOrder: 1, chapterNumber: "2", paragraphs: ["บทที่ 2 ต่อ", "เนื้อหา", "จบตอน"] }),
+      ],
+    });
+    expect(thai.summary.anomalyCount).toBe(arabic.summary.anomalyCount);
+    expect(thai.summary.blockingAnomalyCount).toBe(arabic.summary.blockingAnomalyCount);
+    expect(thai.anomalies).toHaveLength(0);
+  });
+
+  it("digit suffix after the source note does not widen the exact-note exception", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "7",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "7",
+          chapterTitle: "หมายเหตุจากต้นฉบับ ๑๒๓",
+          tabTitle: "หมายเหตุจากต้นฉบับ ๑๒๓",
+          paragraphs: ["หมายเหตุจากต้นฉบับ ๑๒๓", "จบตอน"],
+        }),
+      ],
+    });
+    // ๑๒๓ normalizes to 123 but the row text is no longer the EXACT note,
+    // so the accepted-source-note exception must not silently apply.
+    expect(result.summary.counts.source_note_only).toBe(1);
   });
 });
