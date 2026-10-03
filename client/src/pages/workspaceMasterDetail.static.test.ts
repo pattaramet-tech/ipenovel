@@ -40,7 +40,7 @@ describe("IPE-060 master-detail layout contract", () => {
   });
 
   it("keeps episode-number/name click as the selection affordance", () => {
-    expect(page).toContain('onClick={()=>setSelectedSourceWorkItemId(card.workItemId)}');
+    expect(page).toContain('onClick={()=>selectPackAcrossStories(card)}');
     // Whole episode cell is clickable (row-level select) but ignores nested controls.
     expect(page).toContain('if(el.closest("button,summary,input,a"))return;');
     expect(page).toContain('title="คลิกเพื่อเปิด Episode Pack Detail"');

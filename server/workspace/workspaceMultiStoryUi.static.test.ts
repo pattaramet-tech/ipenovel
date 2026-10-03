@@ -35,6 +35,11 @@ describe("IPE-062 multi-story state model", () => {
     expect(model).toContain("export function storyOverallStatus");
     // No new readiness source: the summary consumes evidence the board loads.
     expect(page).toContain("summarizeStoryPacks(group.cards)");
+    // Story cards/focused work area use the complete board, while the legacy
+    // management table keeps its global search/quick-filter projection.
+    expect(page).toContain("groupEditorialCardsByNovel(editorialCards)");
+    expect(page).toContain("groupEditorialCardsByNovel(visibleEditorialCards)");
+    expect(page).toContain("visibleEditorialNovelGroups.map");
   });
 });
 
@@ -178,5 +183,14 @@ describe("IPE-062 page-level multi-story wiring", () => {
     expect(page).toContain("packs={activeStoryPacks}");
     expect(page).toContain("<WorkspaceStoryOverview");
     expect(page).toContain("onFocusStory={selectStory}");
+  });
+
+  it("keeps cross-story management-table selections synchronized with story focus", () => {
+    expect(page).toContain("const selectPackAcrossStories = (card: any) => {");
+    expect(page).toContain("const storyKey = storyKeyFor(card.workspaceNovelId, card.novel?.id);");
+    expect(page).toContain("if (!selectStory(storyKey)) return false;");
+    expect(page).toContain("onClick={() => selectPackAcrossStories(card)}");
+    expect(page).toContain("selectPackAcrossStories(card);");
+    expect(page).toContain("if(selectPackAcrossStories(card))setPendingEditorOpenWorkItemId(card.workItemId);");
   });
 });
