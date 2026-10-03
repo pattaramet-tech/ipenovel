@@ -174,6 +174,26 @@ describe("IPE-062R4E — highlight visibility + go-to-issue CTA", () => {
     expect(page).toContain("onGoToIssue={() => {");
     expect(page).toContain("navigateChapterEditorIssue(");
   });
+
+  it("R. quick-skip (Ignore) sits beside the findings CTA and reuses the guarded resolve mutation", () => {
+    // IPE-062R4F: move names / proper nouns are not defects — the operator
+    // ignores the current finding and advances without leaving the editor.
+    const toolbar = source("client/src/pages/WorkspaceEditorialToolbar.tsx");
+    expect(toolbar).toContain("ข้าม (Ignore)");
+    expect(toolbar).toContain("onIgnoreIssue");
+    expect(page).toContain('onIgnoreIssue={() => {');
+    expect(page).toContain('disposition: "ignored"');
+    expect(page).toContain("idempotencyKey: `editorial-ignore:${finding.id}:${finding.resolutionVersion ?? 0}`");
+    // Ignoring advances to the next issue (skip, not just dismiss).
+    const handler = page.slice(
+      page.indexOf("onIgnoreIssue={() => {"),
+      page.indexOf("ignorePending={resolveEditorialFinding.isPending}")
+    );
+    expect(handler).toContain("navigateRelativeChapterEditorIssue(1)");
+    // Only open findings are ignored; structural issues keep their own flow.
+    expect(handler).toContain('issue.kind !== "finding"');
+    expect(handler).toContain('finding.disposition !== "open"');
+  });
 });
 
 describe("IPE-062R4D — right rail is the single workflow authority", () => {

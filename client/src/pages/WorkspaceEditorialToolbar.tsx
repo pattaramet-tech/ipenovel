@@ -34,6 +34,8 @@ export function WorkspaceEditorialToolbar({
   onConfirm,
   onStage,
   onGoToIssue,
+  onIgnoreIssue,
+  ignorePending,
   confirmDisabled,
   stageDisabled,
 }: {
@@ -57,6 +59,10 @@ export function WorkspaceEditorialToolbar({
   /** IPE-062R4E: makes the fix_findings CTA actionable — jumps to the
       current finding instead of sitting disabled. */
   onGoToIssue?: () => void;
+  /** IPE-062R4F: ignore the current finding (move names, proper nouns…)
+      and skip to the next one. */
+  onIgnoreIssue?: () => void;
+  ignorePending?: boolean;
   confirmDisabled: boolean;
   stageDisabled: boolean;
 }): ReactNode {
@@ -156,6 +162,21 @@ export function WorkspaceEditorialToolbar({
       </span>
       <span className="ml-auto flex items-center gap-2">
         <span className="text-xs text-muted-foreground">{action.reason}</span>
+        {/* IPE-062R4F: quick-skip beside the primary CTA — move names and
+            proper nouns are not defects; ignore the current finding and
+            advance to the next issue. */}
+        {action.kind === "fix_findings" && issueCount > 0 && onIgnoreIssue && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onIgnoreIssue}
+            disabled={ignorePending}
+            title="ยอมรับ finding นี้ (ชื่อท่า / ชื่อเฉพาะ ฯลฯ) แล้วข้ามไปตัวถัดไป"
+          >
+            {ignorePending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            ข้าม (Ignore)
+          </Button>
+        )}
         {action.kind !== "none" && action.kind !== "import" && (
           <Button
             type="button"

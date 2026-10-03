@@ -3909,6 +3909,27 @@ export default function WorkspacePage() {
                                 chapterEditorIssueItems.indexOf(issue)
                               );
                             }}
+                            onIgnoreIssue={() => {
+                              // IPE-062R4F: quick-skip — ignore the current
+                              // finding (move names / proper nouns are not
+                              // defects) and advance to the next issue.
+                              const issue =
+                                selectedChapterEditorIssue ??
+                                chapterEditorIssueItems[0];
+                              if (!issue || issue.kind !== "finding") return;
+                              const finding = issue.finding as any;
+                              if (finding.disposition !== "open") return;
+                              resolveEditorialFinding.mutate({
+                                workspaceId: selectedWorkspaceId,
+                                workItemId: selectedSourceWorkItemId,
+                                findingId: finding.id,
+                                disposition: "ignored",
+                                expectedVersion: finding.resolutionVersion ?? 0,
+                                idempotencyKey: `editorial-ignore:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                              });
+                              navigateRelativeChapterEditorIssue(1);
+                            }}
+                            ignorePending={resolveEditorialFinding.isPending}
                             hasDraft={Boolean(latestEditorialDraft)}
                             approvalValid={Boolean(
                               editorialApprovalData?.approvalStatus?.valid
