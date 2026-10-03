@@ -4067,8 +4067,8 @@ export default function WorkspacePage() {
                         </div>
                       </div>
                     </summary>
-                      <div className="grid gap-3 lg:grid-cols-[minmax(230px,0.85fr)_minmax(0,1.9fr)]" data-testid="workspace-editor-split">
-                      <div className="space-y-2 lg:max-h-[46rem] lg:overflow-auto lg:pr-1" data-testid="workspace-chapter-list-pane">
+                      <div className="grid gap-3 xl:grid-cols-[minmax(220px,0.55fr)_minmax(0,2.6fr)_minmax(260px,0.9fr)]" data-testid="workspace-editor-split">
+                      <div className="space-y-2 xl:max-h-[52rem] xl:overflow-auto xl:pr-1" data-testid="workspace-chapter-list-pane">
                     <div className="space-y-3 border-t p-3">
                       {(draftStructureSummary.sequenceIssues.length > 0 ||
                         draftStructureSummary.emptyTabs.length > 0 ||
@@ -4101,60 +4101,6 @@ export default function WorkspacePage() {
                           )}
                         </div>
                       )}
-
-                      {editorialFullCheckerData?.checker && (
-                        <div className="space-y-2 rounded-lg border bg-background p-3">
-                          <div className="font-medium">Full Checker vNext</div>
-                          <div className="text-xs text-muted-foreground">
-                            {editorialFullCheckerData.checker.engineVersion} · {editorialFullCheckerData.checker.findingCount} findings · {editorialFullCheckerData.checker.status}
-                          </div>
-                          {(editorialFullCheckerData.checker.findings ?? []).slice(0, 8).map((finding: any) => (
-                            <div key={finding.findingId} className="rounded border p-2 text-xs">
-                              <span className="font-medium">{finding.code}</span> · {finding.evidence}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      <div className="space-y-2 rounded-lg border bg-background p-3">
-                        <div className="text-sm font-medium">Safe Transform Preview</div>
-                        <div className="text-xs text-muted-foreground">Preview เท่านั้น · ไม่มีการ apply อัตโนมัติ</div>
-                        {[...(editorialFullCheckerData?.transforms ?? []), editorialFullCheckerData?.allSafe]
-                          .filter((preview: any) => preview?.changed)
-                          .map((preview: any) => (
-                            <div key={preview.transformId} className="rounded border p-2 text-xs">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="font-medium">{preview.ruleCode} · {preview.safetyClass} · {preview.changedParagraphCount} paragraphs · {preview.idempotent ? "idempotent" : "idempotency failed"}</div>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  disabled={!latestEditorialDraft || !preview.idempotent || applyEditorialFullCheckerTransform.isPending}
-                                  onClick={() => {
-                                    if (!latestEditorialDraft) return;
-                                    applyEditorialFullCheckerTransform.mutate({
-                                      workspaceId: selectedWorkspaceId!,
-                                      workItemId: selectedSourceWorkItemId!,
-                                      expectedDraftId: latestEditorialDraft.id,
-                                      expectedDraftVersion: latestEditorialDraft.version,
-                                      expectedDraftSha256: latestEditorialDraft.draftSha256,
-                                      transformCode: preview.ruleCode,
-                                      expectedTransformId: preview.transformId,
-                                      idempotencyKey: `full-checker:${latestEditorialDraft.id}:${preview.transformId}`,
-                                    });
-                                  }}
-                                >
-                                  Apply เป็น Draft revision ใหม่
-                                </Button>
-                              </div>
-                              {(preview.changes ?? []).slice(0, 4).map((change: any, index: number) => (
-                                <div key={index} className="mt-1 grid gap-1 rounded bg-muted/30 p-2 md:grid-cols-2">
-                                  <div>ก่อน: {change.before || "(empty)"}</div>
-                                  <div>หลัง: {change.after || "(empty)"}</div>
-                                </div>
-                              ))}
-                            </div>
-                          ))}
-                      </div>
 
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="space-y-2">
@@ -4511,6 +4457,75 @@ export default function WorkspacePage() {
                           </span>
                         </div>
 
+
+                        <div
+                          ref={chapterEditorScrollRef}
+                          className="min-h-[30rem] max-h-[48rem] overflow-y-auto rounded-lg border bg-background p-5 shadow-inner"
+                          onScroll={event => {
+                            const sourceTabId = chapterEditorTarget?.sourceTabId;
+                            if (!sourceTabId) return;
+                            const scrollTop = event.currentTarget.scrollTop;
+                            chapterEditorScrollByTab.current.set(sourceTabId, scrollTop);
+                            window.sessionStorage.setItem(
+                              chapterEditorScrollStorageKey(sourceTabId),
+                              String(scrollTop)
+                            );
+                          }}
+                        >
+                          {/* IPE-058-C: ONE continuous editing surface. The
+                              paragraph model lives in
+                              workspaceChapterCanvas.ts — no per-paragraph
+                              textareas. */}
+                          <ChapterEditorCanvas
+                            value={chapterEditorText}
+                            flatFindings={chapterEditorCanvasFindings}
+                            highlight={chapterEditorHighlight}
+                            disabled={editEditorialDraft.isPending}
+                            placeholder={
+                              chapterEditorParagraphs.length <= 1 &&
+                              !chapterEditorText
+                                ? "เริ่มเขียนหรือวางเนื้อหาของบทนี้..."
+                                : undefined
+                            }
+                            textareaRef={chapterEditorCanvasRef}
+                            onChange={(value, _caret) =>
+                              applyChapterEditorCanvasChange(value, false)
+                            }
+                            onKeyDown={chapterEditorCanvasKeyDown}
+                            onPaste={chapterEditorCanvasPaste}
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-xs text-muted-foreground">
+                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · Ctrl/Cmd+Z / Ctrl+Y = เลิก/ทำซ้ำ · วางจาก ChatGPT/Google Docs จะจัดย่อหน้าอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
+                          </div>
+                          <Button
+                            type="button"
+                            disabled={
+                              editEditorialDraft.isPending ||
+                              chapterEditorSaveProjection.text === chapterEditorTarget.expectedText
+                            }
+                            onClick={submitChapterEditorEdit}
+                          >
+                            {editEditorialDraft.isPending && (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            )}
+                            บันทึก Draft + ตรวจซ้ำ
+                          </Button>
+                        </div>
+                        <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                          การบันทึกสร้าง Draft revision ใหม่เท่านั้น ไม่ Publish อัตโนมัติ และต้องผ่าน QC/Confirm เดิมก่อน Stage/Publish
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="workspace-chapter-editor-empty">
+                        เลือกตอนจากรายการด้านซ้าย — Editor จะเปิดในพื้นที่นี้ทันที ไม่ต้องเลื่อนหา
+                      </div>
+                    )}
+
+
+                      <div className="space-y-2 xl:max-h-[52rem] xl:overflow-auto xl:pr-1" data-testid="workspace-assist-pane">
                         <details className="rounded-lg border bg-background">
                           <summary className="cursor-pointer list-none px-3 py-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -4856,73 +4871,6 @@ export default function WorkspacePage() {
                             )}
                           </div>
                         </details>
-
-                        <div
-                          ref={chapterEditorScrollRef}
-                          className="min-h-[30rem] max-h-[48rem] overflow-y-auto rounded-lg border bg-background p-5 shadow-inner"
-                          onScroll={event => {
-                            const sourceTabId = chapterEditorTarget?.sourceTabId;
-                            if (!sourceTabId) return;
-                            const scrollTop = event.currentTarget.scrollTop;
-                            chapterEditorScrollByTab.current.set(sourceTabId, scrollTop);
-                            window.sessionStorage.setItem(
-                              chapterEditorScrollStorageKey(sourceTabId),
-                              String(scrollTop)
-                            );
-                          }}
-                        >
-                          {/* IPE-058-C: ONE continuous editing surface. The
-                              paragraph model lives in
-                              workspaceChapterCanvas.ts — no per-paragraph
-                              textareas. */}
-                          <ChapterEditorCanvas
-                            value={chapterEditorText}
-                            flatFindings={chapterEditorCanvasFindings}
-                            highlight={chapterEditorHighlight}
-                            disabled={editEditorialDraft.isPending}
-                            placeholder={
-                              chapterEditorParagraphs.length <= 1 &&
-                              !chapterEditorText
-                                ? "เริ่มเขียนหรือวางเนื้อหาของบทนี้..."
-                                : undefined
-                            }
-                            textareaRef={chapterEditorCanvasRef}
-                            onChange={(value, _caret) =>
-                              applyChapterEditorCanvasChange(value, false)
-                            }
-                            onKeyDown={chapterEditorCanvasKeyDown}
-                            onPaste={chapterEditorCanvasPaste}
-                          />
-                        </div>
-
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="text-xs text-muted-foreground">
-                            Enter = ย่อหน้าใหม่ · Shift+Enter = ขึ้นบรรทัดในย่อหน้า · Ctrl/Cmd+S = บันทึก · Ctrl/Cmd+Z / Ctrl+Y = เลิก/ทำซ้ำ · วางจาก ChatGPT/Google Docs จะจัดย่อหน้าอัตโนมัติ · สีไฮไลต์เป็น UI เท่านั้น
-                          </div>
-                          <Button
-                            type="button"
-                            disabled={
-                              editEditorialDraft.isPending ||
-                              chapterEditorSaveProjection.text === chapterEditorTarget.expectedText
-                            }
-                            onClick={submitChapterEditorEdit}
-                          >
-                            {editEditorialDraft.isPending && (
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            )}
-                            บันทึก Draft + ตรวจซ้ำ
-                          </Button>
-                        </div>
-                        <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-                          การบันทึกสร้าง Draft revision ใหม่เท่านั้น ไม่ Publish อัตโนมัติ และต้องผ่าน QC/Confirm เดิมก่อน Stage/Publish
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="workspace-chapter-editor-empty">
-                        เลือกตอนจากรายการด้านซ้าย — Editor จะเปิดในพื้นที่นี้ทันที ไม่ต้องเลื่อนหา
-                      </div>
-                    )}
-
                     {editorTarget && !editorTarget.findingId && (
                       <div className="space-y-2 rounded-md border bg-muted/20 p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -4973,59 +4921,61 @@ export default function WorkspacePage() {
                         </div>
                       </div>
                     )}
-
-                    <details className="rounded-md border bg-background">
-                      <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
-                        เครื่องมือแก้ไขรายย่อหน้า
-                      </summary>
-                      <div className="space-y-2 border-t p-3">
-                      {(editorialDraftData?.tabs ?? []).map((tab: any) => (
-                        <details key={tab.id} className="rounded-md border">
-                          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
-                            {tab.title} · {tab.paragraphs.length} paragraphs
-                          </summary>
-                          <div className="space-y-2 border-t p-3">
-                            {tab.paragraphs.map((paragraph: any) => (
-                              <div
-                                key={paragraph.paragraphKey}
-                                className="rounded border bg-background p-2 text-sm"
-                              >
-                                <div className="mb-1 flex items-center justify-between gap-2">
-                                  <span className="text-xs text-muted-foreground">
-                                    ¶{paragraph.paragraphOrder} · {shortHash(paragraph.paragraphFingerprint)}
-                                  </span>
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="outline"
-                                    disabled={!latestEditorialDraft || editEditorialDraft.isPending}
-                                    onClick={() => {
-                                      if (!latestEditorialDraft) return;
-                                      setEditorTarget({
-                                        kind: "replace_paragraph",
-                                        label: `แก้ย่อหน้า ¶${paragraph.paragraphOrder}`,
-                                        paragraphKey: paragraph.paragraphKey,
-                                        expectedParagraphFingerprint:
-                                          paragraph.paragraphFingerprint,
-                                        expectedText: paragraph.text,
-                                        draftId: latestEditorialDraft.id,
-                                        draftVersion: latestEditorialDraft.version,
-                                        draftSha256: latestEditorialDraft.draftSha256,
-                                      });
-                                      setEditorText(paragraph.text);
-                                    }}
-                                  >
-                                    แก้ย่อหน้า
-                                  </Button>
-                                </div>
-                                <div className="whitespace-pre-wrap">{paragraph.text || "—"}</div>
-                              </div>
-                            ))}
+                      {editorialFullCheckerData?.checker && (
+                        <div className="space-y-2 rounded-lg border bg-background p-3">
+                          <div className="font-medium">Full Checker vNext</div>
+                          <div className="text-xs text-muted-foreground">
+                            {editorialFullCheckerData.checker.engineVersion} · {editorialFullCheckerData.checker.findingCount} findings · {editorialFullCheckerData.checker.status}
                           </div>
-                        </details>
-                      ))}
+                          {(editorialFullCheckerData.checker.findings ?? []).slice(0, 8).map((finding: any) => (
+                            <div key={finding.findingId} className="rounded border p-2 text-xs">
+                              <span className="font-medium">{finding.code}</span> · {finding.evidence}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="space-y-2 rounded-lg border bg-background p-3">
+                        <div className="text-sm font-medium">Safe Transform Preview</div>
+                        <div className="text-xs text-muted-foreground">Preview เท่านั้น · ไม่มีการ apply อัตโนมัติ</div>
+                        {[...(editorialFullCheckerData?.transforms ?? []), editorialFullCheckerData?.allSafe]
+                          .filter((preview: any) => preview?.changed)
+                          .map((preview: any) => (
+                            <div key={preview.transformId} className="rounded border p-2 text-xs">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="font-medium">{preview.ruleCode} · {preview.safetyClass} · {preview.changedParagraphCount} paragraphs · {preview.idempotent ? "idempotent" : "idempotency failed"}</div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={!latestEditorialDraft || !preview.idempotent || applyEditorialFullCheckerTransform.isPending}
+                                  onClick={() => {
+                                    if (!latestEditorialDraft) return;
+                                    applyEditorialFullCheckerTransform.mutate({
+                                      workspaceId: selectedWorkspaceId!,
+                                      workItemId: selectedSourceWorkItemId!,
+                                      expectedDraftId: latestEditorialDraft.id,
+                                      expectedDraftVersion: latestEditorialDraft.version,
+                                      expectedDraftSha256: latestEditorialDraft.draftSha256,
+                                      transformCode: preview.ruleCode,
+                                      expectedTransformId: preview.transformId,
+                                      idempotencyKey: `full-checker:${latestEditorialDraft.id}:${preview.transformId}`,
+                                    });
+                                  }}
+                                >
+                                  Apply เป็น Draft revision ใหม่
+                                </Button>
+                              </div>
+                              {(preview.changes ?? []).slice(0, 4).map((change: any, index: number) => (
+                                <div key={index} className="mt-1 grid gap-1 rounded bg-muted/30 p-2 md:grid-cols-2">
+                                  <div>ก่อน: {change.before || "(empty)"}</div>
+                                  <div>หลัง: {change.after || "(empty)"}</div>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
                       </div>
-                    </details>
+
+                      </div>
                       </div>
                       </div>
                   </div>

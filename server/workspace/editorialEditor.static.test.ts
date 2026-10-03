@@ -101,7 +101,10 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("Workspace Editor ·");
     expect(page).toContain("แท็บใน Draft");
     expect(page).toContain("แท็บที่นำออก");
-    expect(page).toContain("เครื่องมือแก้ไขรายย่อหน้า");
+    // IPE-062R4A: the legacy per-tab paragraph-tools block is superseded by
+    // the single canvas — paragraph text now renders ONLY in the active
+    // editor canvas, never as per-tab cards.
+    expect(page).not.toContain("เครื่องมือแก้ไขรายย่อหน้า");
     expect(page).not.toContain("Draft structure ·");
     expect(page).not.toContain("Draft tabs");
     expect(page).toContain("Undo");
@@ -112,6 +115,15 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("ChapterEditorCanvas");
     expect(page).toContain("workspace-chapter-editor-canvas");
     expect(page).not.toContain("ChapterEditorParagraphBlock");
+    // IPE-062R4A: the canvas is the ONLY full-content editor surface — no
+    // other textarea may render chapter content (finding quick-edits and the
+    // bulk finding editor remain single-purpose, non-chapter textareas).
+    const canvasPane = page.slice(
+      page.indexOf('data-testid="workspace-chapter-editor-pane"'),
+      page.indexOf('data-testid="workspace-assist-pane"')
+    );
+    expect(canvasPane).toContain("ChapterEditorCanvas");
+    expect((canvasPane.match(/<textarea/g) ?? []).length).toBe(0);
     expect(page).toContain("วางจาก ChatGPT/Google Docs จะจัดย่อหน้าอัตโนมัติ");
     expect(page).toContain("ไฮไลต์คำต่างประเทศ");
     expect(page).toContain("chapterEditorTabStatus");
