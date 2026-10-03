@@ -36,6 +36,10 @@ const workspaceEditorialBoardSource = fs.readFileSync(
   path.join(root, "workspace", "editorialBoard.service.ts"),
   "utf8"
 );
+const pluginStoreSource = fs.readFileSync(
+  path.join(root, "plugin", "store.ts"),
+  "utf8"
+);
 
 /**
  * IPE-005 reflection coverage.
@@ -112,6 +116,27 @@ const productionGuardEvidence: Record<string, string[]> = {
     ".insert(workspaceEditorialWorkItems)",
     ".update(workspaceEditorialWorkItems)",
   ],
+  pluginOAuthConsentAttempts: [
+    "assertAccountMergeClassifiedMutationAllowed(input.userId, db)",
+    ".insert(pluginOAuthConsentAttempts)",
+  ],
+  pluginOAuthAuthorizations: [
+    "assertAccountMergeClassifiedMutationAllowed(input.userId, db)",
+    ".insert(pluginOAuthAuthorizations)",
+    ".update(pluginOAuthAuthorizations)",
+  ],
+  pluginOAuthAuthorizationCodes: [
+    "assertAccountMergeClassifiedMutationAllowed(input.userId, db)",
+    ".insert(pluginOAuthAuthorizationCodes)",
+  ],
+  pluginAccessGrants: [
+    "assertAccountMergeClassifiedMutationAllowed(input.userId, db)",
+    ".insert(pluginAccessGrants)",
+  ],
+  pluginRefreshGrants: [
+    "assertAccountMergeClassifiedMutationAllowed(input.userId, db)",
+    ".insert(pluginRefreshGrants)",
+  ],
 };
 
 const allProductionSources = [
@@ -126,6 +151,9 @@ const allProductionSources = [
   workspaceServiceSource,
   workspaceGoogleDocsSource,
   workspaceEditorialBoardSource,
+  // IPE-PLUGIN-001B: the plugin namespace owns the mutation surface for its
+  // classified tables - its store is the production guard site.
+  pluginStoreSource,
 ].join("\n");
 
 function classifiedTableSet(): Set<string> {

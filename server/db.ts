@@ -80,6 +80,11 @@ import {
   adminUserAuditLogs,
   Novel,
   couponUsages as couponUsagesTable,
+  pluginAccessGrants,
+  pluginOAuthAuthorizationCodes,
+  pluginOAuthAuthorizations,
+  pluginOAuthConsentAttempts,
+  pluginRefreshGrants,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { pickRandom } from "./utils/random";
@@ -7231,6 +7236,14 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   { table: "workspaceGoogleConsentAttempts", check: async (userId, db) => (await db.select({ id: workspaceGoogleConsentAttempts.id }).from(workspaceGoogleConsentAttempts).where(eq(workspaceGoogleConsentAttempts.userId, userId)).limit(1)).length },
   { table: "workspaceGoogleConnections", check: async (userId, db) => (await db.select({ id: workspaceGoogleConnections.id }).from(workspaceGoogleConnections).where(eq(workspaceGoogleConnections.userId, userId)).limit(1)).length },
   { table: "workspaceEditorialWorkItems", check: async (userId, db) => (await db.select({ id: workspaceEditorialWorkItems.id }).from(workspaceEditorialWorkItems).where(eq(workspaceEditorialWorkItems.assigneeUserId, userId)).limit(1)).length },
+  // IPE-PLUGIN-001B - plugin OAuth state is user-owned (see
+  // accountRecoveryDataClassification.ts; entries mirrored here so the
+  // no-drift cross-check stays exact).
+  { table: "pluginOAuthConsentAttempts", check: async (userId, db) => (await db.select({ id: pluginOAuthConsentAttempts.id }).from(pluginOAuthConsentAttempts).where(eq(pluginOAuthConsentAttempts.userId, userId)).limit(1)).length },
+  { table: "pluginOAuthAuthorizations", check: async (userId, db) => (await db.select({ id: pluginOAuthAuthorizations.id }).from(pluginOAuthAuthorizations).where(eq(pluginOAuthAuthorizations.userId, userId)).limit(1)).length },
+  { table: "pluginOAuthAuthorizationCodes", check: async (userId, db) => (await db.select({ id: pluginOAuthAuthorizationCodes.id }).from(pluginOAuthAuthorizationCodes).where(eq(pluginOAuthAuthorizationCodes.userId, userId)).limit(1)).length },
+  { table: "pluginAccessGrants", check: async (userId, db) => (await db.select({ id: pluginAccessGrants.id }).from(pluginAccessGrants).where(eq(pluginAccessGrants.userId, userId)).limit(1)).length },
+  { table: "pluginRefreshGrants", check: async (userId, db) => (await db.select({ id: pluginRefreshGrants.id }).from(pluginRefreshGrants).where(eq(pluginRefreshGrants.userId, userId)).limit(1)).length },
 ];
 
 /** Category B ("User-owned data") from the recovery-safety spec - cart,
@@ -7583,6 +7596,40 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     category: "user_owned",
     userIdColumnName: "assigneeUserId",
     countFor: plainUserIdCount(workspaceEditorialWorkItems, workspaceEditorialWorkItems.assigneeUserId),
+  },
+
+  // IPE-PLUGIN-001B - plugin OAuth state is user-owned; derived from the
+  // recovery classification like every other entry (see
+  // accountMergeInventory.ts, which mirrors this list's derivation).
+  {
+    table: "pluginOAuthConsentAttempts",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginOAuthConsentAttempts, pluginOAuthConsentAttempts.userId),
+  },
+  {
+    table: "pluginOAuthAuthorizations",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginOAuthAuthorizations, pluginOAuthAuthorizations.userId),
+  },
+  {
+    table: "pluginOAuthAuthorizationCodes",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginOAuthAuthorizationCodes, pluginOAuthAuthorizationCodes.userId),
+  },
+  {
+    table: "pluginAccessGrants",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginAccessGrants, pluginAccessGrants.userId),
+  },
+  {
+    table: "pluginRefreshGrants",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginRefreshGrants, pluginRefreshGrants.userId),
   },
 
   // ---- indirect (no direct userId column - counted via a join to the

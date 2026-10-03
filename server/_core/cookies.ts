@@ -122,3 +122,30 @@ export function getGoogleOAuthTransientCookieOptions(
     maxAge: GOOGLE_OAUTH_COOKIE_MAX_AGE_MS,
   };
 }
+
+/**
+ * Short-lived HttpOnly cookie for the plugin consent-form CSRF token
+ * (server/plugin/oauth/routes.ts) - the plugin counterpart to
+ * getGoogleOAuthTransientCookieOptions above, with the same semantics
+ * (SameSite=Lax, ~10 minutes, path-scoped to the plugin OAuth routes) and
+ * the same shared secure detection, so both transient-cookie families can
+ * never disagree about HTTPS.
+ */
+const PLUGIN_OAUTH_COOKIE_PATH = "/api/plugin/oauth";
+const PLUGIN_OAUTH_COOKIE_MAX_AGE_MS = 10 * 60 * 1000;
+
+export function getPluginOAuthTransientCookieOptions(
+  req: Request
+): Pick<CookieOptions, "httpOnly" | "path" | "sameSite" | "secure" | "maxAge"> {
+  const hostname = req.hostname || "";
+  const isLocal = LOCAL_HOSTS.has(hostname) || isIpAddress(hostname);
+  const secure = isSecureRequest(req) || process.env.NODE_ENV === "production" || !isLocal;
+
+  return {
+    httpOnly: true,
+    path: PLUGIN_OAUTH_COOKIE_PATH,
+    sameSite: "lax",
+    secure,
+    maxAge: PLUGIN_OAUTH_COOKIE_MAX_AGE_MS,
+  };
+}

@@ -38,6 +38,21 @@ export function resolveRequireGoogleConnection(raw: string | undefined): boolean
   return raw === "true";
 }
 
+/**
+ * EXACT-LITERAL "true" only - the master switch for the IPE-PLUGIN-001B
+ * OAuth + MCP foundation (server/plugin/*: /api/plugin/oauth/*,
+ * /api/plugin/mcp, well-known metadata, token sweeper wiring). Every other
+ * value - unset, empty, "TRUE", " true", "1" - resolves to false, so the
+ * plugin surface fails closed to indistinguishable-from-404 on any
+ * deployment that has not explicitly opted in. Mirrors
+ * resolveRequireGoogleConnection's discipline: a feature that mints
+ * credentials for external clients is exactly the kind of setting that must
+ * never activate itself from a stray whitespace character.
+ */
+export function resolvePluginFoundationEnabled(raw: string | undefined): boolean {
+  return raw === "true";
+}
+
 const STRICT_ISO_8601_UTC_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z$/;
 
@@ -266,6 +281,17 @@ export const ENV = {
   // behind a proxy that alters the header and open an open-redirect-style
   // surface at the OAuth layer.
   googleRedirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI ?? "",
+  // IPE-PLUGIN-001B - OAuth 2.1 + MCP foundation master switch. Exact-literal
+  // "true" only (see resolvePluginFoundationEnabled above). Default OFF: no
+  // /api/plugin/* route exists until a deployment explicitly opts in.
+  pluginFoundationEnabled: resolvePluginFoundationEnabled(process.env.PLUGIN_FOUNDATION_ENABLED),
+  // Absolute public base URL of THIS deployment (e.g. "https://ipenovel.com"),
+  // used ONLY to build RFC 8414 authorization-server metadata URLs. Read
+  // verbatim, never derived from request headers (same spoofability reasoning
+  // as googleRedirectUri above). When unset, the well-known metadata endpoint
+  // fails closed to 404 - discovery is unavailable, but the core flows
+  // (which use per-client registered redirect URIs) keep working.
+  pluginPublicBaseUrl: process.env.PLUGIN_PUBLIC_BASE_URL ?? "",
 };
 
 /**
@@ -288,6 +314,16 @@ export function isManusAuthActive(): boolean {
  */
 export function isGoogleAuthActive(): boolean {
   return ENV.authProvider === "google" || ENV.authProvider === "transition";
+}
+
+/**
+ * Whether the IPE-PLUGIN-001B surface (server/plugin/*) is reachable.
+ * Checked fresh in every plugin route handler - same fail-closed pattern as
+ * isGoogleAuthActive above, so a flag flip takes effect on the next request
+ * and the default deployment answers 404 for every /api/plugin/* path.
+ */
+export function isPluginFoundationActive(): boolean {
+  return ENV.pluginFoundationEnabled === true;
 }
 
 export type GoogleConnectionCutoffEvaluation = {
