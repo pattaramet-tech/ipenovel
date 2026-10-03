@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import {
   pluginAccessGrants,
   pluginAuditLogs,
@@ -281,7 +281,7 @@ export async function consumePluginAuthorizationCode(
       and(
         eq(pluginOAuthAuthorizationCodes.codeHash, codeHash),
         isNull(pluginOAuthAuthorizationCodes.consumedAt),
-        sql`${pluginOAuthAuthorizationCodes.expiresAt} > ${now}`
+        gt(pluginOAuthAuthorizationCodes.expiresAt, now)
       )
     )
     .limit(1);

@@ -28,7 +28,6 @@ import {
   revokePluginRefreshToken,
   touchPluginAuthorizationLastUsed,
   upsertPluginAuthorizationScope,
-  type ValidPluginAccessToken,
 } from "../store";
 // IPE-PLUGIN-001B OAuth 2.1 authorization-code + PKCE flow logic.
 //
@@ -581,8 +580,13 @@ async function findAnyPluginAccessTokenByHash(tokenHash: string): Promise<{ user
 // Bearer authentication (MCP edge)
 // ---------------------------------------------------------------------------
 
-export type PluginBearerPrincipal = ValidPluginAccessToken & {
+export type PluginBearerPrincipal = {
+  tokenId: string;
+  authorizationId: number;
+  userId: number;
+  clientId: string;
   scopes: readonly PluginPermissionScope[];
+  authenticated: true;
 };
 
 /**
@@ -604,5 +608,12 @@ export async function authenticatePluginBearer(
   if (token.length === 0 || token.length > 512) return null;
   const principal = await findValidPluginAccessToken(hashPluginSecret(token), now);
   if (!principal) return null;
-  return { ...principal, scopes: parsePluginScopes(principal.scope) };
+  return {
+    tokenId: principal.tokenId,
+    authorizationId: principal.authorizationId,
+    userId: principal.userId,
+    clientId: principal.clientId,
+    scopes: parsePluginScopes(principal.scope),
+    authenticated: true,
+  };
 }

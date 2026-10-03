@@ -13,10 +13,26 @@ import { inArray } from "drizzle-orm";
 // Uses the integration project's DATABASE_URL=TEST_DATABASE_URL wiring
 // (vitest.integration.globalsetup.ts) - store.ts resolves connections
 // through server/db.ts, whose override covers every plugin query.
+//
+// The JWT_SECRET / VITE_APP_ID / PLUGIN_FOUNDATION_ENABLED test values are
+// AUTHORITATIVELY pinned by vitest.integration.config.ts's `env` block,
+// because the integration setupfile's static import of server/db.ts
+// constructs server/_core/env.ts's module-level ENV BEFORE any test-file
+// code runs (see the config block's comment). The hoisted fallbacks below
+// are a same-contract backstop for direct `vitest run` invocations of this
+// file against a project whose setupfile does not import env.ts first -
+// deliberately NON-EMPTY checks (not ??=) so an empty-string value in the
+// environment can never pass for a real secret/app id (ENV.cookieSecret=""
+// makes sdk.signSession throw, and an empty app id would mint sessions
+// with an empty audience).
 const envSetup = vi.hoisted(() => {
   process.env.PLUGIN_FOUNDATION_ENABLED = "true";
-  process.env.JWT_SECRET ??= "plugin-integration-test-secret-0123456789abcdef";
-  process.env.VITE_APP_ID ??= "ipenovel-plugin-integration-app";
+  if (!process.env.JWT_SECRET) {
+    process.env.JWT_SECRET = "plugin-integration-test-secret-0123456789abcdef";
+  }
+  if (!process.env.VITE_APP_ID) {
+    process.env.VITE_APP_ID = "ipenovel-plugin-integration-app";
+  }
 });
 void envSetup;
 
