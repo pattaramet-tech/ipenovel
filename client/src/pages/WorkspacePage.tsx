@@ -217,6 +217,17 @@ function ChapterEditorCanvas({
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onPaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
 }) {
+  // IPE-062R4E: the canvas must grow with its content. The scrollable
+  // ancestor (chapterEditorScrollRef) is the single scroller, and the
+  // highlight overlay (absolute inset-0) then stays aligned with the text
+  // at every scroll position — a fixed-height textarea would clip the
+  // overlay and desync it while its internal scroll moves.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [value, textareaRef]);
   const ranges = useMemo(
     () => (highlight ? chapterEditorFindingRanges(value, flatFindings) : []),
     [highlight, value, flatFindings]
@@ -1857,14 +1868,67 @@ export default function WorkspacePage() {
     return `manual-${chapterEditorParagraphSequence.current}`;
   };
   // IPE-058-C: single-canvas caret helpers (UTF-16 offsets on the flat text).
+  // IPE-062R4E: the canvas textarea is full-height (auto-grown), so it never
+  // scrolls itself and browsers do not scroll ancestor containers for caret
+  // focus. Measure the caret's Y with a style-matched mirror and scroll the
+  // editor container explicitly — this powers ไปยังจุด (findings/structural).
+  const scrollChapterCanvasCaretIntoView = (offset: number, smooth: boolean) => {
+    const textarea = chapterEditorCanvasRef.current;
+    const container = chapterEditorScrollRef.current;
+    if (!textarea || !container) return;
+    const caret = Math.max(0, Math.min(offset, textarea.value.length));
+    const mirror = document.createElement("div");
+    const style = window.getComputedStyle(textarea);
+    for (const prop of [
+      "fontSize",
+      "fontFamily",
+      "fontWeight",
+      "fontStyle",
+      "lineHeight",
+      "letterSpacing",
+      "whiteSpace",
+      "wordBreak",
+      "overflowWrap",
+      "paddingTop",
+      "paddingBottom",
+      "boxSizing",
+      "borderTopWidth",
+      "borderBottomWidth",
+      "borderTopStyle",
+      "borderBottomStyle",
+    ] as const) {
+      (mirror.style as any)[prop] = (style as any)[prop];
+    }
+    mirror.style.position = "absolute";
+    mirror.style.visibility = "hidden";
+    mirror.style.left = "-9999px";
+    const innerWidth =
+      textarea.clientWidth -
+      (parseFloat(style.paddingLeft || "0") + parseFloat(style.paddingRight || "0"));
+    mirror.style.width = `${Math.max(0, innerWidth)}px`;
+    mirror.textContent = textarea.value.slice(0, caret);
+    container.appendChild(mirror);
+    const caretY = mirror.getBoundingClientRect().height;
+    container.removeChild(mirror);
+    const viewTop = container.scrollTop;
+    const viewBottom = viewTop + container.clientHeight;
+    // Scroll only when the caret line sits outside the visible band — a
+    // typing-restore caret that is already visible must not jump.
+    if (caretY < viewTop + 8 || caretY > viewBottom - 48) {
+      const target = Math.max(0, caretY - container.clientHeight / 2);
+      container.scrollTo({ top: target, behavior: smooth ? "smooth" : "auto" });
+    }
+  };
   const focusChapterCanvasOffset = (offset: number) => {
     window.requestAnimationFrame(() => {
       const textarea = chapterEditorCanvasRef.current;
       if (!textarea) return;
       const clamped = Math.max(0, Math.min(offset, textarea.value.length));
-      // Selection first, then focus: browsers scroll the caret into view.
+      // Selection first, then focus; the container scroll below brings the
+      // caret line into view (focus alone does not scroll ancestors).
       textarea.setSelectionRange(clamped, clamped);
       textarea.focus();
+      scrollChapterCanvasCaretIntoView(clamped, false);
     });
   };
   const pushChapterEditorHistory = (caret: number) => {
@@ -2161,9 +2225,12 @@ export default function WorkspacePage() {
           start,
           Math.min(range.end, textarea.value.length)
         );
-        // Selection first, then focus: browsers scroll the caret into view.
+        // Selection first, then focus; the explicit container scroll below
+        // brings the highlighted finding into view (focus alone does not
+        // scroll ancestor containers).
         textarea.setSelectionRange(start, end);
         textarea.focus();
+        scrollChapterCanvasCaretIntoView(start, true);
       });
       return;
     }
@@ -3826,6 +3893,22 @@ export default function WorkspacePage() {
                             checkerState={editorialCheckerState}
                             unresolvedCount={editorialCheckerData?.unresolvedCount}
                             issueCount={chapterEditorIssueItems.length}
+                            onGoToIssue={() => {
+                              // IPE-062R4E: the fix_findings CTA jumps to the
+                              // current issue (or the first when none selected).
+                              if (!chapterEditorIssueItems.length) return;
+                              const boundedIndex = Math.min(
+                                chapterEditorIssueIndex,
+                                chapterEditorIssueItems.length - 1
+                              );
+                              const issue =
+                                chapterEditorIssueItems[boundedIndex] ??
+                                chapterEditorIssueItems[0];
+                              navigateChapterEditorIssue(
+                                issue,
+                                chapterEditorIssueItems.indexOf(issue)
+                              );
+                            }}
                             hasDraft={Boolean(latestEditorialDraft)}
                             approvalValid={Boolean(
                               editorialApprovalData?.approvalStatus?.valid

@@ -141,6 +141,41 @@ describe("IPE-062R4D — guards and invariants (R3/R4A preserved)", () => {
   });
 });
 
+describe("IPE-062R4E — highlight visibility + go-to-issue CTA", () => {
+  it("O. the canvas textarea auto-grows so highlights never clip or desync", () => {
+    // Fixed-height textarea clips the highlight overlay (absolute inset-0)
+    // and desyncs it while the textarea scrolls internally. The canvas now
+    // grows with its content; the editor container is the single scroller.
+    const canvasComponent = page.slice(
+      page.indexOf("function ChapterEditorCanvas"),
+      page.indexOf("export default function WorkspacePage")
+    );
+    expect(canvasComponent).toContain("textarea.style.height = `");
+    expect(canvasComponent).toContain("scrollHeight");
+    // No internal textarea scroll height remains as a cap.
+    expect(canvasComponent).not.toContain("max-h-[48rem] overflow-y-auto");
+  });
+
+  it("P. go-to-issue scroll uses an explicit container scroll after focus", () => {
+    // focus() alone does not scroll ancestor containers — the mirror-based
+    // helper measures the caret line and scrolls the editor container.
+    expect(page).toContain("const scrollChapterCanvasCaretIntoView");
+    expect(page).toContain("scrollChapterCanvasCaretIntoView(start, true)");
+    expect(page).toContain("container.scrollTo({ top: target");
+  });
+
+  it("Q. the fix_findings CTA is actionable and jumps to the current finding", () => {
+    // The toolbar no longer hard-disables fix_findings; the page wires the
+    // jump to navigateChapterEditorIssue.
+    const toolbar = source("client/src/pages/WorkspaceEditorialToolbar.tsx");
+    expect(toolbar).toContain("onGoToIssue?: () => void;");
+    expect(toolbar).toContain('(action.kind === "fix_findings" && !onGoToIssue)');
+    expect(toolbar).toContain("case \"fix_findings\":\n        onGoToIssue?.();");
+    expect(page).toContain("onGoToIssue={() => {");
+    expect(page).toContain("navigateChapterEditorIssue(");
+  });
+});
+
 describe("IPE-062R4D — right rail is the single workflow authority", () => {
   const sidePanel = page.slice(page.indexOf('data-testid="workspace-side-panel"'));
 

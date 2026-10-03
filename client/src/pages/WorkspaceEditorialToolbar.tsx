@@ -33,6 +33,7 @@ export function WorkspaceEditorialToolbar({
   onRunChecker,
   onConfirm,
   onStage,
+  onGoToIssue,
   confirmDisabled,
   stageDisabled,
 }: {
@@ -53,6 +54,9 @@ export function WorkspaceEditorialToolbar({
   onRunChecker: () => void;
   onConfirm: () => void;
   onStage: () => void;
+  /** IPE-062R4E: makes the fix_findings CTA actionable — jumps to the
+      current finding instead of sitting disabled. */
+  onGoToIssue?: () => void;
   confirmDisabled: boolean;
   stageDisabled: boolean;
 }): ReactNode {
@@ -73,6 +77,9 @@ export function WorkspaceEditorialToolbar({
       case "run_checker":
         onRunChecker();
         return;
+      case "fix_findings":
+        onGoToIssue?.();
+        return;
       case "confirm":
         onConfirm();
         return;
@@ -91,7 +98,9 @@ export function WorkspaceEditorialToolbar({
     action.kind === "none" ||
     action.kind === "import" ||
     action.kind === "publish" ||
-    (action.kind === "fix_findings") ||
+    // IPE-062R4E: fix_findings is actionable when the page supplies a jump
+    // handler (goes to the current finding) — only disabled without one.
+    (action.kind === "fix_findings" && !onGoToIssue) ||
     (action.kind === "confirm" && confirmDisabled) ||
     (action.kind === "stage" && stageDisabled);
 
