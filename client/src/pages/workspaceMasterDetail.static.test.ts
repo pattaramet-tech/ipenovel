@@ -119,3 +119,32 @@ describe("IPE-060 tabbed inline detail panel", () => {
     expect(page).toContain('data-testid="workspace-novel-export-trigger"');
   });
 });
+
+describe("IPE-060R2 — review repairs", () => {
+  const page = source("client/src/pages/WorkspacePage.tsx");
+
+  it("renders the publish panel as a sibling of the stage panel (never nested inside it)", () => {
+    // Codex P1: nesting the publish panel inside the hidden stage panel made
+    // the Publish tab permanently blank. The stage panel's <div> (and every
+    // div it opens) must close BEFORE the publish panel's <div> starts.
+    const stageClass = page.indexOf('packDetailTab === "stage" ? "space-y-3 rounded-md border p-3" : "hidden"');
+    const publishClass = page.indexOf('packDetailTab === "publish" ? "space-y-3" : "hidden"');
+    expect(stageClass).toBeGreaterThan(-1);
+    expect(publishClass).toBeGreaterThan(stageClass);
+    const stageDivStart = page.lastIndexOf("<div", stageClass);
+    const publishDivStart = page.lastIndexOf("<div", publishClass);
+    const between = page.slice(stageDivStart, publishDivStart);
+    const opens = (between.match(/<div\b/g) ?? []).length - (between.match(/<div\b[^>]*\/>/g) ?? []).length;
+    const closes = (between.match(/<\/div>/g) ?? []).length;
+    expect(opens - closes).toBe(0);
+  });
+
+  it("disables the destructive remove action for cards without a work item", () => {
+    // Codex P2: the board read model can surface active cards with
+    // workItemId: null; the menu must not submit a null work-item removal.
+    const menuStart = page.indexOf('data-testid="editorial-row-actions"');
+    expect(menuStart).toBeGreaterThan(-1);
+    const menu = page.slice(menuStart, menuStart + 3200);
+    expect(menu).toContain('text-destructive hover:bg-destructive/10" disabled={!card.workItemId}');
+  });
+});

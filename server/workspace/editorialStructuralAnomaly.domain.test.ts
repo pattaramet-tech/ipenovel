@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   editorialDuplicateSimilarity,
   evaluateEditorialStructuralAnomalies,
+  isExactAcceptedSourceNote,
   parseEditorialEpisodeRange,
   type EditorialStructuralTabInput,
 } from "./editorialStructuralAnomaly.domain";
@@ -302,7 +303,15 @@ describe("Editorial Structural Anomaly domain", () => {
     expect(result.summary.blockingAnomalyCount).toBe(1);
   });
 
-  it("IPE-060B G. whitespace variations of the exact note resolve through existing normalization", () => {
+  it("IPE-060B G. whitespace-variant note spelling is NOT exempt and stays ordinary content", () => {
+    // IPE-060R2 review pin: normalizeForShape collapses whitespace runs but
+    // keeps a single space, so "หมายเหตุ จากต้นฉบับ" cannot equal the
+    // space-free accepted constant — the exception must stay exact. The
+    // resulting "no anomaly" outcome comes from the tab being ordinary
+    // content (the broad SOURCE_NOTE_RE never matched spaced spellings,
+    // before IPE-060B as well), not from the exact-note exemption.
+    expect(isExactAcceptedSourceNote("  หมายเหตุ  จากต้นฉบับ  ")).toBe(false);
+    expect(isExactAcceptedSourceNote("หมายเหตุจากต้นฉบับ")).toBe(true);
     const result = evaluateEditorialStructuralAnomalies({
       episodeNumber: "205",
       tabs: [
