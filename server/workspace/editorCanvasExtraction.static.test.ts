@@ -99,6 +99,28 @@ describe("IPE-062R4D — pack/chapter tree navigation", () => {
     expect(page).toContain("activeChapterTabId={chapterEditorTarget?.sourceTabId ?? null}");
     expect(page).toContain("chapters={filteredChapterEditorTabs.map((tab: any) => {");
   });
+
+  it("M2. the outer master-detail grid keeps exactly THREE direct columns (no 4th child spill)", () => {
+    // Staging regression: the chapter tools card was a direct grid child, so
+    // the outer 3-column grid flowed [tree][tools][editor-squeezed-to-280px]
+    // and pushed the side panel to a second row. The tree and the tools card
+    // must share ONE wrapper div as the single left-column child.
+    const lines = page.split("\n");
+    const ternary = lines.findIndex((l) => l.includes("{activeStoryGroup ? ("));
+    expect(ternary).toBeGreaterThan(-1);
+    // The first thing in the true branch is a wrapper div, not a bare
+    // fragment (a fragment would make the tools card a 4th grid child).
+    expect(lines[ternary + 1].trim()).toBe('<div className="space-y-3">');
+    const gridChar = page.indexOf('data-testid="workspace-master-detail"');
+    expect(gridChar).toBeGreaterThan(-1);
+    const gridSlice = page.slice(gridChar, page.indexOf("</main>", gridChar));
+    // No stray fragment close between the panel invocation and the tools card.
+    const panelIdx = gridSlice.indexOf("<WorkspacePackListPanel");
+    const toolsIdx = gridSlice.indexOf('data-testid="workspace-chapter-tools"');
+    expect(panelIdx).toBeGreaterThan(-1);
+    expect(toolsIdx).toBeGreaterThan(panelIdx);
+    expect(gridSlice.slice(panelIdx, toolsIdx)).not.toContain("</>");
+  });
 });
 
 describe("IPE-062R4D — guards and invariants (R3/R4A preserved)", () => {

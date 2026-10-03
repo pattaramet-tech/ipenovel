@@ -3461,7 +3461,10 @@ export default function WorkspacePage() {
 
             <div className="grid items-start gap-4 xl:grid-cols-[minmax(250px,0.65fr)_minmax(0,2.1fr)_minmax(280px,0.85fr)]" data-testid="workspace-master-detail">
             {activeStoryGroup ? (
-                <>
+                <div className="space-y-3">
+                {/* IPE-062R4D fix: ONE wrapper per grid column — the tree and
+                    the chapter tools share the left column so the outer
+                    3-column grid keeps exactly three direct children. */}
               <WorkspacePackListPanel
                 storyTitle={activeStoryGroup.novel?.title ?? "Untitled novel"}
                 packs={activeStoryPacks}
@@ -3711,7 +3714,7 @@ export default function WorkspacePage() {
                   </div>
                 </Card>
               )}
-                </>
+                </div>
             ) : (
               <Card className="space-y-3 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
