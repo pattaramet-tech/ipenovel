@@ -98,14 +98,17 @@ export function defaultWorkspaceToolDeps(): WorkspaceToolDeps {
   };
 }
 
-/** Human-readable JSON-schema for each tool's strict arguments object. */
+/** Human-readable JSON-schema for each tool's strict arguments object.
+ *  `required` defaults to every property; pass an explicit subset to
+ *  advertise optional arguments (e.g. pack.list's novelId filter). */
 function toolInputSchema(
-  properties: Record<string, { type: "integer"; minimum: number }>
+  properties: Record<string, { type: "integer"; minimum: number }>,
+  required: string[] = Object.keys(properties)
 ): { type: "object"; properties: Record<string, { type: "integer"; minimum: number }>; required: string[]; additionalProperties: false } {
   return {
     type: "object",
     properties,
-    required: Object.keys(properties),
+    required,
     additionalProperties: false,
   };
 }
@@ -124,7 +127,7 @@ export function buildPluginToolsList(): Array<{
     "workspace.get": toolInputSchema(WORKSPACE_ID_PROPERTY),
     "novel.list": toolInputSchema(WORKSPACE_ID_PROPERTY),
     "novel.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, novelId: { type: "integer", minimum: 1 } }),
-    "pack.list": toolInputSchema(WORKSPACE_ID_PROPERTY),
+    "pack.list": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, novelId: { type: "integer" as const, minimum: 1 } }, ["workspaceId"]),
     "pack.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
     "chapter.list": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
     "chapter.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, chapterId: { type: "integer", minimum: 1 } }),

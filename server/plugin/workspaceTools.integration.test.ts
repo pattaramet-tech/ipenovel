@@ -270,6 +270,7 @@ async function runConsentAndExchange(
     `${baseUrl}/api/plugin/oauth/authorize?${new URLSearchParams({
       client_id: client.clientId,
       redirect_uri: REDIRECT_URI,
+      response_type: "code",
       response_mode: "query",
       scope,
       state,

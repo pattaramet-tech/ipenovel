@@ -132,6 +132,7 @@ export function registerPluginFoundationRoutes(app: Express) {
         const attempt = await beginPluginAuthorization({
           clientId: textParam(req, "client_id"),
           redirectUri: textParam(req, "redirect_uri"),
+          responseType: textParam(req, "response_type"),
           responseMode: textParam(req, "response_mode"),
           state: textParam(req, "state"),
           scope: textParam(req, "scope"),

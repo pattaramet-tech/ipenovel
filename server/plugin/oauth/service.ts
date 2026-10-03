@@ -21,13 +21,16 @@ import {
   findActivePluginOAuthClient,
   findPluginAccessTokenOwnerByHash,
   findPluginConsentAttemptByStateHash,
+  findPluginRefreshTokenByIdForUpdate,
   findPluginRefreshTokenByHash,
   findValidPluginAccessToken,
   revokeAllTokensForAuthorization,
   revokePluginAccessToken,
   revokePluginRefreshToken,
+  runPluginTransaction,
   touchPluginAuthorizationLastUsed,
   upsertPluginAuthorizationScope,
+  type PluginDbExecutor,
 } from "../store";
 // IPE-PLUGIN-001B OAuth 2.1 authorization-code + PKCE flow logic.
 //
@@ -81,6 +84,8 @@ export function parseRegisteredRedirectUris(raw: string): string[] {
 export type PluginAuthorizeInput = {
   clientId: string | undefined;
   redirectUri: string | undefined;
+  /** RFC 6749 §3.1.1 - only the exact literal "code" is accepted. */
+  responseType: string | undefined;
   responseMode: string | undefined;
   state: string | undefined;
   scope: string | undefined;
@@ -108,6 +113,13 @@ export async function beginPluginAuthorization(
   input: PluginAuthorizeInput
 ): Promise<PluginConsentAttemptCreated> {
   if (!input.clientId || !input.redirectUri || !input.state || !input.scope || !input.codeChallenge) {
+    throw pluginOAuthError("invalid_request");
+  }
+  // RFC 6749 §3.1.1: response_type is REQUIRED and this server only ever
+  // issues authorization codes - missing, "token" (implicit flow, dead since
+  // OAuth 2.1), or any other value fails closed BEFORE any consent attempt
+  // is persisted, so a rejected authorize leaves nothing behind.
+  if (input.responseType !== "code") {
     throw pluginOAuthError("invalid_request");
   }
   if (input.responseMode !== undefined && input.responseMode !== "query") {
@@ -215,11 +227,21 @@ export async function decidePluginConsent(
   }
 
   const stateHash = hashPluginSecret(input.state);
+  // The claim IS the authority: one conditional UPDATE (consumedAt IS NULL)
+  // flips the attempt, and the affected-row count decides the sole winner.
+  // A concurrent duplicate decision matches zero rows and fails closed
+  // BEFORE any validation result can be reused - exactly one consent
+  // decision per attempt, no matter how many race.
+  const claimed = await consumePluginConsentAttempt(stateHash);
+  if (!claimed) {
+    await audit("consent_rejected", input.userId, null, { reason: "attempt_missing_or_consumed" });
+    throw pluginOAuthError("invalid_grant");
+  }
   const attempt = await findPluginConsentAttemptByStateHash(stateHash);
-  // Consume unconditionally on read - every path below is terminal.
-  await consumePluginConsentAttempt(stateHash);
 
-  if (!attempt || attempt.consumedAt !== null) {
+  if (!attempt) {
+    // Claimed but unreadable (expired-row sweep race) - the attempt is
+    // burned either way; fail closed.
     await audit("consent_rejected", input.userId, null, { reason: "attempt_missing_or_consumed" });
     throw pluginOAuthError("invalid_grant");
   }
@@ -343,33 +365,44 @@ export type PluginTokenGrant = {
   scope: string;
 };
 
-async function issueGrant(input: {
-  authorizationId: number;
-  userId: number;
-  clientId: string;
-  scope: string;
-  now: Date;
-}): Promise<PluginTokenGrant> {
+async function issueGrant(
+  input: {
+    authorizationId: number;
+    userId: number;
+    clientId: string;
+    scope: string;
+    now: Date;
+  },
+  exec?: PluginDbExecutor
+): Promise<PluginTokenGrant> {
   const accessToken = PLUGIN_ACCESS_TOKEN_PREFIX + generatePluginOpaqueToken();
   const refreshToken = PLUGIN_REFRESH_TOKEN_PREFIX + generatePluginOpaqueToken();
   // Persisted BEFORE the response is built - a grant that is not durably
-  // stored must never be handed to a client.
-  await createPluginAccessToken({
-    tokenHash: hashPluginSecret(accessToken),
-    authorizationId: input.authorizationId,
-    userId: input.userId,
-    clientId: input.clientId,
-    scope: input.scope,
-    expiresAt: new Date(input.now.getTime() + PLUGIN_ACCESS_TOKEN_TTL_MS),
-  });
-  await createPluginRefreshToken({
-    tokenHash: hashPluginSecret(refreshToken),
-    authorizationId: input.authorizationId,
-    userId: input.userId,
-    clientId: input.clientId,
-    scope: input.scope,
-    expiresAt: new Date(input.now.getTime() + PLUGIN_REFRESH_TOKEN_TTL_MS),
-  });
+  // stored must never be handed to a client. Under runPluginTransaction both
+  // inserts land in the rotation's transaction, so a concurrent reuse
+  // detection that flips the family afterwards covers them too.
+  await createPluginAccessToken(
+    {
+      tokenHash: hashPluginSecret(accessToken),
+      authorizationId: input.authorizationId,
+      userId: input.userId,
+      clientId: input.clientId,
+      scope: input.scope,
+      expiresAt: new Date(input.now.getTime() + PLUGIN_ACCESS_TOKEN_TTL_MS),
+    },
+    exec
+  );
+  await createPluginRefreshToken(
+    {
+      tokenHash: hashPluginSecret(refreshToken),
+      authorizationId: input.authorizationId,
+      userId: input.userId,
+      clientId: input.clientId,
+      scope: input.scope,
+      expiresAt: new Date(input.now.getTime() + PLUGIN_REFRESH_TOKEN_TTL_MS),
+    },
+    exec
+  );
   return {
     accessToken,
     refreshToken,
@@ -470,42 +503,75 @@ export async function refreshPluginTokens(
     throw pluginOAuthError("invalid_grant");
   }
 
-  // Reuse detection FIRST: a rotated-or-revoked token being presented again
-  // is treated as a stolen grant - the whole (user, client) family dies.
-  if (stored.revokedAt !== null) {
-    await revokeAllTokensForAuthorization(stored.authorizationId, input.now);
-    await audit("refresh_reuse_detected", stored.userId, {
-      authorizationId: stored.authorizationId,
-      action: "grant_family_revoked",
-    });
-    throw pluginOAuthError("invalid_grant");
-  }
-  if (stored.expiresAt.getTime() <= input.now.getTime()) {
-    await audit("token_refresh_rejected", stored.userId, { reason: "refresh_expired" });
-    throw pluginOAuthError("invalid_grant");
-  }
-
-  // Atomic rotation: only the first caller with this exact token wins.
-  const rotated = await revokePluginRefreshToken(stored.id, input.now);
-  if (!rotated) {
-    await revokeAllTokensForAuthorization(stored.authorizationId, input.now);
-    await audit("refresh_reuse_detected", stored.userId, {
-      authorizationId: stored.authorizationId,
-      action: "grant_family_revoked",
-    });
-    throw pluginOAuthError("invalid_grant");
-  }
-
-  // Scope is inherited verbatim - a refresh can never broaden (or narrow) it.
-  const grant = await issueGrant({
-    authorizationId: stored.authorizationId,
-    userId: stored.userId,
-    clientId: stored.clientId,
-    scope: stored.scope,
-    now: input.now,
+  // The ENTIRE rotation is one serialized critical section: lock the refresh
+  // row FOR UPDATE, re-check, rotate conditionally, and issue the successor
+  // grant INSIDE the same transaction. A concurrent request presenting the
+  // same token blocks on the row lock, then observes revokedAt set and runs
+  // reuse detection against the COMMITTED family - which by then contains
+  // the winner's fresh access+refresh pair, so the loser's grant-family
+  // revocation kills the winner's new tokens too. No interleaving exists
+  // where a winner's in-flight grant survives a detected reuse.
+  const outcome = await runPluginTransaction(async tx => {
+    const locked = await findPluginRefreshTokenByIdForUpdate(stored.id, tx);
+    // The row cannot vanish (refresh grants have no delete path outside the
+    // sweeper, and the sweeper only removes expired/rotated rows) - but a
+    // null here must fail closed exactly like an unknown token.
+    if (!locked) return { kind: "rejected" as const, actorUserId: null, reason: "unknown_refresh_token" };
+    if (locked.clientId !== client.clientId) {
+      return { kind: "rejected" as const, actorUserId: locked.userId, reason: "client_mismatch" };
+    }
+    // Reuse detection FIRST: a rotated-or-revoked token being presented
+    // again is treated as a stolen grant - the whole (user, client) family
+    // dies, including anything the winner issued moments ago.
+    if (locked.revokedAt !== null) {
+      await revokeAllTokensForAuthorization(locked.authorizationId, input.now, tx);
+      return { kind: "reuse" as const, actorUserId: locked.userId, authorizationId: locked.authorizationId };
+    }
+    if (locked.expiresAt.getTime() <= input.now.getTime()) {
+      return { kind: "expired" as const, actorUserId: locked.userId };
+    }
+    // Belt-and-braces conditional rotate under the lock: only the first
+    // caller flips a live row, and the successor grant commits with it.
+    const rotated = await revokePluginRefreshToken(locked.id, input.now, tx);
+    if (!rotated) {
+      await revokeAllTokensForAuthorization(locked.authorizationId, input.now, tx);
+      return { kind: "reuse" as const, actorUserId: locked.userId, authorizationId: locked.authorizationId };
+    }
+    // Scope is inherited verbatim - a refresh can never broaden (or narrow) it.
+    const grant = await issueGrant(
+      {
+        authorizationId: locked.authorizationId,
+        userId: locked.userId,
+        clientId: locked.clientId,
+        scope: locked.scope,
+        now: input.now,
+      },
+      tx
+    );
+    return { kind: "granted" as const, actorUserId: locked.userId, authorizationId: locked.authorizationId, grant };
   });
-  await audit("token_refreshed", stored.userId, { authorizationId: stored.authorizationId, scope: stored.scope });
-  return grant;
+
+  switch (outcome.kind) {
+    case "rejected":
+      await audit("token_refresh_rejected", outcome.actorUserId, { reason: outcome.reason });
+      throw pluginOAuthError("invalid_grant");
+    case "expired":
+      await audit("token_refresh_rejected", outcome.actorUserId, { reason: "refresh_expired" });
+      throw pluginOAuthError("invalid_grant");
+    case "reuse":
+      await audit("refresh_reuse_detected", outcome.actorUserId, {
+        authorizationId: outcome.authorizationId,
+        action: "grant_family_revoked",
+      });
+      throw pluginOAuthError("invalid_grant");
+    case "granted":
+      await touchPluginAuthorizationLastUsed(outcome.authorizationId, input.now);
+      await audit("token_refreshed", outcome.actorUserId, {
+        authorizationId: outcome.authorizationId,
+        scope: outcome.grant.scope,
+      });
+      return outcome.grant;
+  }
 }
 
 export type PluginRevocationOutcome = { revoked: boolean };

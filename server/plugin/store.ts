@@ -129,12 +129,21 @@ export async function findPluginConsentAttemptByStateHash(
 }
 
 /** Single-use: a consumed attempt can never be read back as consumable. */
-export async function consumePluginConsentAttempt(stateHash: string): Promise<void> {
+export async function consumePluginConsentAttempt(stateHash: string): Promise<boolean> {
   const db = await requirePluginDb();
-  await db
+  const claimed = await db
     .update(pluginOAuthConsentAttempts)
     .set({ consumedAt: new Date() })
-    .where(eq(pluginOAuthConsentAttempts.stateHash, stateHash));
+    .where(
+      and(
+        eq(pluginOAuthConsentAttempts.stateHash, stateHash),
+        isNull(pluginOAuthConsentAttempts.consumedAt)
+      )
+    )
+    .limit(1);
+  // Sole-winner authority: the conditional UPDATE is the claim - exactly one
+  // concurrent consent decision can ever flip a live attempt to consumed.
+  return affectedRowCount(claimed) === 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,14 +339,56 @@ export type InsertPluginAccessToken = {
 
 export type InsertPluginRefreshToken = InsertPluginAccessToken & { rotatedAt?: Date };
 
-export async function createPluginAccessToken(input: InsertPluginAccessToken): Promise<void> {
+/**
+ * Executor handle for plugin writes: the pooled db or an open transaction
+ * (see runPluginTransaction). Write helpers accept it so a caller can keep
+ * several writes inside ONE serialized transaction.
+ */
+export type PluginDbExecutor = PluginDb;
+
+/**
+ * Runs `fn` inside one plugin transaction. The refresh-rotation critical
+ * section (row lock -> re-check -> rotate -> issue) must live inside a
+ * single commit so a concurrent reuse-detection loser can never observe -
+ * let alone revoke around - a family state that half-contains the winner's
+ * in-flight grant: the winner's rotation and BOTH new token inserts commit
+ * atomically, so any later family revocation covers them too.
+ */
+export async function runPluginTransaction<T>(
+  fn: (tx: PluginDbExecutor) => Promise<T>
+): Promise<T> {
   const db = await requirePluginDb();
+  return await db.transaction(async tx => fn(tx as unknown as PluginDbExecutor));
+}
+
+/** Re-reads one refresh grant with FOR UPDATE - the rotation row lock. */
+export async function findPluginRefreshTokenByIdForUpdate(
+  id: number,
+  exec: PluginDbExecutor
+): Promise<PluginRefreshGrant | null> {
+  const rows = await exec
+    .select()
+    .from(pluginRefreshGrants)
+    .where(eq(pluginRefreshGrants.id, id))
+    .limit(1)
+    .for("update");
+  return rows[0] ?? null;
+}
+
+export async function createPluginAccessToken(
+  input: InsertPluginAccessToken,
+  exec?: PluginDbExecutor
+): Promise<void> {
+  const db = exec ?? (await requirePluginDb());
   await assertAccountMergeClassifiedMutationAllowed(input.userId, db);
   await db.insert(pluginAccessGrants).values(input);
 }
 
-export async function createPluginRefreshToken(input: InsertPluginRefreshToken): Promise<void> {
-  const db = await requirePluginDb();
+export async function createPluginRefreshToken(
+  input: InsertPluginRefreshToken,
+  exec?: PluginDbExecutor
+): Promise<void> {
+  const db = exec ?? (await requirePluginDb());
   await assertAccountMergeClassifiedMutationAllowed(input.userId, db);
   await db.insert(pluginRefreshGrants).values(input);
 }
@@ -413,9 +464,10 @@ export async function findPluginRefreshTokenByHash(
 /** Revokes exactly one refresh token; returns true only for the first revoker. */
 export async function revokePluginRefreshToken(
   id: number,
-  now: Date
+  now: Date,
+  exec?: PluginDbExecutor
 ): Promise<boolean> {
-  const db = await requirePluginDb();
+  const db = exec ?? (await requirePluginDb());
   const result = await db
     .update(pluginRefreshGrants)
     .set({ revokedAt: now })
@@ -443,9 +495,10 @@ export async function revokePluginAccessToken(
  */
 export async function revokeAllTokensForAuthorization(
   authorizationId: number,
-  now: Date
+  now: Date,
+  exec?: PluginDbExecutor
 ): Promise<void> {
-  const db = await requirePluginDb();
+  const db = exec ?? (await requirePluginDb());
   await db
     .update(pluginAccessGrants)
     .set({ revokedAt: now })

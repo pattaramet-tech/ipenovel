@@ -51,7 +51,12 @@ describe("PKCE S256", () => {
     const challenge = computePkceS256Challenge(verifier);
     expect(verifyPkceS256({ codeVerifier: verifier, codeChallenge: challenge })).toBe(true);
     expect(verifyPkceS256({ codeVerifier: generatePluginOpaqueToken(), codeChallenge: challenge })).toBe(false);
-    expect(verifyPkceS256({ codeVerifier: verifier, codeChallenge: challenge.slice(0, -1) + "A" })).toBe(false);
+    // Tamper the LAST character to a GUARANTEED-different one - a blind "A"
+    // suffix is a 1-in-32 flake (base64url chars are random, "A" sometimes
+    // IS the original last char, and then the "tampered" challenge equals
+    // the real one and legitimately verifies).
+    const tamperedLastChar = challenge.endsWith("A") ? "B" : "A";
+    expect(verifyPkceS256({ codeVerifier: verifier, codeChallenge: challenge.slice(0, -1) + tamperedLastChar })).toBe(false);
     expect(verifyPkceS256({ codeVerifier: "", codeChallenge: challenge })).toBe(false);
     expect(verifyPkceS256({ codeVerifier: verifier, codeChallenge: "" })).toBe(false);
   });

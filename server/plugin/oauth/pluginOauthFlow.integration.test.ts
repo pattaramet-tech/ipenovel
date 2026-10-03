@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 import express from "express";
 import { createServer, type Server } from "node:http";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 // IPE-PLUGIN-001B integration + security suite - the real OAuth 2.1 + PKCE
 // flow against the real (test) MySQL, proving:
@@ -43,6 +43,7 @@ import {
   pluginAuditLogs,
   pluginOAuthAuthorizations,
   pluginOAuthClients,
+  pluginOAuthConsentAttempts,
   pluginRefreshGrants,
 } from "../../../drizzle/schema";
 import { getTestDb } from "../../test-helpers/testDb";
@@ -101,7 +102,13 @@ async function sessionCookie(user: TestUserFixture): Promise<string> {
 async function runAuthorizeAndConsent(
   user: TestUserFixture,
   client: { clientId: string },
-  overrides: Partial<{ scope: string; decision: "approve" | "deny"; csrfToken: string }> = {}
+  overrides: Partial<{
+    scope: string;
+    decision: "approve" | "deny";
+    csrfToken: string;
+    responseType: string;
+    expectedAuthorizeStatus: number;
+  }> = {}
 ): Promise<{ code: string | null; state: string; verifier: string; location: string | null; consentStatus: number }> {
   const verifier = generatePluginOpaqueToken();
   const challenge = computePkceS256Challenge(verifier);
@@ -114,6 +121,7 @@ async function runAuthorizeAndConsent(
     new URLSearchParams({
       client_id: client.clientId,
       redirect_uri: REDIRECT_URI,
+      response_type: overrides.responseType ?? "code",
       response_mode: "query",
       scope,
       state,
@@ -124,7 +132,19 @@ async function runAuthorizeAndConsent(
     headers: { cookie },
     redirect: "manual",
   });
-  expect(authorizeResponse.status).toBe(200);
+  expect(authorizeResponse.status).toBe(overrides.expectedAuthorizeStatus ?? 200);
+  if (authorizeResponse.status !== 200) {
+    // Rejected authorize (e.g. response_type contract) - nothing to consent,
+    // no csrf to extract; caller asserts the status.
+    return {
+      code: null,
+      state,
+      verifier,
+      location: null,
+      consentStatus: 0,
+      authorizeStatus: authorizeResponse.status,
+    };
+  }
   const setCookie = authorizeResponse.headers.get("set-cookie") ?? "";
   expect(setCookie).toContain("plugin_oauth_consent_csrf=");
   const html = await authorizeResponse.text();
@@ -151,7 +171,14 @@ async function runAuthorizeAndConsent(
   if (location) {
     code = new URL(location).searchParams.get("code");
   }
-  return { code, state, verifier, location, consentStatus: consentResponse.status };
+  return {
+    code,
+    state,
+    verifier,
+    location,
+    consentStatus: consentResponse.status,
+    authorizeStatus: authorizeResponse.status,
+  };
 }
 
 async function exchangeCode(
@@ -334,6 +361,16 @@ describe("plugin OAuth 2.1 + PKCE flow (happy path)", () => {
     const listing = await callMcp(grant.accessToken, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect(listing.status).toBe(200);
     const tools = (listing.body!.result as Record<string, unknown>).tools as Array<Record<string, unknown>>;
+    const packListTool = tools.find(tool => tool.name === "pack.list");
+    expect(packListTool!.inputSchema).toEqual({
+      type: "object",
+      properties: {
+        workspaceId: { type: "integer", minimum: 1 },
+        novelId: { type: "integer", minimum: 1 },
+      },
+      required: ["workspaceId"],
+      additionalProperties: false,
+    });
     expect([...tools.map(tool => tool.name)].sort()).toEqual(
       [
         "identity.whoami",
@@ -515,6 +552,141 @@ describe("credentials that must fail closed", () => {
   });
 });
 
+describe("authorize response_type contract (R2)", () => {
+  async function rawAuthorize(overrides: { responseType?: string } = {}): Promise<{ status: number; state: string }> {
+    const user = await createTestUser();
+    createdUserIds.push(user.id);
+    const client = await createTestPluginClient();
+    const cookie = await sessionCookie(user);
+    const state = uniqueTestTag("state");
+    const params = new URLSearchParams({
+      client_id: client.clientId,
+      redirect_uri: REDIRECT_URI,
+      response_mode: "query",
+      scope: "identity:read",
+      state,
+      code_challenge: computePkceS256Challenge(generatePluginOpaqueToken()),
+      code_challenge_method: "S256",
+    });
+    if (overrides.responseType !== undefined) params.set("response_type", overrides.responseType);
+    const response = await fetch(`${baseUrl}/api/plugin/oauth/authorize?${params}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    return { status: response.status, state };
+  }
+
+  it("rejects a MISSING response_type with invalid_request before persisting anything", async () => {
+    const { status, state } = await rawAuthorize({});
+    expect(status).toBe(400);
+    const db = getTestDb();
+    const rows = await db
+      .select({ id: pluginOAuthConsentAttempts.id })
+      .from(pluginOAuthConsentAttempts)
+      .where(eq(pluginOAuthConsentAttempts.stateHash, hashPluginSecret(state)));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects response_type=token (implicit flow) exactly the same way", async () => {
+    const { status, state } = await rawAuthorize({ responseType: "token" });
+    expect(status).toBe(400);
+    const db = getTestDb();
+    const rows = await db
+      .select({ id: pluginOAuthConsentAttempts.id })
+      .from(pluginOAuthConsentAttempts)
+      .where(eq(pluginOAuthConsentAttempts.stateHash, hashPluginSecret(state)));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("accepts the exact response_type=code (positive control)", async () => {
+    const user = await createTestUser();
+    createdUserIds.push(user.id);
+    const client = await createTestPluginClient();
+    const consent = await runAuthorizeAndConsent(user, client, { responseType: "code" });
+    expect(consent.authorizeStatus).toBe(200);
+    expect(consent.consentStatus).toBe(302);
+    expect(consent.code).toBeTruthy();
+  });
+});
+
+describe("concurrent consent decision race (R2)", () => {
+  it("yields exactly ONE winner for the same state, and the winning code still redeems", async () => {
+    const user = await createTestUser();
+    createdUserIds.push(user.id);
+    const client = await createTestPluginClient();
+    const cookie = await sessionCookie(user);
+    const verifier = generatePluginOpaqueToken();
+    const state = uniqueTestTag("state");
+    const authorizeResponse = await fetch(
+      `${baseUrl}/api/plugin/oauth/authorize?${new URLSearchParams({
+        client_id: client.clientId,
+        redirect_uri: REDIRECT_URI,
+        response_type: "code",
+        response_mode: "query",
+        scope: "identity:read",
+        state,
+        code_challenge: computePkceS256Challenge(verifier),
+        code_challenge_method: "S256",
+      })}`,
+      { headers: { cookie }, redirect: "manual" }
+    );
+    expect(authorizeResponse.status).toBe(200);
+    const html = await authorizeResponse.text();
+    const csrfToken = /name=\"csrfToken\" value=\"([^\"]+)\"/.exec(html)![1];
+    const decide = () =>
+      fetch(`${baseUrl}/api/plugin/oauth/authorize/consent`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: `${cookie}; plugin_oauth_consent_csrf=${csrfToken}`,
+        },
+        body: new URLSearchParams({ state, csrfToken, decision: "approve" }).toString(),
+        redirect: "manual",
+      });
+    const [r1, r2] = await Promise.all([decide(), decide()]);
+    expect([r1.status, r2.status].sort((a, b) => a - b)).toEqual([302, 400]);
+    const winner = r1.status === 302 ? r1 : r2;
+    const code = new URL(winner.headers.get("location") ?? "").searchParams.get("code");
+    expect(code).toBeTruthy();
+    const exchange = await exchangeCode(client, { code: code as string, verifier });
+    expect(exchange.status).toBe(200);
+  });
+});
+
+describe("concurrent refresh rotation race (R2)", () => {
+  it("lets exactly one concurrent refresh win and the reuse-detection loser revokes the winner's fresh grant too", async () => {
+    const user = await createTestUser();
+    createdUserIds.push(user.id);
+    const client = await createTestPluginClient();
+    const grant = await fullGrantFor(user, client);
+    const refresh = (refreshToken: string): Promise<{ status: number; body: Record<string, unknown> }> =>
+      fetch(`${baseUrl}/api/plugin/oauth/token`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`,
+        },
+        body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refreshToken }),
+      }).then(async response => ({ status: response.status, body: (await response.json()) as Record<string, unknown> }));
+
+    const [r1, r2] = await Promise.all([refresh(grant.refreshToken), refresh(grant.refreshToken)]);
+    expect([r1.status, r2.status].sort((a, b) => a - b)).toEqual([200, 400]);
+    const loser = r1.status === 400 ? r1 : r2;
+    expect(loser.body.error).toBe("invalid_grant");
+    const winnerBody = r1.status === 200 ? r1.body : r2.body;
+    const freshGrant = expectGrant(winnerBody);
+
+    // The loser's reuse detection commits AFTER the winner's rotation+issuance
+    // (single serialized critical section), so the family revocation MUST
+    // cover the winner's brand-new access AND refresh tokens.
+    const probe = await callMcp(freshGrant.accessToken, { jsonrpc: "2.0", id: 30, method: "tools/list" });
+    expect(probe.status).toBe(401);
+    const retry = await refresh(freshGrant.refreshToken);
+    expect(retry.status).toBe(400);
+    expect(retry.body.error).toBe("invalid_grant");
+  });
+});
+
 describe("authorization-code binding failures", () => {
   it("rejects a wrong PKCE verifier", async () => {
     const user = await createTestUser();
@@ -602,6 +774,7 @@ describe("authorization-code binding failures", () => {
       `${baseUrl}/api/plugin/oauth/authorize?${new URLSearchParams({
         client_id: client.clientId,
         redirect_uri: REDIRECT_URI,
+        response_type: "code",
         scope: "identity:read",
         state,
         code_challenge: computePkceS256Challenge(verifier),
