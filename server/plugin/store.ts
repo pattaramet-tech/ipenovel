@@ -759,7 +759,14 @@ function pluginPackQuery(db: PluginDb, userId: number) {
   return db
     .select(pluginPackSelection)
     .from(workspaceEditorialWorkItems)
-    .innerJoin(workspaceNovels, eq(workspaceNovels.id, workspaceEditorialWorkItems.workspaceNovelId))
+    .innerJoin(
+      workspaceNovels,
+      and(
+        eq(workspaceNovels.id, workspaceEditorialWorkItems.workspaceNovelId),
+        // Binding boundary: paused/unlinked workspaceNovels hide their packs.
+        eq(workspaceNovels.status, "active")
+      )
+    )
     .innerJoin(novels, eq(novels.id, workspaceNovels.novelId))
     .innerJoin(workspaceKanbanCards, eq(workspaceKanbanCards.id, workspaceEditorialWorkItems.cardId))
     .innerJoin(
@@ -850,7 +857,14 @@ function pluginChapterQuery(db: PluginDb, userId: number) {
       workspaceEditorialWorkItems,
       eq(workspaceEditorialWorkItems.id, workspaceEditorialDrafts.workItemId)
     )
-    .innerJoin(workspaceNovels, eq(workspaceNovels.id, workspaceEditorialWorkItems.workspaceNovelId))
+    .innerJoin(
+      workspaceNovels,
+      and(
+        eq(workspaceNovels.id, workspaceEditorialWorkItems.workspaceNovelId),
+        // Binding boundary: paused/unlinked workspaceNovels hide their chapters.
+        eq(workspaceNovels.status, "active")
+      )
+    )
     .innerJoin(workspaceKanbanCards, eq(workspaceKanbanCards.id, workspaceEditorialWorkItems.cardId))
     .innerJoin(
       workspaceKanbanBoards,

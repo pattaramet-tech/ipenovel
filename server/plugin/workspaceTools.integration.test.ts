@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import express from "express";
 import { createServer, type Server } from "node:http";
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 // IPE-PLUGIN-001C integration + security suite - the tenant authorization
 // boundary exercised end-to-end over the real (test) MySQL:
@@ -145,14 +145,37 @@ async function createEditorialPack(input: {
   const itemKey = `ep-${uniqueTestTag("pack")}`;
 
   // Editorial board (slug "editorial") + one kanban column, per workspace.
-  const boardId = extractInsertId(
-    await db
-      .insert(workspaceKanbanBoards)
-      .values({ workspaceId: input.workspaceId, name: "Editorial", slug: "editorial" })
-  );
-  const columnId = extractInsertId(
-    await db.insert(workspaceKanbanColumns).values({ boardId, key: "new", name: "ใหม่เข้า", position: 0 })
-  );
+  // Boards are UNIQUE(workspaceId, slug), so multiple packs in one workspace
+  // SHARE the board/column - find-or-create instead of blind insert.
+  const existingBoards = await db
+    .select({ boardId: workspaceKanbanBoards.id })
+    .from(workspaceKanbanBoards)
+    .where(
+      and(
+        eq(workspaceKanbanBoards.workspaceId, input.workspaceId),
+        eq(workspaceKanbanBoards.slug, "editorial")
+      )
+    )
+    .limit(1);
+  let boardId = existingBoards[0]?.boardId ?? 0;
+  if (!boardId) {
+    boardId = extractInsertId(
+      await db
+        .insert(workspaceKanbanBoards)
+        .values({ workspaceId: input.workspaceId, name: "Editorial", slug: "editorial" })
+    );
+  }
+  const existingColumns = await db
+    .select({ columnId: workspaceKanbanColumns.id })
+    .from(workspaceKanbanColumns)
+    .where(and(eq(workspaceKanbanColumns.boardId, boardId), eq(workspaceKanbanColumns.key, "new")))
+    .limit(1);
+  let columnId = existingColumns[0]?.columnId ?? 0;
+  if (!columnId) {
+    columnId = extractInsertId(
+      await db.insert(workspaceKanbanColumns).values({ boardId, key: "new", name: "ใหม่เข้า", position: 0 })
+    );
+  }
   const cardId = extractInsertId(
     await db
       .insert(workspaceKanbanCards)
@@ -388,10 +411,14 @@ describe("plugin tenant boundary (001C)", () => {
   let w2: WorkspaceRef;
   let novelW1: { novelId: number };
   let novelW1Paused: { novelId: number };
+  let novelW1Unlinked: { novelId: number };
   let novelW2: { novelId: number };
   let w1BindingId = 0;
+  let w1PausedBindingId = 0;
   let pack1: PackRef;
   let pack2: PackRef;
+  let packPaused: PackRef;
+  let packUnlinked: PackRef;
   let grantA: { accessToken: string; refreshToken: string; scope: string };
   let grantB: { accessToken: string; refreshToken: string; scope: string };
   let grantC: { accessToken: string; refreshToken: string; scope: string };
@@ -420,8 +447,13 @@ describe("plugin tenant boundary (001C)", () => {
     createdNovelIds.push(novelW2.novelId);
 
     w1BindingId = await bindNovel(w1.workspaceId, novelW1.novelId, "active");
-    await bindNovel(w1.workspaceId, novelW1Paused.novelId, "paused");
+    w1PausedBindingId = await bindNovel(w1.workspaceId, novelW1Paused.novelId, "paused");
     const w2BindingId = await bindNovel(w2.workspaceId, novelW2.novelId, "active");
+    // A novel bound "active" then flipped to "unlinked" - the row stays, the
+    // boundary must still hide everything under it.
+    novelW1Unlinked = { novelId: (await createTestNovel({ title: "นิยาย W1 unlinked" })).id };
+    createdNovelIds.push(novelW1Unlinked.novelId);
+    const w1UnlinkedBindingId = await bindNovel(w1.workspaceId, novelW1Unlinked.novelId, "unlinked");
 
     pack1 = await createEditorialPack({
       workspaceId: w1.workspaceId,
@@ -441,6 +473,23 @@ describe("plugin tenant boundary (001C)", () => {
       episodeNumber: "1",
       draftVersions: [1],
       chapters: [{ tabOrder: 1, title: "แท็บ W2", chapterNumber: "1", chapterTitle: "W2 ตอนที่ 1" }],
+    });
+    // Packs UNDER non-active bindings - must be invisible through every tool.
+    packPaused = await createEditorialPack({
+      workspaceId: w1.workspaceId,
+      workspaceNovelId: w1PausedBindingId,
+      creator: userA,
+      episodeNumber: "1",
+      draftVersions: [1],
+      chapters: [{ tabOrder: 1, title: "แท็บ paused", chapterNumber: "1", chapterTitle: "paused ตอนที่ 1" }],
+    });
+    packUnlinked = await createEditorialPack({
+      workspaceId: w1.workspaceId,
+      workspaceNovelId: w1UnlinkedBindingId,
+      creator: userA,
+      episodeNumber: "1",
+      draftVersions: [1],
+      chapters: [{ tabOrder: 1, title: "แท็บ unlinked", chapterNumber: "1", chapterTitle: "unlinked ตอนที่ 1" }],
     });
 
     fullClient = await createTestPluginClient(ALL_READ_SCOPES);
@@ -583,6 +632,74 @@ describe("plugin tenant boundary (001C)", () => {
         await callTool(grantA.accessToken, "pack.get", { workspaceId: w1.workspaceId, packId: pack1.packId })
       );
       expect(aOwn.result).toMatchObject({ packId: pack1.packId, stage: "new" });
+    });
+  });
+
+  describe("active workspaceNovel binding boundary (paused/unlinked hidden)", () => {
+    it("pack.list exposes only packs under ACTIVE bindings", async () => {
+      const a = toolResult(await callTool(grantA.accessToken, "pack.list", { workspaceId: w1.workspaceId }));
+      expect(a.isError).toBe(false);
+      const packIds = (a.result!.packs as Array<{ packId: number }>).map(pack => pack.packId);
+      expect(packIds).toEqual([pack1.packId]);
+    });
+
+    it("pack.get under a paused or unlinked binding is NOT_FOUND", async () => {
+      const paused = toolResult(await callTool(grantA.accessToken, "pack.get", {
+        workspaceId: w1.workspaceId,
+        packId: packPaused.packId,
+      }));
+      expect(paused.notFound).toBe(true);
+      const unlinked = toolResult(await callTool(grantA.accessToken, "pack.get", {
+        workspaceId: w1.workspaceId,
+        packId: packUnlinked.packId,
+      }));
+      expect(unlinked.notFound).toBe(true);
+    });
+
+    it("chapter.list/get under a paused or unlinked binding is NOT_FOUND", async () => {
+      const pausedList = toolResult(await callTool(grantA.accessToken, "chapter.list", {
+        workspaceId: w1.workspaceId,
+        packId: packPaused.packId,
+      }));
+      expect(pausedList.notFound).toBe(true);
+      const unlinkedList = toolResult(await callTool(grantA.accessToken, "chapter.list", {
+        workspaceId: w1.workspaceId,
+        packId: packUnlinked.packId,
+      }));
+      expect(unlinkedList.notFound).toBe(true);
+      const pausedGet = toolResult(await callTool(grantA.accessToken, "chapter.get", {
+        workspaceId: w1.workspaceId,
+        chapterId: packPaused.chapterIds[0],
+      }));
+      expect(pausedGet.notFound).toBe(true);
+      const unlinkedGet = toolResult(await callTool(grantA.accessToken, "chapter.get", {
+        workspaceId: w1.workspaceId,
+        chapterId: packUnlinked.chapterIds[0],
+      }));
+      expect(unlinkedGet.notFound).toBe(true);
+    });
+
+    it("re-activating a binding brings its pack back (live boundary, not stale data)", async () => {
+      const db = getTestDb();
+      await db
+        .update(workspaceNovels)
+        .set({ status: "active" })
+        .where(eq(workspaceNovels.id, w1PausedBindingId));
+      try {
+        const a = toolResult(await callTool(grantA.accessToken, "pack.list", { workspaceId: w1.workspaceId }));
+        const packIds = (a.result!.packs as Array<{ packId: number }>).map(pack => pack.packId).sort((x, y) => x - y);
+        expect(packIds).toEqual([pack1.packId, packPaused.packId].sort((x, y) => x - y));
+        const packBack = toolResult(await callTool(grantA.accessToken, "pack.get", {
+          workspaceId: w1.workspaceId,
+          packId: packPaused.packId,
+        }));
+        expect(packBack.result).toMatchObject({ packId: packPaused.packId });
+      } finally {
+        await db
+          .update(workspaceNovels)
+          .set({ status: "paused" })
+          .where(eq(workspaceNovels.id, w1PausedBindingId));
+      }
     });
   });
 
