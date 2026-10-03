@@ -319,3 +319,46 @@ describe("Editorial Structural Anomaly domain", () => {
     expect(result.anomalies).toHaveLength(0);
     expect(result.summary.blockingAnomalyCount).toBe(0);
   });
+
+describe("IPE-060R1 — Thai numeral normalization interaction", () => {
+  it("classifies upstream-normalized Thai-digit content identically to Arabic digits", () => {
+    // Draft pipeline normalizes ๑๒๓ -> 123 before structural evaluation,
+    // so Thai-digit source text must classify exactly like Arabic text.
+    const thai = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "1-2",
+      tabs: [
+        tab({ sourceTabId: "t1", tabOrder: 0, chapterNumber: "1", paragraphs: ["บทที่ 1 จุดเริ่มต้น", "เนื้อหา", "จบตอน"] }),
+        tab({ sourceTabId: "t2", tabOrder: 1, chapterNumber: "2", paragraphs: ["บทที่ 2 ต่อ", "เนื้อหา", "จบตอน"] }),
+      ],
+    });
+    const arabic = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "1-2",
+      tabs: [
+        tab({ sourceTabId: "t1", tabOrder: 0, chapterNumber: "1", paragraphs: ["บทที่ 1 จุดเริ่มต้น", "เนื้อหา", "จบตอน"] }),
+        tab({ sourceTabId: "t2", tabOrder: 1, chapterNumber: "2", paragraphs: ["บทที่ 2 ต่อ", "เนื้อหา", "จบตอน"] }),
+      ],
+    });
+    expect(thai.summary.anomalyCount).toBe(arabic.summary.anomalyCount);
+    expect(thai.summary.blockingAnomalyCount).toBe(arabic.summary.blockingAnomalyCount);
+    expect(thai.anomalies).toHaveLength(0);
+  });
+
+  it("digit suffix after the source note does not widen the exact-note exception", () => {
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "7",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "7",
+          chapterTitle: "หมายเหตุจากต้นฉบับ ๑๒๓",
+          tabTitle: "หมายเหตุจากต้นฉบับ ๑๒๓",
+          paragraphs: ["หมายเหตุจากต้นฉบับ ๑๒๓", "จบตอน"],
+        }),
+      ],
+    });
+    // ๑๒๓ normalizes to 123 but the row text is no longer the EXACT note,
+    // so the accepted-source-note exception must not silently apply.
+    expect(result.summary.counts.source_note_only).toBe(1);
+  });
+});

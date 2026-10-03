@@ -356,3 +356,30 @@ describe("IPE-058-D Full Checker parity core", () => {
       preview.document.tabs[0]!.paragraphs.filter(row => row.text === "จบตอน")
     ).toHaveLength(1);
   });
+
+describe("IPE-060R1 — Thai numeral normalization in the full checker", () => {
+  it("Thai-digit content upstream-normalized to Arabic receives the ending marker normally", () => {
+    const draft = documentFromTabs([
+      { sourceTabId: "ch", tabOrder: 1, paragraphs: ["บทที่ ๑ จุดเริ่มต้น", "พายุกำลังจะมาถึง"] },
+    ]);
+    const preview = previewEditorialFullCheckerTransform({
+      document: draft,
+      transformCode: "ending_cleanup",
+    });
+    expect(preview.document.tabs[0]!.paragraphs.at(-1)?.text).toBe("จบตอน");
+  });
+
+
+  it("digit suffix after หมายเหตุจากต้นฉบับ does not trigger the exact-note ending exception", () => {
+    const draft = documentFromTabs([
+      { sourceTabId: "note", tabOrder: 1, paragraphs: ["บทที่ 7", "หมายเหตุจากต้นฉบับ ๑๒๓", "เนื้อหาจริง"] },
+    ]);
+    const preview = previewEditorialFullCheckerTransform({
+      document: draft,
+      transformCode: "ending_cleanup",
+    });
+    // Only the EXACT canonical note is exempt — a digit suffix is ordinary
+    // narrative and still receives the ending marker.
+    expect(preview.document.tabs[0]!.paragraphs.at(-1)?.text).toBe("จบตอน");
+  });
+});
