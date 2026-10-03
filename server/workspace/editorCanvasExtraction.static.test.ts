@@ -55,6 +55,31 @@ describe("IPE-062R4A — three-pane editor surface", () => {
     expect(page).toContain("xl:grid-cols-[minmax(220px,0.55fr)_minmax(0,2.6fr)_minmax(260px,0.9fr)]");
   });
 
+  it("B2. the three panes are direct grid siblings (assist rail never nests in the editor pane)", () => {
+    // Div-balance from each pane marker to its wrapper close: the editor
+    // pane must close BEFORE the assist pane opens (Codex P1 on the first
+    // cut rendered the rail inside the hidden-height editor wrapper).
+    const lines = page.split("\n");
+    const balanceFrom = (marker: string) => {
+      const open = lines.findIndex((l) => l.includes(marker));
+      let bal = 0;
+      for (let i = open; i < lines.length; i++) {
+        const l = lines[i];
+        bal +=
+          (l.match(/<div\b/g) ?? []).length -
+          (l.match(/<div\b[^>]*\/>/g) ?? []).length -
+          (l.match(/<\/div>/g) ?? []).length;
+        if (bal === 0) return { open: open + 1, close: i + 1 };
+      }
+      return null;
+    };
+    const editor = balanceFrom('data-testid="workspace-chapter-editor-pane"');
+    const assist = balanceFrom('data-testid="workspace-assist-pane"');
+    expect(editor).not.toBeNull();
+    expect(assist).not.toBeNull();
+    expect(assist!.open).toBeGreaterThan(editor!.close);
+  });
+
   it("C. keeps exactly ONE active editor surface (no per-tab editors mounted)", () => {
     // The canvas is the only full-content editor: the central pane renders no
     // raw <textarea> other than the canvas component itself, and the legacy

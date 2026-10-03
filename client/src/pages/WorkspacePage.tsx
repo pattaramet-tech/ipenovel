@@ -4523,7 +4523,7 @@ export default function WorkspacePage() {
                         เลือกตอนจากรายการด้านซ้าย — Editor จะเปิดในพื้นที่นี้ทันที ไม่ต้องเลื่อนหา
                       </div>
                     )}
-
+                      </div>
 
                       <div className="space-y-2 xl:max-h-[52rem] xl:overflow-auto xl:pr-1" data-testid="workspace-assist-pane">
                         <details className="rounded-lg border bg-background">
@@ -4973,8 +4973,6 @@ export default function WorkspacePage() {
                               ))}
                             </div>
                           ))}
-                      </div>
-
                       </div>
                       </div>
                       </div>
