@@ -51,6 +51,7 @@ import {
 } from "./editorialBoard.service";
 import { projectEditorialBoardSaleFallback } from "./editorialBoardCommerceProjection.service";
 import {
+  getEditorialDraftOutline,
   getEditorialDraftReadModel,
   getEditorialSourceSnapshot,
   importEditorialSource,
@@ -1250,6 +1251,22 @@ export const workspaceRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await getEditorialDraftReadModel({
+            actorUserId: ctx.user.id,
+            ...input,
+          });
+        } catch (error) {
+          return mapWorkspaceError(error);
+        }
+      }),
+    // IPE-064R3: light per-tab outline (no paragraph text) so the
+    // pack/chapter tree renders without waiting on the full read model.
+    sourceDraftOutline: adminProcedure
+      .input(workspaceIdInput.extend({
+        workItemId: z.number().int().positive(),
+      }))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getEditorialDraftOutline({
             actorUserId: ctx.user.id,
             ...input,
           });

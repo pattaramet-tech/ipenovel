@@ -290,6 +290,19 @@ export default function WorkspacePage() {
       retry: false,
     }
   );
+  // IPE-064R3 perf: light per-tab outline (no paragraph text) — the
+  // pack/chapter tree and review summary render from this instead of
+  // waiting on the full sourceDraft payload.
+  const editorialSourceDraftOutline = trpc.workspace.editorial.sourceDraftOutline.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedSourceWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedSourceWorkItemId),
+      retry: false,
+    }
+  );
   const editorialForeignChecker = trpc.workspace.editorial.foreignChecker.useQuery(
     {
       workspaceId: selectedWorkspaceId ?? 0,
@@ -898,23 +911,42 @@ export default function WorkspacePage() {
       !editorialCheckerRunStale &&
       editorialCheckerData?.isCurrent !== false
   );
-  const currentCheckerFindings = editorialCheckerCurrent
-    ? ((editorialCheckerData?.findings ?? []) as any[])
-    : [];
-  const currentCheckerAnomalies = editorialCheckerCurrent
-    ? ((editorialCheckerData?.anomalies ?? []) as any[])
-    : [];
-  const chapterEditorStatusByTab = new Map(
-    chapterEditorTabs.map((tab: any) => [
-      tab.sourceTabId,
-      chapterEditorTabStatus({
-        sourceTabId: tab.sourceTabId,
-        paragraphs: tab.paragraphs ?? [],
-        checkerCurrent: editorialCheckerCurrent,
-        findings: currentCheckerFindings,
-        anomalies: currentCheckerAnomalies,
-      }),
-    ])
+  // IPE-064R3: memoized — these inputs feed every per-tab status derivation;
+  // without memo the whole pack was re-scanned on every keystroke.
+  const currentCheckerFindings = useMemo(
+    () =>
+      editorialCheckerCurrent
+        ? ((editorialCheckerData?.findings ?? []) as any[])
+        : ([] as any[]),
+    [editorialCheckerCurrent, editorialCheckerData]
+  );
+  const currentCheckerAnomalies = useMemo(
+    () =>
+      editorialCheckerCurrent
+        ? ((editorialCheckerData?.anomalies ?? []) as any[])
+        : ([] as any[]),
+    [editorialCheckerCurrent, editorialCheckerData]
+  );
+  const chapterEditorStatusByTab = useMemo(
+    () =>
+      new Map(
+        chapterEditorTabs.map((tab: any) => [
+          tab.sourceTabId,
+          chapterEditorTabStatus({
+            sourceTabId: tab.sourceTabId,
+            paragraphs: tab.paragraphs ?? [],
+            checkerCurrent: editorialCheckerCurrent,
+            findings: currentCheckerFindings,
+            anomalies: currentCheckerAnomalies,
+          }),
+        ])
+      ),
+    [
+      chapterEditorTabs,
+      editorialCheckerCurrent,
+      currentCheckerFindings,
+      currentCheckerAnomalies,
+    ]
   );
   const chapterEditorProgress = chapterEditorTabs.reduce(
     (summary, tab: any) => {
@@ -927,12 +959,62 @@ export default function WorkspacePage() {
     },
     { passed: 0, pending: 0, confirmed: 0, unchecked: 0 }
   );
-  const filteredChapterEditorTabs = chapterEditorTabs.filter((tab: any) => {
-    const status = chapterEditorStatusByTab.get(tab.sourceTabId);
-    return status
-      ? chapterEditorMatchesFilter(chapterEditorTabFilter, status)
-      : chapterEditorTabFilter === "all";
-  });
+  const filteredChapterEditorTabs = useMemo(
+    () =>
+      chapterEditorTabs.filter((tab: any) => {
+        const status = chapterEditorStatusByTab.get(tab.sourceTabId);
+        return status
+          ? chapterEditorMatchesFilter(chapterEditorTabFilter, status)
+          : chapterEditorTabFilter === "all";
+      }),
+    [chapterEditorTabs, chapterEditorStatusByTab, chapterEditorTabFilter]
+  );
+  // IPE-064R3: the pack/chapter tree and review summary render from the
+  // light outline (titles + server-computed edited flags) — they no longer
+  // wait for the full sourceDraft paragraph payload.
+  const editorialDraftOutlineData = editorialSourceDraftOutline.data as any;
+  const packOutlineRows = useMemo(
+    () =>
+      ((editorialDraftOutlineData?.tabs ?? []) as any[]).map((tab: any) => {
+        const status = chapterEditorTabStatus({
+          sourceTabId: tab.sourceTabId,
+          paragraphs: [],
+          edited: Boolean(tab.edited),
+          checkerCurrent: editorialCheckerCurrent,
+          findings: currentCheckerFindings,
+          anomalies: currentCheckerAnomalies,
+        });
+        return {
+          status,
+          row: {
+            sourceTabId: tab.sourceTabId as string,
+            title: String(tab.title ?? ""),
+            issueCount: status.issueCount,
+            foreignFindingCount: status.foreignFindingCount,
+            structuralIssueCount: status.structuralIssueCount,
+            progressState: status.progressState as
+              | "passed"
+              | "pending"
+              | "confirmed"
+              | "unchecked",
+            empty: Number(tab.paragraphCount ?? 0) === 0,
+          },
+        };
+      }),
+    [
+      editorialDraftOutlineData,
+      editorialCheckerCurrent,
+      currentCheckerFindings,
+      currentCheckerAnomalies,
+    ]
+  );
+  const packTreeChapters = useMemo(
+    () =>
+      packOutlineRows
+        .filter(entry => chapterEditorMatchesFilter(chapterEditorTabFilter, entry.status))
+        .map(entry => entry.row),
+    [packOutlineRows, chapterEditorTabFilter]
+  );
   const chapterEditorCurrentIndex = chapterEditorTarget
     ? chapterEditorTabs.findIndex(
         (tab: any) => tab.sourceTabId === chapterEditorTarget.sourceTabId
@@ -1545,15 +1627,9 @@ export default function WorkspacePage() {
   }, [activeStoryKey]);
 
   const activeStoryPacks = activeStoryGroup ? activeStoryGroup.cards : [];
-  const reviewChapters = chapterEditorTabs.map((tab: any) => {
-    const status = chapterEditorStatusByTab.get(tab.sourceTabId);
-    return {
-      sourceTabId: tab.sourceTabId,
-      title: tab.title,
-      issueCount: status?.issueCount ?? 0,
-      progressState: (status?.progressState ?? "unchecked") as "passed" | "pending" | "confirmed" | "unchecked",
-    };
-  });
+  // IPE-064R3: review summary renders from the light outline (unfiltered —
+  // the tree applies its own tab filter; the summary always shows all).
+  const reviewChapters = packOutlineRows.map(entry => entry.row);
   const jumpToReviewChapter = (sourceTabId: string) => {
     const tab = chapterEditorTabs.find((candidate: any) => candidate.sourceTabId === sourceTabId);
     if (tab) openChapterEditor(tab);
@@ -1821,22 +1897,17 @@ export default function WorkspacePage() {
                 editSalePending={updateEditorialEpisodeSale.isPending}
                 editNotePending={updateEditorialWorkItemNote.isPending}
                 removePending={removeEditorialEpisode.isPending}
-                chapters={filteredChapterEditorTabs.map((tab: any) => {
-                  const status = chapterEditorStatusByTab.get(tab.sourceTabId);
-                  return {
-                    sourceTabId: tab.sourceTabId,
-                    title: tab.title,
-                    issueCount: status?.issueCount ?? 0,
-                    foreignFindingCount: status?.foreignFindingCount ?? 0,
-                    structuralIssueCount: status?.structuralIssueCount ?? 0,
-                    progressState: (status?.progressState ?? "unchecked") as "passed" | "pending" | "confirmed" | "unchecked",
-                    empty: (tab.paragraphs?.length ?? 0) === 0,
-                  };
-                })}
+                chapters={packTreeChapters}
                 activeChapterTabId={chapterEditorTarget?.sourceTabId ?? null}
                 onSelectChapter={(row) => {
                   const tab = chapterEditorTabs.find((candidate: any) => candidate.sourceTabId === row.sourceTabId);
-                  if (tab) openChapterEditor(tab);
+                  // IPE-064R3: tree rows now render from the light outline and
+                  // can appear before the full paragraph payload arrives.
+                  if (!tab) {
+                    toast.info("กำลังโหลดเนื้อหาบท — กดอีกครั้งในอีกสักครู่");
+                    return;
+                  }
+                  openChapterEditor(tab);
                 }}
               />
               {selectedSourceWorkItemId && (

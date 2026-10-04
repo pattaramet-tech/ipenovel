@@ -97,7 +97,8 @@ describe("IPE-062R4D — pack/chapter tree navigation", () => {
 
   it("M. selected pack + selected chapter state stay wired", () => {
     expect(page).toContain("activeChapterTabId={chapterEditorTarget?.sourceTabId ?? null}");
-    expect(page).toContain("chapters={filteredChapterEditorTabs.map((tab: any) => {");
+    // IPE-064R3: the tree renders from the light outline rows.
+    expect(page).toContain("chapters={packTreeChapters}");
   });
 
   it("M2. the outer master-detail grid keeps exactly THREE direct columns (no 4th child spill)", () => {

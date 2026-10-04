@@ -759,6 +759,83 @@ export async function getEditorialDraftReadModel(input: {
   };
 }
 
+/**
+ * IPE-064R3 perf: the pack/chapter tree used to block on the full draft
+ * read model — every paragraph text of every tab, megabytes for a
+ * 50-chapter pack. The outline ships per-tab identity plus a paragraph
+ * count and the server-computed "edited" divergence flag only, so the
+ * tree renders immediately. The editor canvas keeps using the full
+ * sourceDraft read model.
+ */
+export async function getEditorialDraftOutline(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+}) {
+  const db = await database();
+  await requireWorkItem(
+    db,
+    input.actorUserId,
+    input.workspaceId,
+    input.workItemId
+  );
+  const latestDraft = await loadLatestDraft(db, input.workItemId);
+  if (!latestDraft) {
+    return { latestDraft: null, tabs: [] };
+  }
+  const tabs = await db
+    .select({
+      id: workspaceEditorialDraftTabs.id,
+      sourceTabId: workspaceEditorialDraftTabs.sourceTabId,
+      tabOrder: workspaceEditorialDraftTabs.tabOrder,
+      title: workspaceEditorialDraftTabs.title,
+      chapterNumber: workspaceEditorialDraftTabs.chapterNumber,
+      chapterTitle: workspaceEditorialDraftTabs.chapterTitle,
+      structuralSha256: workspaceEditorialDraftTabs.structuralSha256,
+    })
+    .from(workspaceEditorialDraftTabs)
+    .where(eq(workspaceEditorialDraftTabs.draftId, latestDraft.id))
+    .orderBy(asc(workspaceEditorialDraftTabs.tabOrder));
+  if (!tabs.length) {
+    return { latestDraft: null, tabs: [] };
+  }
+  const shapes = await db
+    .select({
+      draftTabId: workspaceEditorialDraftParagraphs.draftTabId,
+      paragraphCount: sql<number>`count(*)`,
+      editedCount: sql<number>`sum(case when ${workspaceEditorialDraftParagraphs.sourceParagraphIndex} < 0 or (${workspaceEditorialDraftParagraphs.sourceParagraphIndex} > 0 and ${workspaceEditorialDraftParagraphs.paragraphFingerprint} <> ${workspaceEditorialDraftParagraphs.sourceParagraphFingerprint}) then 1 else 0 end)`,
+    })
+    .from(workspaceEditorialDraftParagraphs)
+    .where(
+      inArray(
+        workspaceEditorialDraftParagraphs.draftTabId,
+        tabs.map(tab => tab.id)
+      )
+    )
+    .groupBy(workspaceEditorialDraftParagraphs.draftTabId);
+  const shapeByTabId = new Map(shapes.map(shape => [shape.draftTabId, shape]));
+  return {
+    latestDraft: {
+      id: latestDraft.id,
+      version: latestDraft.version,
+      draftSha256: latestDraft.draftSha256,
+    },
+    tabs: tabs.map(tab => {
+      const shape = shapeByTabId.get(tab.id);
+      return {
+        sourceTabId: tab.sourceTabId,
+        tabOrder: tab.tabOrder,
+        title: tab.title,
+        chapterNumber: tab.chapterNumber,
+        chapterTitle: tab.chapterTitle,
+        structuralSha256: tab.structuralSha256,
+        paragraphCount: Number(shape?.paragraphCount ?? 0),
+        edited: Number(shape?.editedCount ?? 0) > 0,
+      };
+    }),
+  };
+}
+
 export async function getEditorialSourceSnapshot(input: {
   actorUserId: number;
   workspaceId: number;
