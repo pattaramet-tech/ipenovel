@@ -493,21 +493,17 @@ export default function WorkspacePage() {
         setChapterEditorTarget(undefined);
         setChapterEditorParagraphs([]);
       }
+      // IPE-064R2 perceived-latency fix: the server save copies the whole
+      // pack into a new immutable revision, and the automatic recheck re-runs
+      // the full deterministic checker (O(tabs²) near-duplicate scan) before
+      // the QC evidence turns CURRENT. Only the source-draft refetch is
+      // needed to rebind the open editor — everything else is refreshed by
+      // the background recheck when it lands, so the operator gets the save
+      // confirmation immediately and keeps working.
       const [sourceDraftResult] = await Promise.all([
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
-        editorialForeignChecker.refetch(),
-        editorialApproval.refetch(),
-        editorialBoard.refetch(),
       ]);
-      if (
-        selectedWorkspaceId &&
-        selectedSourceWorkItemId &&
-        result.draft?.id &&
-        result.isCurrent !== false
-      ) {
-        await runEditorialForeignCheckerOnceForDraft(result.draft.id);
-      }
       if (savedChapterTarget) {
         const freshDraftData = sourceDraftResult.data as any;
         const freshDraft = freshDraftData?.latestDraft;
@@ -549,8 +545,20 @@ export default function WorkspacePage() {
       toast.success(
         result.replayed
           ? "ใช้ผลบันทึกเดิมอย่างปลอดภัย"
-          : "บันทึก Draft เวอร์ชันใหม่และตรวจซ้ำแล้ว"
+          : "บันทึก Draft ใหม่แล้ว · กำลังตรวจซ้ำอัตโนมัติ"
       );
+      // Background recheck: the exactly-once guard coalesces repeats, its
+      // own onSuccess refreshes checker/approval/board, and mutation onError
+      // already toasts — swallow the chained rejection to avoid an
+      // unhandled-rejection warning on top of that toast.
+      if (
+        selectedWorkspaceId &&
+        selectedSourceWorkItemId &&
+        result.draft?.id &&
+        result.isCurrent !== false
+      ) {
+        void runEditorialForeignCheckerOnceForDraft(result.draft.id).catch(() => {});
+      }
     },
     onError: (error) => toast.error(error.message),
   });
@@ -627,10 +635,14 @@ export default function WorkspacePage() {
   });
   const allowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation({
     onSuccess: async () => {
+      // IPE-064R2: the allowlist change invalidates the QC identity, so the
+      // recheck is a FULL deterministic run — fire it in the background and
+      // let its own onSuccess refresh checker/approval/board (and toast the
+      // fresh finding count). The button spinner covers the mutation itself.
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
         if (latestDraft?.id) {
-          await runEditorialForeignCheckerOnceForDraft(latestDraft.id);
+          void runEditorialForeignCheckerOnceForDraft(latestDraft.id).catch(() => {});
         }
       }
     },
@@ -649,10 +661,11 @@ export default function WorkspacePage() {
   });
   const unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation({
     onSuccess: async () => {
+      // Same background-recheck rationale as foreignCheckerAllow.
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
         if (latestDraft?.id) {
-          await runEditorialForeignCheckerOnceForDraft(latestDraft.id);
+          void runEditorialForeignCheckerOnceForDraft(latestDraft.id).catch(() => {});
         }
       }
     },
@@ -2415,6 +2428,7 @@ export default function WorkspacePage() {
                       }));
                     })()}
                     checkerStale={editorialCheckerRunStale}
+                    rechecking={runEditorialForeignChecker.isPending}
                     canIgnore={Boolean(
                       selectedChapterEditorIssue &&
                         selectedChapterEditorIssue.kind === "finding" &&

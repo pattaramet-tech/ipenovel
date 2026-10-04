@@ -37,6 +37,8 @@ interface WorkspaceFindingActionsProps {
   currentIssue: WorkspaceFindingIssueInfo | null;
   relatedTabs: WorkspaceRelatedTab[];
   checkerStale: boolean;
+  /** True while the automatic full recheck (draft save / allowlist change) is in flight. */
+  rechecking: boolean;
   canIgnore: boolean;
   canAllow: boolean;
   canConfirmSourceNote: boolean;
@@ -66,6 +68,7 @@ export function WorkspaceFindingActions({
   currentIssue,
   relatedTabs,
   checkerStale,
+  rechecking,
   canIgnore,
   canAllow,
   canConfirmSourceNote,
@@ -93,7 +96,7 @@ export function WorkspaceFindingActions({
           <div className="font-medium">จุดที่ต้องแก้ ({issueCount})</div>
           <div className="text-xs text-muted-foreground">
             คำต่างประเทศ {findingsCount} · structural {structuralCount}
-            {checkerStale ? " · ผลตรวจเก่า — ตรวจซ้ำก่อน" : ""}
+            {rechecking ? " · กำลังตรวจซ้ำ…" : checkerStale ? " · ผลตรวจเก่า — ตรวจซ้ำก่อน" : ""}
           </div>
         </div>
         <span className="rounded-full border bg-background px-2 py-0.5 text-xs text-muted-foreground">
