@@ -191,10 +191,21 @@ async function readSheetRows(input: {
     metadata = await transport.getSpreadsheetMetadata(
       NQA_AUTOLINK_LIVE_TARGET.spreadsheetId
     );
-  } catch {
+  } catch (error) {
+    // IPE-064R3 diagnostics: token decrypt, refresh and HTTP failures all
+    // funnel through here — surface the transport's safe code/status (no
+    // token material) instead of collapsing them into one vague message.
+    const transportCode = (error as { code?: unknown })?.code;
+    const transportStatus = (error as { status?: unknown })?.status;
+    const detail = [
+      typeof transportCode === "string" ? transportCode : null,
+      typeof transportStatus === "number" ? `HTTP ${transportStatus}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
     throw new WorkspaceMasterIntakeError(
       "GOOGLE_READ_FAILED",
-      "Google Sheets metadata could not be read."
+      `Google Sheets metadata could not be read${detail ? ` (${detail})` : ""}.`
     );
   }
   const sheet = metadata.sheets.find(

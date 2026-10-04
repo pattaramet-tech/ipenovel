@@ -808,6 +808,15 @@ export default function WorkspaceIntakePage() {
                       }
                       try {
                         const response = await masterIntakePreviewQuery.refetch();
+                        // IPE-061R5: refetch() does not reject on query errors —
+                        // an unhandled response.error used to vanish silently,
+                        // making Preview Sync look like a dead button.
+                        if (response.error) {
+                          toast.error(
+                            `Preview Sync ไม่สำเร็จ: ${response.error.message}`
+                          );
+                          return;
+                        }
                         if (response.data) setMasterIntakePreviewResult(response.data);
                       } catch (error) {
                         toast.error(error instanceof Error ? error.message : "Preview Sync ไม่สำเร็จ");
