@@ -92,7 +92,7 @@ const productionGuardEvidence: Record<string, string[]> = {
   // merge can never silently rewrite authorship attribution.
   novels: [
     "requireAdminAuthorIdentity(ctx.user.id)",
-    "authorUserId: authorIdentity.userId",
+    "createAuthorOwnedNovelWithDb(db, userId, data)",
     ".where(eq(novels.authorUserId, userId))",
   ],
   carts: ["withAccountMergeClassifiedMutationGuard(userId, undefined"],

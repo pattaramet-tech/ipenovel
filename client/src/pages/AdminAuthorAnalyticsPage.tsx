@@ -42,6 +42,8 @@ export default function AdminAuthorAnalyticsPage() {
   const {
     data,
     isLoading,
+    isError,
+    error: summaryError,
     refetch: refetchSummary,
   } = trpc.admin.authorAnalytics.summary.useQuery(
     {
@@ -169,7 +171,29 @@ export default function AdminAuthorAnalyticsPage() {
           />
         </div>
 
-        {isLoading ? (
+        {isError ? (
+          // IPE-063R3 (P2): a query failure is an operational error, not an
+          // empty dataset — never render fake zero metrics here.
+          <Card data-testid="author-analytics-error" className="border-destructive bg-destructive/5">
+            <CardContent className="space-y-3 p-5">
+              <p className="font-medium text-destructive">โหลดข้อมูล Author Analytics ไม่สำเร็จ</p>
+              <p className="text-sm text-muted-foreground">
+                {summaryError instanceof Error
+                  ? summaryError.message
+                  : "เกิดข้อผิดพลาดชั่วคราว — ระบบไม่สามารถอ่านข้อมูลได้ในขณะนี้"}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => refetchSummary()}
+                data-testid="author-analytics-retry"
+              >
+                ลองใหม่
+              </Button>
+            </CardContent>
+          </Card>
+        ) : isLoading ? (
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {Array.from({ length: 4 }).map((_, index) => (
               <Skeleton key={index} className="h-28 rounded-lg" />

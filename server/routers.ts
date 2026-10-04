@@ -1798,11 +1798,18 @@ export const appRouter = router({
           })
         )
         .mutation(async ({ input, ctx }) => {
+          // IPE-063R3 (P1+P2): fail fast when no usable Author identity
+          // exists, then create under the account-merge barrier inside one
+          // guarded transaction that resolves the authoritative name from
+          // the locked user row — caller-supplied author identity is
+          // ignored and a concurrent rename cannot leave a stale byline.
           const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
-          return db.createNovel({
-            ...input,
-            author: authorIdentity.displayName,
-            authorUserId: authorIdentity.userId,
+          return db.createAuthorOwnedNovel(authorIdentity.userId, {
+            title: input.title,
+            description: input.description,
+            coverImageUrl: input.coverImageUrl,
+            publicationStatus: input.publicationStatus,
+            storyStatus: input.storyStatus,
           });
         }),
 
@@ -2750,8 +2757,12 @@ export const appRouter = router({
       novels: adminProcedure
         .input(z.object({ rows: z.array(z.object({ title: z.string() })) }))
         .mutation(async ({ input, ctx }) => {
+          // IPE-063R3 (P1+P2): fail fast without an identity, then pass only
+          // the userId — each row resolves the authoritative name under its
+          // own account-merge-barriered transaction (partial-success
+          // contract preserved, no cached name across inserts).
           const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
-          return db.bulkCreateNovels(input.rows, authorIdentity);
+          return db.bulkCreateNovels(input.rows, { userId: authorIdentity.userId });
         }),
 
       episodes: adminProcedure

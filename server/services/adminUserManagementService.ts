@@ -1,5 +1,6 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as db from "../db";
+import { novels, users } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
 
 /**
@@ -304,6 +305,27 @@ export async function updateAdminUserProfile(params: {
     );
     if (!applied) {
       throw new AdminUserManagementError("CONFLICT", "Update failed - the account may have changed concurrently");
+    }
+
+    // IPE-063R3 (P2): fallback account-name propagation. When the target
+    // has NO pen name (users.authorName IS NULL), the account name IS the
+    // effective Author byline — so an account rename must sync every novel
+    // the target owns (novels.authorUserId = target), under the canonical
+    // Account Merge barrier and inside this same transaction (a blocked
+    // merge rolls the rename back too — no partial rename/propagation).
+    // Rule B: a target WITH an explicit pen name keeps it — do not touch
+    // novels.author. Legacy novels (authorUserId IS NULL) are structurally
+    // excluded by the WHERE. A cleared account name (null) cannot derive a
+    // byline, so propagation is skipped and the last known byline stays.
+    if (nameChanged && params.name != null && params.name.trim() !== "") {
+      const authorState = await db.getUserAuthorNameState(params.userId, tx);
+      if (authorState && authorState.authorName == null) {
+        await db.assertAccountMergeClassifiedMutationAllowed(params.userId, tx);
+        await tx
+          .update(novels)
+          .set({ author: params.name })
+          .where(eq(novels.authorUserId, params.userId));
+      }
     }
 
     // Step 8: audit log(s) - one row per changed field type, matching the

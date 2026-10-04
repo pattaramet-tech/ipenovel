@@ -45,3 +45,32 @@ describe("IPE-063R1 author name / pen name schema", () => {
     expect(dbSource).toContain("authorName ?? accountName");
   });
 });
+
+describe("IPE-063R3 account-merge barrier + fallback propagation", () => {
+  const service = readFileSync(path.join(root, "server", "services", "adminUserManagementService.ts"), "utf8");
+  const dbSource2 = readFileSync(path.join(root, "server", "db.ts"), "utf8");
+
+  it("creation and rename propagation sit under the canonical account-merge barrier", () => {
+    expect(dbSource2).toContain("createAuthorOwnedNovelWithDb(db, userId, data)");
+    expect(dbSource2).toContain("withAccountMergeClassifiedMutationGuard(userId, db, async (tx: any) => {");
+    expect(dbSource2).toContain("await assertAccountMergeClassifiedMutationAllowed(userId, tx);");
+    // Router fail-fast + guarded creator delegation.
+    const routers = readFileSync(path.join(root, "server", "routers.ts"), "utf8");
+    expect(routers).toContain("db.createAuthorOwnedNovel(authorIdentity.userId, {");
+    expect(routers).toContain("db.bulkCreateNovels(input.rows, { userId: authorIdentity.userId })");
+  });
+
+  it("propagates fallback account renames to owned novels only when no pen name is set", () => {
+    expect(service).toContain("assertAccountMergeClassifiedMutationAllowed(params.userId, tx)");
+    expect(service).toContain(".where(eq(novels.authorUserId, params.userId))");
+    // Rule B: explicit pen name wins — no account-name overwrite.
+    expect(service).toContain("authorState.authorName == null");
+  });
+
+  it("bulk creation resolves the authoritative name per row inside the guarded tx", () => {
+    expect(dbSource2).toContain("export async function bulkCreateNovelsWithDb(");
+    expect(dbSource2).toContain("resolveEffectiveAuthorNameWithDb(tx, authorUserId)");
+    // No cached display name crosses rows.
+    expect(dbSource2).not.toContain("displayName: authorIdentity.displayName");
+  });
+});

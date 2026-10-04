@@ -2577,8 +2577,14 @@ export async function getOrderHistory(orderId: number) {
  * Generate a unique slug from a title
  * If slug conflicts with existing novel, append a unique suffix
  */
-export async function generateUniqueSlug(title: string, existingNovelId?: number): Promise<string> {
-  const db = await getDb();
+export async function generateUniqueSlug(
+  title: string,
+  existingNovelId?: number,
+  tx?: any
+): Promise<string> {
+  // IPE-063R3: tx-aware so guarded author-creation transactions resolve the
+  // slug and insert inside the SAME serialization boundary.
+  const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
 
   // Strip non-ASCII characters (e.g. Thai) and use timestamp fallback if empty
@@ -2657,6 +2663,127 @@ export async function resolveEffectiveAuthorName(
 }
 
 /**
+ * IPE-063R3: tx-aware variant — MUST be used inside the guarded transaction
+ * that also inserts the novel, so the author identity read is serialized
+ * against concurrent authorProfile.update renames (the account-merge guard
+ * locks the user row before this read).
+ */
+/** IPE-063R3 (P2): the target's pen-name state for fallback rename decisions. */
+export async function getUserAuthorNameState(
+  userId: number,
+  tx?: any
+): Promise<{ authorName: string | null } | null> {
+  const database = tx ?? (await getDb());
+  if (!database) return null;
+  const [row] = await database
+    .select({ authorName: users.authorName })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return row ?? null;
+}
+
+export async function resolveEffectiveAuthorNameWithDb(
+  db: any,
+  userId: number
+): Promise<EffectiveAuthorName | null> {
+  const [user] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      authorName: users.authorName,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user) return null;
+  const authorName = normalizeAuthorNamePart(user.authorName);
+  const accountName = normalizeAuthorNamePart(user.name);
+  const effectiveAuthorName = authorName ?? accountName;
+  if (!effectiveAuthorName) return null;
+  return { userId: user.id, accountName: user.name ?? null, authorName: user.authorName ?? null, effectiveAuthorName };
+}
+
+/**
+ * IPE-063R3 (P1+P2): author-owned novel creation under the canonical
+ * Account Merge barrier, fully serialized with authorProfile.update:
+ *
+ *   lock target user row (merge barrier, FOR UPDATE)
+ *   → resolve effectiveAuthorName from the locked authoritative row
+ *   → generate slug + insert the novel (same transaction)
+ *   → commit
+ *
+ * A concurrent rename either commits before the lock is taken (create sees
+ * the new name) or waits for create to commit and then propagates the rename
+ * onto the newly created novel — a stale byline can never be committed.
+ */
+export async function createAuthorOwnedNovel(
+  userId: number,
+  data: {
+    title: string;
+    description?: string;
+    coverImageUrl?: string;
+    publicationStatus?: "published" | "archived";
+    storyStatus?: "ongoing" | "finished";
+  }
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return createAuthorOwnedNovelWithDb(db, userId, data);
+}
+
+export async function createAuthorOwnedNovelWithDb(
+  db: any,
+  userId: number,
+  data: {
+    title: string;
+    description?: string;
+    coverImageUrl?: string;
+    publicationStatus?: "published" | "archived";
+    storyStatus?: "ongoing" | "finished";
+  }
+) {
+  return withAccountMergeClassifiedMutationGuard(userId, db, async (tx: any) => {
+    const profile = await resolveEffectiveAuthorNameWithDb(tx, userId);
+    if (!profile) {
+      throw Object.assign(
+        new Error("กรุณาตั้งชื่อบัญชีแอดมินหรือชื่อ Author ก่อนสร้างนิยาย"),
+        { statusCode: 400 }
+      );
+    }
+    const slug = await generateUniqueSlug(data.title, undefined, tx);
+    const result = await tx.insert(novels).values({
+      title: data.title,
+      author: profile.effectiveAuthorName,
+      authorUserId: userId,
+      description: data.description || "",
+      coverImageUrl: data.coverImageUrl || "",
+      slug,
+      publicationStatus: data.publicationStatus || "published",
+      storyStatus: data.storyStatus || "ongoing",
+    });
+    let insertedId: number | undefined;
+    if (typeof result === "object" && result !== null) {
+      insertedId = (result as any).insertId;
+      if (!insertedId && Array.isArray(result) && result[0]) {
+        insertedId = (result[0] as any).insertId;
+      }
+      if (!insertedId && (result as any).meta) {
+        insertedId = (result as any).meta.insertId;
+      }
+    }
+    if (!insertedId) {
+      throw new Error("Failed to extract inserted novel ID from database result");
+    }
+    return {
+      id: insertedId,
+      author: profile.effectiveAuthorName,
+      authorUserId: userId,
+    } as any;
+  });
+}
+
+/**
  * IPE-063R1: set the admin's pen name and propagate it to every novel the
  * account owns (novels.authorUserId = userId) inside ONE transaction so the
  * public/SEO display name always matches the profile. Clearing authorName
@@ -2693,6 +2820,11 @@ export async function updateAuthorProfileWithDb(
     rawAuthorName == null ? null : normalizeAuthorNamePart(rawAuthorName);
 
   const { updatedNovels, accountName } = await db.transaction(async (tx: any) => {
+    // IPE-063R3 (P1): the byline propagation is an ownership write — it must
+    // sit under the canonical Account Merge barrier. The assert locks the
+    // user row FOR UPDATE first, which also serializes this rename against
+    // author-owned novel creation (the create path takes the same lock).
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
     const [user] = await tx
       .select({ id: users.id, name: users.name })
       .from(users)
@@ -2741,16 +2873,36 @@ export async function updateAuthorProfileWithDb(
  */
 export async function bulkCreateNovels(
   rows: Array<{ title: string }>,
-  authorIdentity?: { userId: number; displayName: string }
+  authorIdentity?: { userId: number; displayName?: string }
 ): Promise<{
   success: Array<{ rowIndex: number; novelId: number; title: string }>;
   errors: Array<{ rowIndex: number; error: string }>;
 }> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  return bulkCreateNovelsWithDb(db, rows, authorIdentity);
+}
 
+/**
+ * IPE-063R3: per-row guarded creation. Each row runs inside its OWN short
+ * account-merge-barriered transaction that locks the Author user row and
+ * resolves the authoritative effective name at insert time — the per-row
+ * partial-success contract is unchanged and no effective name is cached
+ * across rows, so an authorProfile.update racing the batch can never leave
+ * a stale byline on later rows (earlier rows are caught by the rename
+ * propagation, which covers every novel the account owns).
+ */
+export async function bulkCreateNovelsWithDb(
+  db: any,
+  rows: Array<{ title: string }>,
+  authorIdentity?: { userId: number }
+): Promise<{
+  success: Array<{ rowIndex: number; novelId: number; title: string }>;
+  errors: Array<{ rowIndex: number; error: string }>;
+}> {
   const success: Array<{ rowIndex: number; novelId: number; title: string }> = [];
   const errors: Array<{ rowIndex: number; error: string }> = [];
+  const authorUserId = authorIdentity?.userId;
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -2762,18 +2914,36 @@ export async function bulkCreateNovels(
     }
 
     try {
-      const slug = await generateUniqueSlug(row.title);
-      const result = await db.insert(novels).values({
-        title: row.title.trim(),
-        author: authorIdentity?.displayName ?? "",
-        authorUserId: authorIdentity?.userId ?? null,
-        description: "",
-        coverImageUrl: "",
-        slug,
-        status: "ongoing",
-      });
-
-      const novelId = (result as any).insertId;
+      if (!authorUserId) {
+        throw new Error("Author identity is required");
+      }
+      // P1 barrier + P2 serialization: resolve the authoritative name under
+      // the same short transaction that inserts the row.
+      const novelId = await withAccountMergeClassifiedMutationGuard(
+        authorUserId,
+        db,
+        async (tx: any) => {
+          const profile = await resolveEffectiveAuthorNameWithDb(tx, authorUserId);
+          if (!profile) {
+            throw new Error("Author identity is required");
+          }
+          const slug = await generateUniqueSlug(row.title.trim(), undefined, tx);
+          const result = await tx.insert(novels).values({
+            title: row.title.trim(),
+            author: profile.effectiveAuthorName,
+            authorUserId,
+            description: "",
+            coverImageUrl: "",
+            slug,
+            status: "ongoing",
+          });
+          const createdId = (result as any).insertId;
+          if (!Number.isInteger(createdId) || createdId <= 0) {
+            throw new Error("Failed to extract inserted novel ID from database result");
+          }
+          return createdId as number;
+        }
+      );
       success.push({ rowIndex: i, novelId, title: row.title });
     } catch (error) {
       errors.push({ rowIndex: i, error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}` });

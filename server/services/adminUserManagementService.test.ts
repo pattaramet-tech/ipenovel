@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as db from "../db";
 import { ENV } from "../_core/env";
 import {
@@ -74,6 +74,14 @@ function mockUserLocks(
 
 describe("updateAdminUserProfile", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  // IPE-063R3: default-mock the pen-name state probe so legacy name-only
+  // tests keep their exact tx call shape (a target WITH an explicit pen
+  // name skips fallback propagation entirely). The R3 propagation tests
+  // below override this mock with authorName: null.
+  beforeEach(() => {
+    vi.spyOn(db, "getUserAuthorNameState").mockResolvedValue({ authorName: "Existing Pen" });
+  });
 
   it("reason shorter than 5 chars -> BAD_REQUEST, database never touched", async () => {
     const dbSpy = vi.spyOn(db, "getDb");
@@ -486,6 +494,9 @@ describe("updateAdminUserProfile", () => {
       // i.e. never "actor first" as a fixed rule.
       vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
       vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      // IPE-063R3: re-establish the pen-name state probe cleared by the
+      // mid-test restoreAllMocks (pen name present => no propagation).
+      vi.spyOn(db, "getUserAuthorNameState").mockResolvedValue({ authorName: "Existing Pen" });
       const lockSpyB = vi.spyOn(db, "lockUserRowForUpdate").mockImplementation(async (id: number) =>
         id === 2 ? fakeUserRow({ id: 2, name: "Admin Two", role: "admin" }) : fakeUserRow({ id: 9, name: "Old" })
       );
@@ -1073,5 +1084,92 @@ describe("deleteAdminUserSafely", () => {
         forceDelete: true,
       })
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+
+
+describe("IPE-063R3 fallback account-name propagation", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function guardedFake() {
+    const novelUpdates: Array<Record<string, unknown>> = [];
+    const barrierCalls: number[] = [];
+    const tx = {
+      execute: async () => [[{ id: 2 }]],
+      update: (table: unknown) => ({
+        set: (values: Record<string, unknown>) => ({
+          where: async () => {
+            novelUpdates.push({ ...values, __table: String((table as any).name) });
+            return [{ affectedRows: 2 }];
+          },
+        }),
+      }),
+    };
+    const dbHandle = { transaction: async (cb: (tx: any) => Promise<any>) => cb(tx) };
+    return { novelUpdates, barrierCalls, tx, dbHandle };
+  }
+
+  it("propagates a fallback account rename to owned novels when no pen name is set", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    const { novelUpdates, barrierCalls, dbHandle } = guardedFake();
+    vi.spyOn(db, "getDb").mockResolvedValue(dbHandle as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old Name" }) });
+    vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+    vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+    vi.spyOn(db, "getUserAuthorNameState").mockResolvedValue({ authorName: null });
+    const barrierSpy = vi.spyOn(db, "assertAccountMergeClassifiedMutationAllowed").mockResolvedValue(undefined);
+
+    const result = await updateAdminUserProfile({
+      actorAdminId: 9,
+      userId: 1,
+      name: "New Byline Name",
+      reason: "account renamed at user request",
+    });
+
+    expect(result.name).toBe("New Byline Name");
+    expect(barrierSpy).toHaveBeenCalledWith(1, expect.anything());
+    expect(novelUpdates).toHaveLength(1);
+    expect(novelUpdates[0].author).toBe("New Byline Name");
+  });
+
+  it("keeps the explicit pen name when the account name changes (rule B)", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    const { novelUpdates, barrierCalls, dbHandle } = guardedFake();
+    vi.spyOn(db, "getDb").mockResolvedValue(dbHandle as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old Name" }) });
+    vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+    vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+    vi.spyOn(db, "getUserAuthorNameState").mockResolvedValue({ authorName: "Explicit Pen" });
+    const barrierSpy = vi.spyOn(db, "assertAccountMergeClassifiedMutationAllowed").mockResolvedValue(undefined);
+
+    await updateAdminUserProfile({
+      actorAdminId: 9,
+      userId: 1,
+      name: "New Account Name",
+      reason: "account renamed at user request",
+    });
+
+    expect(novelUpdates).toHaveLength(0);
+    expect(barrierSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the account-merge barrier blocks the fallback propagation", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    const { novelUpdates, dbHandle } = guardedFake();
+    vi.spyOn(db, "getDb").mockResolvedValue(dbHandle as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old Name" }) });
+    vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+    vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+    vi.spyOn(db, "getUserAuthorNameState").mockResolvedValue({ authorName: null });
+    vi.spyOn(db, "assertAccountMergeClassifiedMutationAllowed").mockRejectedValue(
+      new Error("Account merge in progress")
+    );
+
+    await expect(
+      updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "rename request" })
+    ).rejects.toThrow();
+
+    // No propagation row was written under a blocked merge.
+    expect(novelUpdates).toHaveLength(0);
   });
 });

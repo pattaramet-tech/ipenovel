@@ -52,3 +52,25 @@ describe("IPE-063R1 author profile section", () => {
     expect(source).not.toContain("window.location.reload");
   });
 });
+
+describe("IPE-063R3 analytics error state", () => {
+  it("renders a visible error card with retry instead of fake zero metrics", () => {
+    expect(source).toContain('data-testid="author-analytics-error"');
+    expect(source).toContain('data-testid="author-analytics-retry"');
+    expect(source).toContain("โหลดข้อมูล Author Analytics ไม่สำเร็จ");
+    expect(source).toContain("refetchSummary()");
+    // Error branch must come BEFORE the loading/success render and must not
+    // fall through to the metric grid.
+    const errorIdx = source.indexOf('data-testid="author-analytics-error"');
+    const zeroMetrics = source.indexOf('data?.totalNovels ?? 0');
+    expect(errorIdx).toBeGreaterThan(-1);
+    expect(zeroMetrics).toBeGreaterThan(errorIdx);
+  });
+
+  it("never reports an empty-novel claim from an undefined dataset", () => {
+    // The empty-novel message is only reachable in the success branch.
+    const emptyIdx = source.indexOf("You do not have any novels assigned to this Author account yet.");
+    const errorIdx = source.indexOf('data-testid="author-analytics-error"');
+    expect(emptyIdx).toBeGreaterThan(errorIdx);
+  });
+});
