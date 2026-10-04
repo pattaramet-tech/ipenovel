@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { normalizeEditorialText } from "./editorialDraft.domain";
+import {
+  EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE,
+  isSourceNoteChapterHeadingText,
+  normalizeEditorialText,
+} from "./editorialDraft.domain";
 
 export const EDITORIAL_STRUCTURAL_CHECK_VERSION =
   "workspace-editorial-structural-check-v1" as const;
@@ -93,7 +97,7 @@ function isSourceNote(value: string) {
  * normalization the shape checks use — no contains/startsWith/broad regex.
  * Every other source-note spelling keeps the existing blocking behavior.
  */
-export const EXACT_ACCEPTED_SOURCE_NOTE_TEXT = "หมายเหตุจากต้นฉบับ";
+export const EXACT_ACCEPTED_SOURCE_NOTE_TEXT = EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE;
 
 export function isExactAcceptedSourceNote(value: string) {
   return normalizeForShape(value) === EXACT_ACCEPTED_SOURCE_NOTE_TEXT;
@@ -220,10 +224,18 @@ function classifyTab(tab: EditorialStructuralTabInput) {
     // IPE-060B: a tab identified by the exact canonical source note whose
     // content is only that note (optionally plus an end marker) is an
     // intentional non-narrative tab — accepted as-is, not an anomaly.
+    // IPE-064R3: the chapter-heading line itself in the form "บทที่ 45
+    // หมายเหตุจากต้นฉบับ" is part of the intentional note tab — the note
+    // body lines follow the heading and must not block QC.
     if (
       (isExactAcceptedSourceNote(tab.tabTitle) ||
         isExactAcceptedSourceNote(tab.chapterTitle ?? "")) &&
-      meaningful.every(text => isExactAcceptedSourceNote(text) || isEndMarker(text))
+      meaningful.every(
+        text =>
+          isExactAcceptedSourceNote(text) ||
+          isEndMarker(text) ||
+          isSourceNoteChapterHeadingText(text)
+      )
     ) {
       return null;
     }

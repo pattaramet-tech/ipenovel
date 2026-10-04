@@ -267,7 +267,11 @@ describe("Editorial Structural Anomaly domain", () => {
     expect(result.summary.counts.source_note_only).toBe(0);
   });
 
-  it("IPE-060B C. numbered heading with source note keeps the original blocking behavior", () => {
+  it("IPE-064R3 C. numbered heading with source note is accepted, not a blocking anomaly", () => {
+    // Supersedes the IPE-060B "keeps the original blocking behavior" pin:
+    // a chapter whose heading is "บทที่ NN หมายเหตุจากต้นฉบับ" with only
+    // note lines (+ optional legacy end marker) is an intentional
+    // non-narrative chapter and must not block QC.
     const result = evaluateEditorialStructuralAnomalies({
       episodeNumber: "138",
       tabs: [
@@ -281,8 +285,30 @@ describe("Editorial Structural Anomaly domain", () => {
         }),
       ],
     });
-    expect(result.summary.counts.source_note_only).toBe(1);
-    expect(result.summary.blockingAnomalyCount).toBe(1);
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+    expect(result.summary.counts.source_note_only).toBe(0);
+  });
+
+  it("IPE-064R3 C2. numbered source-note heading without a legacy end marker is accepted too", () => {
+    // New builds stop appending จบตอน to source-note chapters — the
+    // acceptance must not depend on the end marker being present.
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "138",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "138",
+          chapterTitle: "หมายเหตุจากต้นฉบับ",
+          tabTitle: "บทที่ 138 หมายเหตุจากต้นฉบับ",
+          paragraphs: ["บทที่ 138 หมายเหตุจากต้นฉบับ", "หมายเหตุจากต้นฉบับ"],
+        }),
+      ],
+    });
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+    expect(result.summary.counts.source_note_only).toBe(0);
   });
 
   it("IPE-060B D. near-miss spelling หมายเหตุต้นฉบับ keeps the original behavior", () => {

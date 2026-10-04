@@ -101,6 +101,24 @@ describe("editorial draft Production-derived preparation", () => {
     expect(final).toEqual(["บทที่ 1 เริ่ม", "เนื้อเรื่อง", "จบตอน"]);
   });
 
+  it("IPE-064R3: a source-note chapter never receives the generated จบตอน marker", () => {
+    const versions = runEditorialPreparationPipeline(
+      payload(["บทที่ 45 หมายเหตุจากต้นฉบับ", "หมายเหตุจากต้นฉบับ"])
+    );
+    const final = versions.at(-1)!.document.tabs[0].paragraphs.map(p => p.text);
+    expect(final).toEqual(["บทที่ 45 หมายเหตุจากต้นฉบับ", "หมายเหตุจากต้นฉบับ"]);
+    // The chapter identity is still extracted for the shape checks.
+    expect(versions.at(-1)!.document.tabs[0].chapterTitle).toBe("หมายเหตุจากต้นฉบับ");
+  });
+
+  it("IPE-064R3: a normal chapter without an end marker still gets one", () => {
+    const versions = runEditorialPreparationPipeline(
+      payload(["บทที่ 46 ต่อ", "เนื้อเรื่องปกติ"])
+    );
+    const final = versions.at(-1)!.document.tabs[0].paragraphs.map(p => p.text);
+    expect(final.at(-1)).toBe("จบตอน");
+  });
+
   it("splits the same adjacent quote/bracket pairs as Production", () => {
     const versions = runEditorialPreparationPipeline(
       payload(["“หนึ่ง” “สอง”", "[A][B]", "【HP: 10】【MP: 20】"])
