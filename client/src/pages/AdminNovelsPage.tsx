@@ -150,7 +150,10 @@ export default function AdminNovelsPage() {
   }
 
   const filteredNovels = novels?.filter((n: any) => {
-    const matchesSearch = n.title.toLowerCase().includes(searchTerm.toLowerCase());
+    const normalizedSearch = searchTerm.toLowerCase();
+    const matchesSearch =
+      n.title.toLowerCase().includes(normalizedSearch) ||
+      (n.author || "").toLowerCase().includes(normalizedSearch);
     const matchesStatus = 
       publicationFilter === "all" ||
       (publicationFilter === "published" && n.publicationStatus === "published") ||
@@ -234,6 +237,23 @@ export default function AdminNovelsPage() {
                       onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                       placeholder="Enter novel title"
                     />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Author</label>
+                    <Input
+                      value={
+                        editingNovelId
+                          ? (novels?.find((novel: any) => novel.id === editingNovelId)?.author || "Unassigned")
+                          : (user?.name || "")
+                      }
+                      readOnly
+                      disabled
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      {editingNovelId
+                        ? "Author ownership stays with the admin who created this novel."
+                        : "Assigned automatically from the admin account that creates this novel."}
+                    </p>
                   </div>
                   <div>
                     <label className="text-sm font-semibold text-slate-700 block mb-2">Publication Status</label>
@@ -391,7 +411,7 @@ export default function AdminNovelsPage() {
         {/* Search Bar */}
         <div className="flex gap-4">
           <Input
-            placeholder="Search by title..."
+            placeholder="Search by title or author..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="max-w-md"
@@ -418,6 +438,7 @@ export default function AdminNovelsPage() {
               <thead className="bg-slate-100 border-b border-slate-200">
                 <tr>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Title</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Author</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Status</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Story</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Actions</th>
@@ -437,6 +458,9 @@ export default function AdminNovelsPage() {
                         )}
                         <span className="font-medium text-slate-900">{novel.title}</span>
                       </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-sm text-slate-700">{novel.author || "Unassigned"}</span>
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${

@@ -723,6 +723,7 @@ export async function getNovelEpisodeStats(novelId: number) {
 export async function createNovel(data: {
   title: string;
   author?: string;
+  authorUserId?: number | null;
   description?: string;
   coverImageUrl?: string;
   publicationStatus?: "published" | "archived";
@@ -738,6 +739,7 @@ export async function createNovel(data: {
   const result = await db.insert(novels).values({
     title: data.title,
     author: data.author || "",
+    authorUserId: data.authorUserId ?? null,
     description: data.description || "",
     coverImageUrl: data.coverImageUrl || "",
     slug,
@@ -2610,12 +2612,136 @@ export async function generateUniqueSlug(title: string, existingNovelId?: number
   }
 }
 
+// ---------------------------------------------------------------------------
+// IPE-063R1 — Author profile (self-scoped pen name)
+// ---------------------------------------------------------------------------
+
+export interface EffectiveAuthorName {
+  userId: number;
+  accountName: string | null;
+  authorName: string | null;
+  effectiveAuthorName: string;
+}
+
+function normalizeAuthorNamePart(value: string | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Authoritative author identity, read from the DB — never from the session
+ * (the session account name can be stale after an authorName change).
+ * authorName wins; fallback is the account name; if neither is usable the
+ * caller must fail with BAD_REQUEST.
+ */
+export async function resolveEffectiveAuthorName(
+  userId: number
+): Promise<EffectiveAuthorName | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const [user] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      authorName: users.authorName,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user) return null;
+  const authorName = normalizeAuthorNamePart(user.authorName);
+  const accountName = normalizeAuthorNamePart(user.name);
+  const effectiveAuthorName = authorName ?? accountName;
+  if (!effectiveAuthorName) return null;
+  return { userId: user.id, accountName: user.name ?? null, authorName: user.authorName ?? null, effectiveAuthorName };
+}
+
+/**
+ * IPE-063R1: set the admin's pen name and propagate it to every novel the
+ * account owns (novels.authorUserId = userId) inside ONE transaction so the
+ * public/SEO display name always matches the profile. Clearing authorName
+ * resolves to the account name and novels sync to that fallback. Legacy
+ * novels with authorUserId IS NULL are never touched.
+ */
+export async function updateAuthorProfile(
+  userId: number,
+  rawAuthorName: string | null
+): Promise<{
+  userId: number;
+  accountName: string | null;
+  authorName: string | null;
+  effectiveAuthorName: string;
+  updatedNovels: number;
+}> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return updateAuthorProfileWithDb(db, userId, rawAuthorName);
+}
+
+export async function updateAuthorProfileWithDb(
+  db: any,
+  userId: number,
+  rawAuthorName: string | null
+): Promise<{
+  userId: number;
+  accountName: string | null;
+  authorName: string | null;
+  effectiveAuthorName: string;
+  updatedNovels: number;
+}> {
+  const authorName =
+    rawAuthorName == null ? null : normalizeAuthorNamePart(rawAuthorName);
+
+  const { updatedNovels, accountName } = await db.transaction(async (tx: any) => {
+    const [user] = await tx
+      .select({ id: users.id, name: users.name })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!user) {
+      throw Object.assign(new Error("User not found"), { statusCode: 404 });
+    }
+    const txAccountName = normalizeAuthorNamePart(user.name);
+    const effective = authorName ?? txAccountName;
+    if (!effective) {
+      throw Object.assign(
+        new Error("กรุณาตั้งชื่อบัญชีแอดมินก่อนใช้เป็นชื่อ Author"),
+        { statusCode: 400 }
+      );
+    }
+    await tx
+      .update(users)
+      .set({ authorName, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    // Drizzle MySQL returns [ResultSetHeader, undefined] — affectedRows
+    // counts the novels whose display author was synced to the new name.
+    const [updateHeader] = await tx
+      .update(novels)
+      .set({ author: effective })
+      .where(eq(novels.authorUserId, userId));
+    return {
+      updatedNovels: (updateHeader as any)?.affectedRows ?? 0,
+      accountName: txAccountName,
+    };
+  });
+
+  const effectiveAuthorName = authorName ?? accountName ?? "";
+  return {
+    userId,
+    accountName: accountName ?? null,
+    authorName,
+    effectiveAuthorName,
+    updatedNovels,
+  };
+}
+
 /**
  * Bulk create novels from CSV data
  * Validates and returns errors for invalid rows
  */
 export async function bulkCreateNovels(
-  rows: Array<{ title: string }>
+  rows: Array<{ title: string }>,
+  authorIdentity?: { userId: number; displayName: string }
 ): Promise<{
   success: Array<{ rowIndex: number; novelId: number; title: string }>;
   errors: Array<{ rowIndex: number; error: string }>;
@@ -2639,7 +2765,8 @@ export async function bulkCreateNovels(
       const slug = await generateUniqueSlug(row.title);
       const result = await db.insert(novels).values({
         title: row.title.trim(),
-        author: "",
+        author: authorIdentity?.displayName ?? "",
+        authorUserId: authorIdentity?.userId ?? null,
         description: "",
         coverImageUrl: "",
         slug,
@@ -3857,6 +3984,152 @@ export async function getDashboardAnalytics(period: DashboardPeriod = "all", mon
     walletTopups: statusCounts(topupRows as any),
     slips: { orderPayments: orderPaymentSlips, walletTopups: walletTopupSlips, total: orderPaymentSlips + walletTopupSlips },
     monthlySlips: Array.from(monthly.values()).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 12),
+  };
+}
+
+export async function getAuthorAnalytics(
+  authorUserId: number,
+  period: DashboardPeriod = "month",
+  month?: string
+) {
+  const db = await getDb();
+  if (!db) {
+    return {
+      period,
+      month: month ?? null,
+      totalNovels: 0,
+      totalRevenue: 0,
+      totalPurchases: 0,
+      currentWishlistCount: 0,
+      salesChannels: {
+        orderRevenue: 0,
+        walletRevenue: 0,
+        orderPurchases: 0,
+        walletPurchases: 0,
+      },
+      novels: [],
+    };
+  }
+
+  const ownedNovels = await db
+    .select({
+      novelId: novels.id,
+      title: novels.title,
+      author: novels.author,
+      coverImageUrl: novels.coverImageUrl,
+      publicationStatus: novels.publicationStatus,
+      storyStatus: novels.storyStatus,
+      createdAt: novels.createdAt,
+    })
+    .from(novels)
+    .where(eq(novels.authorUserId, authorUserId))
+    .orderBy(desc(novels.createdAt), desc(novels.id));
+
+  if (ownedNovels.length === 0) {
+    return {
+      period,
+      month: month ?? null,
+      totalNovels: 0,
+      totalRevenue: 0,
+      totalPurchases: 0,
+      currentWishlistCount: 0,
+      salesChannels: {
+        orderRevenue: 0,
+        walletRevenue: 0,
+        orderPurchases: 0,
+        walletPurchases: 0,
+      },
+      novels: [],
+    };
+  }
+
+  const novelIds = ownedNovels.map((novel) => novel.novelId);
+  const range = resolveDashboardRange(period, month);
+  const orderDateWhere = dashboardDateWhere(orders.createdAt, range);
+  const walletDateWhere = dashboardDateWhere(episodePurchases.purchasedAt, range);
+
+  const [orderRows, walletRows, wishlistRows] = await Promise.all([
+    db
+      .select({
+        novelId: orderItems.novelId,
+        revenue: sql<string>`CAST(COALESCE(SUM(${orderItems.finalPrice}), 0) AS DECIMAL(12,2))`,
+        purchases: count(),
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .innerJoin(payments, eq(orders.id, payments.orderId))
+      .where(and(
+        inArray(orderItems.novelId, novelIds),
+        eq(orders.status, "approved"),
+        eq(orders.paymentStatus, "approved"),
+        eq(payments.status, "approved"),
+        orderDateWhere
+      ))
+      .groupBy(orderItems.novelId),
+    db
+      .select({
+        novelId: episodePurchases.novelId,
+        revenue: sql<string>`CAST(COALESCE(SUM(${episodePurchases.pricePaid}), 0) AS DECIMAL(12,2))`,
+        purchases: count(),
+      })
+      .from(episodePurchases)
+      .where(and(inArray(episodePurchases.novelId, novelIds), walletDateWhere))
+      .groupBy(episodePurchases.novelId),
+    db
+      .select({ novelId: wishlists.novelId, count: count() })
+      .from(wishlists)
+      .where(inArray(wishlists.novelId, novelIds))
+      .groupBy(wishlists.novelId),
+  ]);
+
+  const orderByNovel = new Map(orderRows.map((row) => [row.novelId, {
+    revenue: Number(row.revenue) || 0,
+    purchases: Number(row.purchases) || 0,
+  }]));
+  const walletByNovel = new Map(walletRows.map((row) => [row.novelId, {
+    revenue: Number(row.revenue) || 0,
+    purchases: Number(row.purchases) || 0,
+  }]));
+  const wishlistByNovel = new Map(wishlistRows.map((row) => [row.novelId, Number(row.count) || 0]));
+
+  let orderRevenue = 0;
+  let walletRevenue = 0;
+  let orderPurchases = 0;
+  let walletPurchases = 0;
+  let currentWishlistCount = 0;
+
+  const novelMetrics = ownedNovels.map((novel) => {
+    const order = orderByNovel.get(novel.novelId) ?? { revenue: 0, purchases: 0 };
+    const wallet = walletByNovel.get(novel.novelId) ?? { revenue: 0, purchases: 0 };
+    const wishlistCount = wishlistByNovel.get(novel.novelId) ?? 0;
+    orderRevenue += order.revenue;
+    walletRevenue += wallet.revenue;
+    orderPurchases += order.purchases;
+    walletPurchases += wallet.purchases;
+    currentWishlistCount += wishlistCount;
+    return {
+      ...novel,
+      revenue: order.revenue + wallet.revenue,
+      purchases: order.purchases + wallet.purchases,
+      currentWishlistCount: wishlistCount,
+      salesChannels: {
+        orderRevenue: order.revenue,
+        walletRevenue: wallet.revenue,
+        orderPurchases: order.purchases,
+        walletPurchases: wallet.purchases,
+      },
+    };
+  });
+
+  return {
+    period,
+    month: month ?? null,
+    totalNovels: ownedNovels.length,
+    totalRevenue: orderRevenue + walletRevenue,
+    totalPurchases: orderPurchases + walletPurchases,
+    currentWishlistCount,
+    salesChannels: { orderRevenue, walletRevenue, orderPurchases, walletPurchases },
+    novels: novelMetrics,
   };
 }
 
@@ -7227,6 +7500,7 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   table: string;
   check: (userId: number, db: any) => Promise<number>;
 }> = [
+  { table: "novels", check: async (userId, db) => (await db.select({ id: novels.id }).from(novels).where(eq(novels.authorUserId, userId)).limit(1)).length },
   { table: "carts", check: async (userId, db) => (await db.select({ id: carts.id }).from(carts).where(eq(carts.userId, userId)).limit(1)).length },
   { table: "wishlists", check: async (userId, db) => (await db.select({ id: wishlists.id }).from(wishlists).where(eq(wishlists.userId, userId)).limit(1)).length },
   { table: "readingProgress", check: async (userId, db) => (await db.select({ id: readingProgress.id }).from(readingProgress).where(eq(readingProgress.userId, userId)).limit(1)).length },
@@ -7539,6 +7813,15 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
   },
 
   // ---- user_owned (direct) ----
+  {
+    // IPE-063R1: novel authorship (admin-as-Author) — mirrors the
+    // user_owned_hard_block recovery classification and the IPE-007
+    // UNSUPPORTED merge partition.
+    table: "novels",
+    category: "user_owned",
+    userIdColumnName: "authorUserId",
+    countFor: plainUserIdCount(novels, novels.authorUserId),
+  },
   {
     table: "carts",
     category: "user_owned",

@@ -91,6 +91,24 @@ const adminProcedure = authenticatedProcedure.use(async ({ ctx, next }) => {
   return next({ ctx });
 });
 
+// IPE-063R1: the authoritative Author identity is read from the DB — the
+// session account name can be stale right after an authorName change.
+// authorName (pen name) wins; fallback is the account name; neither usable
+// => BAD_REQUEST. Never trust a client-supplied author identity.
+async function requireAdminAuthorIdentity(userId: number) {
+  const profile = await db.resolveEffectiveAuthorName(userId);
+  if (!profile) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "กรุณาตั้งชื่อบัญชีแอดมินหรือชื่อ Author ก่อนสร้างนิยาย",
+    });
+  }
+  return {
+    userId: profile.userId,
+    displayName: profile.effectiveAuthorName,
+  };
+}
+
 // ============ ACCOUNT RECOVERY HELPERS ============
 
 /** Maps an AccountRecoveryError's semantic code to a real TRPCError code -
@@ -1773,16 +1791,19 @@ export const appRouter = router({
         .input(
           z.object({
             title: z.string(),
-            author: z.string().optional(),
             description: z.string().optional(),
             coverImageUrl: z.string().optional(),
             publicationStatus: z.enum(["published", "archived"]).default("published"),
             storyStatus: z.enum(["ongoing", "finished"]).default("ongoing"),
           })
         )
-        .mutation(async ({ input }) => {
-          const result = await db.createNovel(input);
-          return result;
+        .mutation(async ({ input, ctx }) => {
+          const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
+          return db.createNovel({
+            ...input,
+            author: authorIdentity.displayName,
+            authorUserId: authorIdentity.userId,
+          });
         }),
 
       update: adminProcedure
@@ -1790,7 +1811,6 @@ export const appRouter = router({
           z.object({
             novelId: z.number(),
             title: z.string().optional(),
-            author: z.string().optional(),
             description: z.string().optional(),
             coverImageUrl: z.string().optional(),
             publicationStatus: z.enum(["published", "archived"]).optional(),
@@ -2729,8 +2749,9 @@ export const appRouter = router({
     bulkUpload: router({
       novels: adminProcedure
         .input(z.object({ rows: z.array(z.object({ title: z.string() })) }))
-        .mutation(async ({ input }) => {
-          return db.bulkCreateNovels(input.rows);
+        .mutation(async ({ input, ctx }) => {
+          const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
+          return db.bulkCreateNovels(input.rows, authorIdentity);
         }),
 
       episodes: adminProcedure
@@ -2759,6 +2780,69 @@ export const appRouter = router({
         }))
         .mutation(async ({ input }) => {
           return db.bulkCreateEpisodesWithNovelTitle(input.rows);
+        }),
+    }),
+
+    authorAnalytics: router({
+      summary: adminProcedure
+        .input(
+          z.object({
+            period: z.enum(["all", "today", "7d", "30d", "month", "custom_month"]).default("month"),
+            month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+          }).optional()
+        )
+        .query(async ({ input, ctx }) => {
+          const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
+          const analytics = await db.getAuthorAnalytics(
+            authorIdentity.userId,
+            input?.period ?? "month",
+            input?.month
+          );
+          return {
+            author: authorIdentity,
+            ...analytics,
+          };
+        }),
+    }),
+
+    // IPE-063R1: self-scoped Author profile. The target is ALWAYS the
+    // authenticated admin (ctx.user.id) — no userId / authorUserId / target
+    // argument exists, so one admin can never mutate another's identity.
+    authorProfile: router({
+      get: adminProcedure.query(async ({ ctx }) => {
+        const profile = await db.resolveEffectiveAuthorName(ctx.user.id);
+        if (!profile) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "กรุณาตั้งชื่อบัญชีแอดมินหรือชื่อ Author ก่อนใช้งาน",
+          });
+        }
+        return profile;
+      }),
+      update: adminProcedure
+        .input(
+          z.object({
+            // Empty string clears the pen name (falls back to account name).
+            authorName: z.string().max(255).nullable(),
+          })
+        )
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await db.updateAuthorProfile(
+              ctx.user.id,
+              input.authorName
+            );
+          } catch (error: any) {
+            // db layer throws plain Errors with a statusCode — map them to
+            // the tRPC contract here (404 unknown user, 400 unusable names).
+            if (error?.statusCode === 404) {
+              throw new TRPCError({ code: "NOT_FOUND" });
+            }
+            if (error?.statusCode === 400) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: error?.message });
+            }
+            throw error;
+          }
         }),
     }),
 

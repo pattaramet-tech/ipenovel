@@ -11,6 +11,7 @@ const expectedSections = ["Main", "Sales", "Content", "Marketing", "System"];
 const expectedRoutes = [
   "/admin",
   "/admin/analytics",
+  "/admin/author-analytics",
   "/admin/users",
   "/admin/orders",
   "/admin/payments",
@@ -45,6 +46,7 @@ describe("admin navigation configuration", () => {
 
   it.each([
     ["/admin", "Dashboard"],
+    ["/admin/author-analytics", "Author Analysis"],
     ["/admin/orders", "Orders"],
     ["/admin/orders/123", "Orders"],
     ["/admin/wallet-topups/456", "Wallet Top-ups"],
