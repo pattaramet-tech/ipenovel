@@ -38,7 +38,7 @@ if (!args.name || args.redirectUris.length === 0) {
   process.exit(1);
 }
 
-const SERVER_ALLOWED_SCOPES = ["identity:read", "workspace:read", "novel:read", "pack:read", "chapter:read"];
+const SERVER_ALLOWED_SCOPES = ["identity:read", "workspace:read", "novel:read", "pack:read", "chapter:read", "draft:read", "draft:write", "checker:read", "checker:run"];
 const requestedScopes = (args.scopes ?? "").split(/\s+/).filter(Boolean);
 const unknownScopes = requestedScopes.filter(scope => !SERVER_ALLOWED_SCOPES.includes(scope));
 if (unknownScopes.length > 0 || requestedScopes.length === 0) {

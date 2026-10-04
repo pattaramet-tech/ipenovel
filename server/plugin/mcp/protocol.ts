@@ -12,7 +12,12 @@ import {
   McpToolCallParamsSchema,
   PluginPrincipalSchema,
   JsonRpcRequestSchema,
+  PLUGIN_TOOL_CONFLICT,
   PLUGIN_TOOL_NOT_FOUND,
+  CheckerGetArgsSchema,
+  CheckerRunArgsSchema,
+  DraftEditArgsSchema,
+  DraftGetArgsSchema,
   WorkspaceGetArgsSchema,
   WorkspaceListArgsSchema,
   NovelGetArgsSchema,
@@ -37,10 +42,23 @@ import {
   listPluginWorkspaceNovels,
   listPluginWorkspacePacks,
 } from "../store";
+// IPE-PLUGIN-001D: the REAL Workspace services, reused VERBATIM (no business
+// logic duplication - the plugin layer proves tenant lineage, then delegates
+// with actorUserId = principal.userId).
+import { getEditorialDraftReadModel } from "../../workspace/editorialDraft.service";
+import {
+  getEditorialForeignCheckerReadModel,
+  runEditorialForeignChecker,
+} from "../../workspace/editorialForeignChecker.service";
+import { applyEditorialEditorEdit } from "../../workspace/editorialEditor.service";
 import { newPluginCorrelationId } from "../audit";
 import {
   handleChapterGet,
   handleChapterList,
+  handleCheckerGet,
+  handleCheckerRun,
+  handleDraftEdit,
+  handleDraftGet,
   handleIdentityWhoami,
   handleNovelGet,
   handleNovelList,
@@ -48,8 +66,13 @@ import {
   handlePackList,
   handleWorkspaceGet,
   handleWorkspaceList,
+  type EditorialToolDeps,
   type WorkspaceToolDeps,
 } from "./handlers";
+
+// Remove the placeholder duplicate import block if the earlier edit left one
+// (getEditorialDraftReadModel etc. were imported from editorialDraft.service
+// above - see the IPE-PLUGIN-001D comment).
 
 // IPE-PLUGIN-001B MCP transport skeleton - JSON-RPC 2.0 dispatch over HTTP
 // POST. Deliberately the MINIMAL protocol surface: initialize (stateless
@@ -68,6 +91,8 @@ export type McpDispatchDependencies = {
   loadUserDisplay: (userId: number) => Promise<{ name: string | null; role: "user" | "admin" } | null>;
   /** Tenant read loaders (001C) - server-side boundary implementations. */
   workspaceTools: WorkspaceToolDeps;
+  /** Editorial read/mutation deps (001D) - tenant proof + real Workspace services. */
+  editorialTools: EditorialToolDeps;
 };
 
 export type McpDispatchOutcome =
@@ -98,15 +123,59 @@ export function defaultWorkspaceToolDeps(): WorkspaceToolDeps {
   };
 }
 
+/**
+ * Default editorial deps (001D): the 001C tenant proof via the plugin store,
+ * then the REAL Workspace services. No editorial business logic lives here.
+ */
+export function defaultEditorialToolDeps(): EditorialToolDeps {
+  return {
+    findVisibleWorkspace: findPluginVisibleWorkspace,
+    findWorkspacePack: findPluginWorkspacePack,
+    // IPE-PLUGIN-001D-R2: the access policy is chosen HERE (server wiring) -
+    // never by client input. The service then resolves the caller's EFFECTIVE
+    // role from the database (owner via ownerUserId, else active
+    // workspaceMembers row) and enforces the policy grade.
+    getDraftReadModel: input =>
+      getEditorialDraftReadModel({ ...input, accessPolicy: "plugin_read" }),
+    getCheckerReadModel: input =>
+      getEditorialForeignCheckerReadModel({ ...input, accessPolicy: "plugin_read" }),
+    applyEdit: input =>
+      applyEditorialEditorEdit({
+        ...input,
+        accessPolicy: "plugin_edit",
+        command: input.command as Parameters<typeof applyEditorialEditorEdit>[0]["command"],
+      }),
+    runChecker: input =>
+      runEditorialForeignChecker({ ...input, accessPolicy: "plugin_checker_run" }),
+  };
+}
+
 /** Human-readable JSON-schema for each tool's strict arguments object.
  *  `required` defaults to every property; pass an explicit subset to
  *  advertise optional arguments (e.g. pack.list's novelId filter). */
+type ToolJsonSchema = {
+  type: "object";
+  properties: Record<string, { type: string; minimum?: number; description?: string }>;
+  required?: string[];
+  additionalProperties: false;
+};
+
+type EditorCommandJsonSchema = {
+  type: "object";
+  properties: Record<string, unknown>;
+  required: string[];
+  additionalProperties: false;
+  oneOf?: unknown[];
+};
+
+const TOOL_JSON_SCHEMA_TYPE = "object";
+
 function toolInputSchema(
-  properties: Record<string, { type: "integer"; minimum: number }>,
+  properties: ToolJsonSchema["properties"],
   required: string[] = Object.keys(properties)
-): { type: "object"; properties: Record<string, { type: "integer"; minimum: number }>; required: string[]; additionalProperties: false } {
+): ToolJsonSchema {
   return {
-    type: "object",
+    type: TOOL_JSON_SCHEMA_TYPE,
     properties,
     required,
     additionalProperties: false,
@@ -115,13 +184,58 @@ function toolInputSchema(
 
 const WORKSPACE_ID_PROPERTY = { workspaceId: { type: "integer" as const, minimum: 1 } };
 
+/** The draft.edit command oneOf — mirrors DraftEditCommandSchema exactly:
+ *  replace_sentence / replace_range carry startOffset+endOffset,
+ *  replace_paragraph does not; replace_tab is structurally absent. */
+function draftEditCommandJsonSchema(): Record<string, unknown> {
+  const paragraphFields = {
+    paragraphKey: { type: "string" },
+    expectedParagraphFingerprint: { type: "string" },
+    expectedText: { type: "string" },
+    replacementText: { type: "string" },
+  };
+  return {
+    type: "object",
+    oneOf: [
+      {
+        type: "object",
+        properties: {
+          kind: { const: "replace_sentence" },
+          ...paragraphFields,
+          startOffset: { type: "integer", minimum: 0 },
+          endOffset: { type: "integer", minimum: 0 },
+        },
+        required: ["kind", ...Object.keys(paragraphFields), "startOffset", "endOffset"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: {
+          kind: { const: "replace_range" },
+          ...paragraphFields,
+          startOffset: { type: "integer", minimum: 0 },
+          endOffset: { type: "integer", minimum: 0 },
+        },
+        required: ["kind", ...Object.keys(paragraphFields), "startOffset", "endOffset"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: { kind: { const: "replace_paragraph" }, ...paragraphFields },
+        required: ["kind", ...Object.keys(paragraphFields)],
+        additionalProperties: false,
+      },
+    ],
+  };
+}
+
 /** tools/list is derived from the registry + enable allowlist - never hand-written. */
 export function buildPluginToolsList(): Array<{
   name: string;
   description: string;
-  inputSchema: ReturnType<typeof toolInputSchema>;
+  inputSchema: ToolJsonSchema | EditorCommandJsonSchema;
 }> {
-  const schemas: Record<PluginCapability, ReturnType<typeof toolInputSchema>> = {
+  const schemas: Record<PluginCapability, ToolJsonSchema | EditorCommandJsonSchema> = {
     "identity.whoami": toolInputSchema({}),
     "workspace.list": toolInputSchema({}),
     "workspace.get": toolInputSchema(WORKSPACE_ID_PROPERTY),
@@ -131,6 +245,23 @@ export function buildPluginToolsList(): Array<{
     "pack.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
     "chapter.list": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
     "chapter.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, chapterId: { type: "integer", minimum: 1 } }),
+    "draft.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
+    "checker.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 }, runId: { type: "integer", minimum: 1 } }, ["workspaceId", "packId"]),
+    "draft.edit": {
+      type: TOOL_JSON_SCHEMA_TYPE,
+      properties: {
+        workspaceId: { type: "integer", minimum: 1 },
+        packId: { type: "integer", minimum: 1 },
+        expectedDraftId: { type: "integer", minimum: 1 },
+        expectedDraftVersion: { type: "integer", minimum: 1 },
+        expectedDraftSha256: { type: "string" },
+        idempotencyKey: { type: "string" },
+        command: draftEditCommandJsonSchema(),
+      },
+      required: ["workspaceId", "packId", "expectedDraftId", "expectedDraftVersion", "expectedDraftSha256", "command", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    "checker.run": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 }, expectedDraftId: { type: "integer", minimum: 1 } }),
   };
   return PLUGIN_V1_ENABLED_CAPABILITIES.map(capability => ({
     name: capability,
@@ -143,7 +274,9 @@ type ToolOutcome =
   | { kind: "ok"; result: unknown }
   | { kind: "invalid_params"; message: string }
   | { kind: "not_found" }
-  | { kind: "denied"; reason: string };
+  | { kind: "conflict"; code: string }
+  | { kind: "denied"; reason: string }
+  | { kind: "server_error" };
 
 /**
  * The one dispatch table - registry, args schema, and handler MUST agree for
@@ -225,7 +358,53 @@ function pluginToolDispatch(
         return result === null ? { kind: "not_found" } : { kind: "ok", result };
       },
     },
+    "draft.get": {
+      argsSchema: DraftGetArgsSchema,
+      run: async args => {
+        const parsed = DraftGetArgsSchema.parse(args);
+        return toToolOutcome(await handleDraftGet({ userId: principal.userId }, parsed, deps.editorialTools));
+      },
+    },
+    "checker.get": {
+      argsSchema: CheckerGetArgsSchema,
+      run: async args => {
+        const parsed = CheckerGetArgsSchema.parse(args);
+        return toToolOutcome(await handleCheckerGet({ userId: principal.userId }, parsed, deps.editorialTools));
+      },
+    },
+    "draft.edit": {
+      argsSchema: DraftEditArgsSchema,
+      run: async args => {
+        const parsed = DraftEditArgsSchema.parse(args);
+        return toToolOutcome(await handleDraftEdit({ userId: principal.userId }, parsed, deps.editorialTools));
+      },
+    },
+    "checker.run": {
+      argsSchema: CheckerRunArgsSchema,
+      run: async args => {
+        const parsed = CheckerRunArgsSchema.parse(args);
+        return toToolOutcome(await handleCheckerRun({ userId: principal.userId }, parsed, deps.editorialTools));
+      },
+    },
   };
+}
+
+/** Maps an EditorialToolStatus to a protocol ToolOutcome (audit-neutral). */
+function toToolOutcome(status: import("./handlers").EditorialToolStatus<Record<string, unknown>>): ToolOutcome {
+  switch (status.status) {
+    case "ok":
+      return { kind: "ok", result: status.value };
+    case "not_found":
+      return { kind: "not_found" };
+    case "conflict":
+      return { kind: "conflict", code: status.code };
+    case "invalid":
+      return { kind: "invalid_params", message: status.message };
+    case "denied":
+      return { kind: "denied", reason: status.reason };
+    case "server_error":
+      return { kind: "server_error" };
+  }
 }
 
 function parsePrincipal(input: unknown): PluginPrincipal | null {
@@ -380,6 +559,27 @@ async function handleMessage(
           kind: "response",
           status: 200,
           body: jsonRpcError(id, JSONRPC_ERROR_CODES.INVALID_PARAMS, outcome.message),
+        };
+      }
+      if (outcome.kind === "conflict") {
+        // In-band, structured conflict: optimistic concurrency / idempotency.
+        // Carries the service error code only - never draft text or payloads.
+        return {
+          kind: "response",
+          status: 200,
+          body: jsonRpcResult(id, {
+            content: [{ type: "text", text: PLUGIN_TOOL_CONFLICT }],
+            structuredContent: { code: outcome.code },
+            isError: true,
+          }),
+        };
+      }
+      if (outcome.kind === "server_error") {
+        // Sanitized: fixed text, never raw DB/driver detail.
+        return {
+          kind: "response",
+          status: 200,
+          body: jsonRpcError(id, JSONRPC_ERROR_CODES.SERVER_ERROR, "The tool call failed server-side."),
         };
       }
       if (outcome.kind === "not_found") {

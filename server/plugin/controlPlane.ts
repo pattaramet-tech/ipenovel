@@ -1,17 +1,20 @@
-// IPE-PLUGIN-001B/001C control plane - the fail-closed capability surface
-// for external plugin (ChatGPT / MCP) access, deliberately mirroring the NQA
-// control-plane pattern (server/nqa/controlPlane.ts): a frozen capability
-// registry, an allowlist of what is enabled, a pure authorization function,
-// and an audit-sink interface - no HTTP, no database, no framework here.
+// IPE-PLUGIN-001B/001C/001D control plane - the fail-closed capability
+// surface for external plugin (ChatGPT / MCP) access, deliberately mirroring
+// the NQA control-plane pattern (server/nqa/controlPlane.ts): a frozen
+// capability registry, an allowlist of what is enabled, a pure authorization
+// function, and an audit-sink interface - no HTTP, no database, no framework
+// here.
 //
-// READ-ONLY SURFACE: every definition is effect: "READ_ONLY". 001C adds the
-// tenant-scoped read family (workspace/novel/pack/chapter list+get) whose
-// visibility is derived server-side from the token's bound users.id via
-// workspaceMembers / workspaceWorkspaces.ownerUserId - the client can never
-// choose an authority or account. Anything else - draft/checker/stage/
-// publish, any mutation - is structurally absent from this registry, and the
-// static surface tests (server/plugin/*.static.test.ts) fail if that ever
-// changes without an explicit milestone authorization.
+// SURFACE: 001B identity read; 001C tenant-scoped reads; 001D adds the
+// bounded editorial slice - draft/checker READS and exactly TWO mutations
+// (draft.edit limited to the three paragraph replace commands,
+// checker.run with the service's own deterministic/idempotent semantics and
+// its needs_fix/pending_confirm projection only). Everything else - replace_tab,
+// full-checker transforms, bulk cleanup, undo, exclude/restore, finding
+// disposition, structural confirmation, allow-word mutation, arbitrary
+// kanban transitions, Stage, Publish - remains structurally absent from this
+// registry, and the static surface tests fail if that ever changes without
+// an explicit milestone authorization.
 
 export const PLUGIN_PERMISSION_SCOPES = [
   "identity:read",
@@ -19,6 +22,10 @@ export const PLUGIN_PERMISSION_SCOPES = [
   "novel:read",
   "pack:read",
   "chapter:read",
+  "draft:read",
+  "draft:write",
+  "checker:read",
+  "checker:run",
 ] as const;
 
 export type PluginPermissionScope = (typeof PLUGIN_PERMISSION_SCOPES)[number];
@@ -26,8 +33,8 @@ export type PluginPermissionScope = (typeof PLUGIN_PERMISSION_SCOPES)[number];
 export type PluginCapabilityDefinition = {
   /** The OAuth scope a token must carry for this capability. */
   requiredScope: PluginPermissionScope;
-  /** Frozen to READ_ONLY for the whole plugin surface (001B + 001C). */
-  effect: "READ_ONLY";
+  /** READ_ONLY surfaces data; MUTATION changes editorial state (001D bounded slice only). */
+  effect: "READ_ONLY" | "MUTATION";
   description: string;
 };
 
@@ -79,6 +86,30 @@ export const PLUGIN_CAPABILITIES = {
     effect: "READ_ONLY",
     description: "Read one chapter tab of the latest draft - only if its pack's workspace is visible to the bound user.",
   },
+  "draft.get": {
+    requiredScope: "draft:read",
+    effect: "READ_ONLY",
+    description:
+      "Read the latest draft of one visible editorial episode pack (identity triple draftId/version/sha256, tabs, paragraphs with fingerprints for echo-back edits).",
+  },
+  "checker.get": {
+    requiredScope: "checker:read",
+    effect: "READ_ONLY",
+    description:
+      "Read the foreign-checker evidence of one visible pack (state, staleReason, findings, dispositions) for the latest run or a specific runId.",
+  },
+  "draft.edit": {
+    requiredScope: "draft:write",
+    effect: "MUTATION",
+    description:
+      "Apply ONE bounded paragraph edit (replace_sentence | replace_range | replace_paragraph) to the latest draft of a visible pack under optimistic concurrency (expectedDraftId/Version/Sha256) with idempotency-key replay safety.",
+  },
+  "checker.run": {
+    requiredScope: "checker:run",
+    effect: "MUTATION",
+    description:
+      "Run the deterministic foreign checker against the latest draft of a visible pack (optionally bound to an expectedDraftId); reuses the service's idempotency key so identical drafts never duplicate semantic runs; projects Kanban to needs_fix/pending_confirm only.",
+  },
 } as const satisfies Record<string, PluginCapabilityDefinition>;
 
 export type PluginCapability = keyof typeof PLUGIN_CAPABILITIES;
@@ -98,7 +129,20 @@ export const PLUGIN_V1_ENABLED_CAPABILITIES = [
   "pack.get",
   "chapter.list",
   "chapter.get",
+  "draft.get",
+  "checker.get",
+  "draft.edit",
+  "checker.run",
 ] as const satisfies readonly PluginCapability[];
+
+/** The bounded 001D mutation allowlist - the ONLY edit commands a plugin may carry. */
+export const PLUGIN_DRAFT_EDIT_COMMAND_KINDS = [
+  "replace_sentence",
+  "replace_range",
+  "replace_paragraph",
+] as const;
+
+export type PluginDraftEditCommandKind = (typeof PLUGIN_DRAFT_EDIT_COMMAND_KINDS)[number];
 
 export type PluginAuthorizationDecision =
   | {

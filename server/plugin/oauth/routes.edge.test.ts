@@ -53,7 +53,7 @@ describe("plugin edge behavior (flag on, no DB)", () => {
     expect(metadata.response_types_supported).toEqual(["code"]);
     expect(metadata.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
     expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
-    expect([...(metadata.scopes_supported as string[])].sort()).toEqual(["chapter:read","identity:read","novel:read","pack:read","workspace:read"]);
+    expect([...(metadata.scopes_supported as string[])].sort()).toEqual(["chapter:read", "checker:read", "checker:run", "draft:read", "draft:write", "identity:read", "novel:read", "pack:read", "workspace:read"]);
   });
 
   it("rejects MCP calls without a bearer token with 401 + WWW-Authenticate (no DB access)", async () => {
