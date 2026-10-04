@@ -217,30 +217,57 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       updateSet.lastSignedIn = new Date();
     }
 
-    // IPE-063R4 (P2-A): when an EXISTING account's fallback name (users.name
-    // with users.authorName IS NULL) changes, sync novels.author in the same
-    // guarded transaction: account-merge barrier locks the user row, the
-    // rename is applied, and the byline propagation reads the locked state.
-    // Only a name CHANGE to a usable value triggers propagation; routine
-    // sign-ins (lastSignedIn-only) and brand-new accounts keep the original
-    // single-statement path.
-    const existing = await getUserByOpenId(user.openId);
-    const nextName = typeof updateSet.name === "string" ? updateSet.name : null;
-    const nameChanged =
-      existing != null &&
-      nextName !== null &&
-      nextName.trim() !== "" &&
-      nextName.trim() !== (existing.name ?? "").trim();
+    // IPE-063R5 (P2): the rename/no-rename decision must be made on the
+    // AUTHORITATIVE users row UNDER LOCK, not from a pre-transaction read.
+    // Only a name-changing update for a potentially-existing account needs
+    // the serialized path; brand-new accounts and lastSignedIn-only
+    // sign-ins keep the original single-statement statement (no heavy
+    // mutation lock without a reason — preserves OAuth availability).
+    const hasUsableCandidateName =
+      typeof updateSet.name === "string" && updateSet.name.trim() !== "";
 
-    if (existing && nameChanged) {
-      await db.transaction(async (tx: any) => {
-        // Barrier first: locks the user row FOR UPDATE and fails closed on
-        // an active merge — no partial user/byline state either way.
+    if (hasUsableCandidateName) {
+      return db.transaction(async (tx: any) => {
+        // 1. Resolve the existing account through THIS transaction.
+        const [existing] = await tx
+          .select({
+            id: users.id,
+            name: users.name,
+            authorName: users.authorName,
+          })
+          .from(users)
+          .where(eq(users.openId, user.openId))
+          .limit(1);
+
+        // 2. No existing account — new-user insert semantics; there are no
+        // owned novels to propagate to, so no false byline work.
+        if (!existing) {
+          await tx.insert(users).values(values).onDuplicateKeyUpdate({
+            set: updateSet,
+          });
+          return;
+        }
+
+        // 3. Lock the authoritative users row (FOR UPDATE) before making
+        // the change/no-change decision, then re-derive the decision from
+        // the LOCKED row — a concurrent rename cannot produce a stale
+        // decision.
         await assertAccountMergeClassifiedMutationAllowed(existing.id, tx);
+
+        // 4. Decision from the locked row.
+        const lockedName = (existing.name ?? "").trim();
+        const candidateName = (updateSet.name as string).trim();
+        const nameChanged = candidateName !== lockedName;
+
+        // 5. Apply the identity update on the same tx.
         await tx.update(users).set(updateSet).where(eq(users.openId, user.openId));
-        await propagateFallbackAuthorName(tx, existing.id, nextName);
+
+        // 6. Fallback byline propagation — only when the pen name is NULL
+        // (explicit pen name wins) and the name genuinely changed.
+        if (nameChanged) {
+          await propagateFallbackAuthorName(tx, existing.id, candidateName);
+        }
       });
-      return;
     }
 
     await db.insert(users).values(values).onDuplicateKeyUpdate({
@@ -799,6 +826,70 @@ export async function deleteNovel(novelId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(novels).where(eq(novels.id, novelId));
+}
+
+/**
+ * IPE-063R5 (P2): guarded delete for author-OWNED novels. `novels` is a
+ * classified guarded user-owned table, so a deletion must sit under the
+ * account-merge barrier of its ACTUAL owner (novels.authorUserId — never
+ * the acting admin's identity) with the owner state re-validated on the
+ * locked path before the row is removed.
+ *
+ * Ordering follows the canonical hierarchy: initial non-locking owner
+ * read → lock/guard the owner user row → re-read + re-validate the novel
+ * on the locked path → delete → commit. A NULL authorUserId (legacy
+ * unowned novel) keeps the original unguarded admin delete behavior and
+ * never guesses an owner from the free-text novels.author.
+ */
+export async function deleteNovelGuarded(
+  novelId: number
+): Promise<{ deleted: boolean }> {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  return deleteNovelGuardedWithDb(database, novelId);
+}
+
+export async function deleteNovelGuardedWithDb(
+  database: any,
+  novelId: number
+): Promise<{ deleted: boolean }> {
+  // Initial non-locking owner read.
+  const [initial] = await database
+    .select({ authorUserId: novels.authorUserId })
+    .from(novels)
+    .where(eq(novels.id, novelId))
+    .limit(1);
+  if (!initial) {
+    return { deleted: false };
+  }
+
+  // Legacy NULL-owner novel: no Author account to guard — preserve the
+  // existing admin delete behavior without guessing an owner from text.
+  if (initial.authorUserId == null) {
+    await database.delete(novels).where(eq(novels.id, novelId));
+    return { deleted: true };
+  }
+
+  const ownerUserId = initial.authorUserId;
+  await database.transaction(async (tx: any) => {
+    // Guard + lock the OWNER user row (USER → NOVEL lock order).
+    await assertAccountMergeClassifiedMutationAllowed(ownerUserId, tx);
+
+    // Re-validate the novel on the locked path: it must still exist and
+    // still be owned by the SAME account — an unexpected owner change
+    // fails closed instead of deleting under a stale assumption.
+    const [current] = await tx
+      .select({ authorUserId: novels.authorUserId })
+      .from(novels)
+      .where(eq(novels.id, novelId))
+      .limit(1);
+    if (!current || current.authorUserId !== ownerUserId) {
+      throw new Error("Novel ownership changed during delete - failing closed");
+    }
+
+    await tx.delete(novels).where(eq(novels.id, novelId));
+  });
+  return { deleted: true };
 }
 
 // ============ EPISODE CRUD ============
@@ -2800,7 +2891,15 @@ export async function createAuthorOwnedNovelWithDb(
     storyStatus?: "ongoing" | "finished";
   }
 ) {
-  return withAccountMergeClassifiedMutationGuard(userId, db, async (tx: any) => {
+  // IPE-063R5 (P1): `db` here is the top-level POOLED client, NOT a
+  // transaction executor. Passing it as the guard's second argument made
+  // the FOR UPDATE read run on a pooled connection outside the transaction
+  // that performs the insert, so the rollback guarantee was false. The
+  // transaction is now opened EXPLICITLY here and the real tx is handed to
+  // the guard, giving ONE transaction around: users-row lock → merge-state
+  // inspection → Author identity resolution → novel insert → commit.
+  return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
     const profile = await resolveEffectiveAuthorNameWithDb(tx, userId);
     if (!profile) {
       throw Object.assign(
@@ -2975,10 +3074,13 @@ export async function bulkCreateNovelsWithDb(
         throw new Error("Author identity is required");
       }
       // P1 barrier + P2 serialization: resolve the authoritative name under
-      // the same short transaction that inserts the row.
+      // the same short transaction that inserts the row. IPE-063R5 (P1):
+      // tx = undefined lets the canonical guard open its OWN short
+      // transaction per row (never the top-level pooled client), preserving
+      // the per-row partial-success contract.
       const novelId = await withAccountMergeClassifiedMutationGuard(
         authorUserId,
-        db,
+        undefined,
         async (tx: any) => {
           const profile = await resolveEffectiveAuthorNameWithDb(tx, authorUserId);
           if (!profile) {

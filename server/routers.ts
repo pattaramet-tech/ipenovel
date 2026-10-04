@@ -1839,8 +1839,12 @@ export const appRouter = router({
       delete: adminProcedure
         .input(z.object({ novelId: z.number() }))
         .mutation(async ({ input }) => {
-          await db.deleteNovel(input.novelId);
-          return { success: true };
+          // IPE-063R5 (P2): guarded delete — the novel's actual owner
+          // (novels.authorUserId) sits under the account-merge barrier with
+          // owner revalidation; legacy NULL-owner novels keep their delete
+          // behavior without guessing an owner.
+          const result = await db.deleteNovelGuarded(input.novelId);
+          return { success: result.deleted };
         }),
 
       publish: adminProcedure

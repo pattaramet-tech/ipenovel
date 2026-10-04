@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { novels as novelsSchema, users as usersSchema } from "../drizzle/schema";
 import { appRouter } from "./routers";
 import * as db from "./db";
 import { novels as novelsTable, users as usersTable } from "../drizzle/schema";
@@ -414,5 +415,227 @@ describe("IPE-063R3 guarded author-owned creation (P1 + P2 serialization)", () =
     await caller.admin.bulkUpload.novels({ rows: [{ title: "Bulk Novel" }] });
 
     expect(bulkSpy).toHaveBeenCalledWith([{ title: "Bulk Novel" }], { userId: 55 });
+  });
+});
+
+describe("IPE-063R5 upsertUser decision-under-lock (P2)", () => {
+  afterEach(() => {
+    db.__setDbForTests(null);
+  });
+
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+  function upsertFakeDb(opts: {
+    lockedName: string | null;
+    lockedAuthorName: string | null;
+    activeMergeCase?: { id: number; status: string };
+  }) {
+    // Canonical assert pattern per barrier invocation: users-row lock,
+    // then merge-case inspection, then donor-compensation inspection.
+    let executeCall = 0;
+    const selectQueue: any[][] = [
+      [{ id: 7, name: opts.lockedName, authorName: opts.lockedAuthorName }],
+      [{ authorName: opts.lockedAuthorName }],
+    ];
+    const userSets: any[] = [];
+    const novelSets: any[] = [];
+    const tx: any = {
+      execute: async () => {
+        const isUsersLock = executeCall % 3 === 0;
+        executeCall += 1;
+        if (isUsersLock) return { 0: [{ id: 7 }] };
+        return { 0: opts.activeMergeCase ? [opts.activeMergeCase] : [] };
+      },
+      insert: () => ({
+        values: async (vals: Record<string, unknown>) => {
+          inserted.push({ table: 'users', values: vals });
+          return { insertId: 555 };
+        },
+      }),
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => selectQueue.shift() ?? [],
+          }),
+        }),
+      }),
+      update: (table: unknown) => ({
+        set: (values: Record<string, unknown>) => {
+          if (table === novelsSchema) novelSets.push(values);
+          else userSets.push(values);
+          return { where: async () => [{ affectedRows: 1 }] };
+        },
+      }),
+      insert: () => ({
+        values: async () => ({ insertId: 777 }),
+      }),
+    };
+    const dbHandle: any = {
+      transaction: async (cb: any) => cb(tx),
+      select: () => tx.select(),
+      insert: (table: unknown) => ({
+        values: (vals: Record<string, unknown>) => ({
+          onDuplicateKeyUpdate: async (o: { set: Record<string, unknown> }) => {
+            tx.insert(table).values(vals);
+            void o;
+            return { insertId: 555 };
+          },
+        }),
+      }),
+    };
+    return { dbHandle, userSets, novelSets };
+  }
+
+  it("C. fallback name genuinely changes - user row and byline change atomically", async () => {
+    const { dbHandle, userSets, novelSets } = upsertFakeDb({ lockedName: "Old", lockedAuthorName: null });
+    db.__setDbForTests(dbHandle);
+
+    await db.upsertUser({ openId: "oauth-7", name: "New", email: "a@b.test", lastSignedIn: new Date() });
+
+    expect(userSets).toHaveLength(1);
+    expect(userSets[0].name).toBe("New");
+    expect(novelSets).toHaveLength(1);
+    expect(novelSets[0].author).toBe("New");
+  });
+
+  it("B. same locked current name - no byline write", async () => {
+    const { dbHandle, userSets, novelSets } = upsertFakeDb({ lockedName: "Same", lockedAuthorName: null });
+    db.__setDbForTests(dbHandle);
+
+    await db.upsertUser({ openId: "oauth-7", name: "Same", email: "a@b.test", lastSignedIn: new Date() });
+
+    expect(userSets).toHaveLength(1);
+    expect(novelSets).toHaveLength(0);
+  });
+
+  it("A. no name update - routine sign-in keeps the single-statement availability path", async () => {
+    const { dbHandle, novelSets } = upsertFakeDb({ lockedName: "Old", lockedAuthorName: null });
+    db.__setDbForTests(dbHandle);
+
+    await db.upsertUser({ openId: "oauth-7", lastSignedIn: new Date() });
+
+    expect(novelSets).toHaveLength(0);
+  });
+
+  it("E. merge-blocked account - the whole rename/propagation fails closed", async () => {
+    const { dbHandle, userSets, novelSets } = upsertFakeDb({
+      lockedName: "Old",
+      lockedAuthorName: null,
+      activeMergeCase: { id: 3, status: "in_progress" },
+    });
+    db.__setDbForTests(dbHandle);
+
+    await expect(
+      db.upsertUser({ openId: "oauth-7", name: "New", email: "a@b.test", lastSignedIn: new Date() })
+    ).rejects.toThrow(/merge case 3 is in_progress/i);
+    expect(userSets).toHaveLength(0);
+    expect(novelSets).toHaveLength(0);
+  });
+
+  it("F. explicit pen name - users.name may change but the byline stays the pen name", async () => {
+    const { dbHandle, userSets, novelSets } = upsertFakeDb({ lockedName: "Old", lockedAuthorName: "Pen" });
+    db.__setDbForTests(dbHandle);
+
+    await db.upsertUser({ openId: "oauth-7", name: "New", email: "a@b.test", lastSignedIn: new Date() });
+
+    expect(userSets).toHaveLength(1);
+    expect(novelSets).toHaveLength(0);
+  });
+});
+
+describe("IPE-063R5 guarded novel delete (P2)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function deleteFakeDb(initial: { authorUserId: number | null } | null, current: { authorUserId: number | null } | null) {
+    let deleteExecCount = 0;
+    const deleted: boolean[] = [];
+    const database: any = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => (initial ? [initial] : []),
+          }),
+        }),
+      }),
+      delete: () => ({
+        where: async () => {
+          deleted.push(true);
+          return [{ affectedRows: 1 }];
+        },
+      }),
+      transaction: async (cb: any) => cb({
+        execute: async () => {
+          deleteExecCount += 1;
+          return { 0: deleteExecCount % 3 === 1 ? [{ id: 7 }] : [] };
+        },
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: async () => (current ? [current] : []),
+            }),
+          }),
+        }),
+        delete: () => ({
+          where: async () => {
+            deleted.push(true);
+            return [{ affectedRows: 1 }];
+          },
+        }),
+      }),
+    };
+    return { database, deleted };
+  }
+
+  it("A. owned novel with a safe owner - delete passes under the barrier", async () => {
+    const fake = deleteFakeDb({ authorUserId: 7 }, { authorUserId: 7 });
+    vi.spyOn(db, "getDb").mockResolvedValue(fake.database);
+    vi.spyOn(db, "assertAccountMergeClassifiedMutationAllowed").mockResolvedValue(undefined);
+
+    const result = await db.deleteNovelGuardedWithDb(fake.database, 42);
+
+    expect(result.deleted).toBe(true);
+    expect(fake.deleted.length).toBeGreaterThan(0);
+  });
+
+  it("B. merge-blocked owner - delete is denied and the novel remains", async () => {
+    const fake = deleteFakeDb({ authorUserId: 7 }, { authorUserId: 7 });
+    vi.spyOn(db, "getDb").mockResolvedValue(fake.database);
+    // Real barrier behavior: the canonical assert sees an ACTIVE merge case
+    // for the owner and throws - the whole tx rolls back so the novel and
+    // every byline write remain untouched.
+    let barrierExecute = 0;
+    fake.database.transaction = async (cb: any) => cb({
+      execute: async () => {
+        barrierExecute += 1;
+        return { 0: barrierExecute === 2 ? [{ id: 3, sourceUserId: 7, status: "in_progress" }] : [{ id: 7 }] };
+      },
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [{ authorUserId: 7 }],
+          }),
+        }),
+      }),
+      delete: () => ({
+        where: async () => {
+          deletedCalls.push(true);
+          return [{ affectedRows: 1 }];
+        },
+      }),
+    });
+    const deletedCalls: boolean[] = [];
+
+    await expect(db.deleteNovelGuardedWithDb(fake.database, 42)).rejects.toThrow(/merge case 3 is in_progress/i);
+    expect(deletedCalls).toHaveLength(0);
+  });
+
+  it("D. NULL-owner legacy novel - delete keeps its unguarded behavior", async () => {
+    const fake = deleteFakeDb({ authorUserId: null }, null);
+    vi.spyOn(db, "getDb").mockResolvedValue(fake.database);
+    const barrierSpy = vi.spyOn(db, "assertAccountMergeClassifiedMutationAllowed");
+
+    const result = await db.deleteNovelGuardedWithDb(fake.database, 42);
+
+    expect(result.deleted).toBe(true);
+    expect(barrierSpy).not.toHaveBeenCalled();
   });
 });

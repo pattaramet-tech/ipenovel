@@ -62,15 +62,21 @@ async function touchExistingUser(
   if (name) updateSet.name = name;
   if (opts.setLoginMethodGoogle) updateSet.loginMethod = "google";
 
+  // IPE-063R5: canonical ordering — probe the pen-name state and assert the
+  // account-merge barrier BEFORE the users write, so a blocked merge rolls
+  // back before any rename happened (lock/guard → update → propagate).
+  let fallbackGuarded = false;
+  if (updateSet.name !== undefined) {
+    const state = await db.getUserAuthorNameState(user.id, tx);
+    if (state && state.authorName == null) {
+      await db.assertAccountMergeClassifiedMutationAllowed(user.id, tx);
+      fallbackGuarded = true;
+    }
+  }
+
   await tx.update(users).set(updateSet).where(eq(users.id, user.id));
 
-  // IPE-063R4 (P2-A): fallback-name propagation — when this account has no
-  // explicit pen name, the account name IS the Author byline, so a Google
-  // linking rename must sync every owned novel in the same transaction.
-  // The helper no-ops for explicit pen names / blank names / legacy
-  // NULL-owner novels and asserts the account-merge barrier (fail-closed:
-  // a blocked merge rolls the rename AND the propagation back together).
-  if (updateSet.name !== undefined) {
+  if (fallbackGuarded) {
     await db.propagateFallbackAuthorName(tx, user.id, updateSet.name as string);
   }
 }

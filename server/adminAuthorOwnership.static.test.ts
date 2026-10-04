@@ -54,7 +54,10 @@ describe("IPE-063R3 account-merge barrier + fallback propagation", () => {
 
   it("creation and rename propagation sit under the canonical account-merge barrier", () => {
     expect(dbSource).toContain("createAuthorOwnedNovelWithDb(db, userId, data)");
-    expect(dbSource).toContain("withAccountMergeClassifiedMutationGuard(userId, db, async (tx: any) => {");
+    // IPE-063R5 (P1): the create path opens an EXPLICIT transaction around
+    // the guard's FOR UPDATE + resolution + insert (never the pooled client).
+    expect(dbSource).toContain("createAuthorOwnedNovelWithDb(db, userId, data)");
+    expect(dbSource).toContain("return db.transaction(async (tx: any) => {");
     expect(dbSource).toContain("await assertAccountMergeClassifiedMutationAllowed(userId, tx);");
     // Router fail-fast + guarded creator delegation.
     const routers = readFileSync(path.join(root, "server", "routers.ts"), "utf8");
@@ -106,6 +109,6 @@ describe("IPE-063R4 canonical fallback propagation helper", () => {
       dbSource.indexOf("export async function getUserByOpenId(")
     );
     expect(upsert).toContain("assertAccountMergeClassifiedMutationAllowed(existing.id, tx)");
-    expect(upsert).toContain("propagateFallbackAuthorName(tx, existing.id, nextName)");
+    expect(upsert).toContain("propagateFallbackAuthorName(tx, existing.id, candidateName)");
   });
 });
