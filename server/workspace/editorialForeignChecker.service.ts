@@ -17,6 +17,11 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import {
+  EditorialAccessError,
+  resolveEditorialPluginAccess,
+  type EditorialAccessPolicy,
+} from "./editorialAccess.service";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 import {
@@ -86,9 +91,31 @@ async function requireWorkItem(
   db: any,
   actorUserId: number,
   workspaceId: number,
-  workItemId: number
+  workItemId: number,
+  accessPolicy: EditorialAccessPolicy = "workspace_route"
 ) {
-  await requireWorkspacePlatformAdmin(db, actorUserId);
+  // IPE-PLUGIN-001D-R2: the workspace_route policy preserves the historical
+  // platform-admin gate bit-for-bit; plugin policies resolve the caller's
+  // EFFECTIVE role from the database (owner via ownerUserId, else ACTIVE
+  // workspaceMembers row) and enforce the policy grade. Fail-closed:
+  // no workspace / no effective membership -> WORK_ITEM_NOT_FOUND (no
+  // existence oracle); member below grade -> EDIT_FORBIDDEN (denied).
+  if (accessPolicy !== "workspace_route") {
+    const decision = await resolveEditorialPluginAccess(db, {
+      actorUserId,
+      workspaceId,
+      policy: accessPolicy,
+    });
+    if (!decision.allowed) {
+      if (decision.reason === "FORBIDDEN") throw new EditorialAccessError();
+      throw new WorkspaceEditorialForeignCheckerError(
+        "WORK_ITEM_NOT_FOUND",
+        "Editorial work item was not found in this Workspace."
+      );
+    }
+  } else {
+    await requireWorkspacePlatformAdmin(db, actorUserId);
+  }
   const [row] = await db
     .select({
       workItem: workspaceEditorialWorkItems,
@@ -498,13 +525,16 @@ export async function getEditorialForeignCheckerReadModel(input: {
   workspaceId: number;
   workItemId: number;
   runId?: number;
+  /** IPE-PLUGIN-001D-R2: set by server/plugin wiring only - never client input. */
+  accessPolicy?: EditorialAccessPolicy;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.accessPolicy ?? "workspace_route"
   );
   const draft = await latestDraft(db, input.workItemId);
   const allowWords = await loadAllowWords(db, input.workspaceId);
@@ -690,13 +720,16 @@ export async function runEditorialForeignChecker(input: {
   workspaceId: number;
   workItemId: number;
   expectedDraftId?: number;
+  /** IPE-PLUGIN-001D-R2: set by server/plugin wiring only - never client input. */
+  accessPolicy?: EditorialAccessPolicy;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.accessPolicy ?? "workspace_route"
   );
 
   const result = await db.transaction(async (tx: any) => {
@@ -833,6 +866,9 @@ export async function runEditorialForeignChecker(input: {
     workspaceId: input.workspaceId,
     workItemId: input.workItemId,
     runId: result.runId,
+    // the internal evidence read inherits the caller's plugin policy so a
+    // non-admin plugin actor never trips the workspace_route admin gate
+    accessPolicy: input.accessPolicy === "plugin_checker_run" ? "plugin_read" : input.accessPolicy ?? "workspace_route",
   });
   const targetColumnKey =
     readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";

@@ -70,7 +70,12 @@ export type WhoamiResult = {
 /** In-band tool failure when a resource id is out-of-tenant or unknown. */
 export const PLUGIN_TOOL_NOT_FOUND = "NOT_FOUND";
 
+/** In-band tool failure marker for optimistic-concurrency / idempotency conflicts. */
+export const PLUGIN_TOOL_CONFLICT = "CONFLICT";
+
 const positiveInt = z.number().int().positive();
+const sha256Hex = z.string().trim().regex(/^[a-f0-9]{64}$/);
+const idempotencyKey = z.string().trim().min(8).max(255);
 
 export const WorkspaceListArgsSchema = z.object({}).strict();
 export const WorkspaceGetArgsSchema = z.object({ workspaceId: positiveInt }).strict();
@@ -78,6 +83,168 @@ export const NovelListArgsSchema = z.object({ workspaceId: positiveInt }).strict
 export const NovelGetArgsSchema = z
   .object({ workspaceId: positiveInt, novelId: positiveInt })
   .strict();
+
+// ---------------------------------------------------------------------------
+// IPE-PLUGIN-001D editorial tools (draft + checker reads, bounded mutations).
+// Every tool reuses the Workspace services verbatim: the plugin layer only
+// proves tenant lineage (workspaceId + packId == workItemId) and maps error
+// outcomes. draft.edit carries ONLY the three paragraph replace commands -
+// replace_tab / full-checker transforms / bulk cleanup / undo are structurally
+// absent from the schema, and the service-side idempotency + optimistic
+// concurrency (expectedDraftId/Version/Sha256) are passed through untouched.
+// ---------------------------------------------------------------------------
+
+export const DraftGetArgsSchema = z
+  .object({ workspaceId: positiveInt, packId: positiveInt })
+  .strict();
+
+export const CheckerGetArgsSchema = z
+  .object({ workspaceId: positiveInt, packId: positiveInt, runId: positiveInt.optional() })
+  .strict();
+
+const paragraphEditBase = {
+  paragraphKey: sha256Hex,
+  expectedParagraphFingerprint: sha256Hex,
+  expectedText: z.string().max(200_000),
+  replacementText: z.string().max(200_000),
+};
+
+/** ONLY the three paragraph replace commands - replace_tab is not in the plugin surface. */
+export const DraftEditCommandSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("replace_sentence"),
+      ...paragraphEditBase,
+      startOffset: z.number().int().nonnegative(),
+      endOffset: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("replace_range"),
+      ...paragraphEditBase,
+      startOffset: z.number().int().nonnegative(),
+      endOffset: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z.object({ kind: z.literal("replace_paragraph"), ...paragraphEditBase }).strict(),
+]);
+
+export const DraftEditArgsSchema = z
+  .object({
+    workspaceId: positiveInt,
+    packId: positiveInt,
+    expectedDraftId: positiveInt,
+    expectedDraftVersion: positiveInt,
+    expectedDraftSha256: sha256Hex,
+    command: DraftEditCommandSchema,
+    idempotencyKey,
+  })
+  .strict();
+
+export const CheckerRunArgsSchema = z
+  .object({ workspaceId: positiveInt, packId: positiveInt, expectedDraftId: positiveInt })
+  .strict();
+
+export type DraftEditCommand = z.infer<typeof DraftEditCommandSchema>;
+
+/** In-band structured conflict payload (optimistic concurrency / idempotency). */
+export type PluginToolConflict = {
+  /** The workspace service error code, e.g. DRAFT_CONFLICT / EDIT_CONFLICT. */
+  code: string;
+};
+
+export type PluginDraftSummary = {
+  workspaceId: number;
+  packId: number;
+  draftId: number | null;
+  version: number | null;
+  draftSha256: string | null;
+  origin: string | null;
+  refreshPending: boolean;
+  tabs: Array<{
+    sourceTabId: string;
+    tabOrder: number;
+    title: string;
+    chapterNumber: string | null;
+    chapterTitle: string | null;
+    structuralSha256: string;
+    paragraphs: Array<{
+      paragraphKey: string;
+      paragraphFingerprint: string;
+      paragraphOrder: number;
+      text: string;
+    }>;
+  }>;
+};
+
+export type PluginCheckerSummary = {
+  workspaceId: number;
+  packId: number;
+  state:
+    | "NOT_RUN"
+    | "RUNNING"
+    | "STALE"
+    | "ERROR"
+    | "CURRENT_HAS_FINDINGS"
+    | "CURRENT_READY";
+  staleReason: "DRAFT_CHANGED" | "ENGINE_CHANGED" | "ALLOW_LIST_CHANGED" | null;
+  isCurrent: boolean;
+  effectiveStatus: string | null;
+  unresolvedCount: number;
+  blockingIssueCount: number;
+  currentAllowListSha256?: string;
+  run: {
+    runId: number;
+    draftId: number;
+    status: "passed" | "failed";
+    findingCount: number;
+    createdAt: string;
+  } | null;
+  findings: Array<{
+    findingId: number;
+    findingKey: string;
+    ruleKey: string;
+    severity: string;
+    paragraphKey: string | null;
+    paragraphFingerprint: string | null;
+    startOffset: number | null;
+    endOffset: number | null;
+    sentenceText: string | null;
+    message: string;
+    disposition: string;
+  }>;
+};
+
+export type PluginDraftEditOutcome = {
+  workspaceId: number;
+  packId: number;
+  draftId: number;
+  version: number;
+  draftSha256: string;
+  /** true when the same idempotencyKey + same payload was replayed (no new draft). */
+  replayed: boolean;
+  /** false when a newer draft already exists (caller should re-run draft.get). */
+  isCurrent: boolean;
+};
+
+export type PluginCheckerRunOutcome = {
+  workspaceId: number;
+  packId: number;
+  /** true when a NEW run row was created; false when the deterministic key reused the existing run. */
+  created: boolean;
+  runId: number;
+  draftId: number;
+  state: PluginCheckerSummary["state"];
+  staleReason: PluginCheckerSummary["staleReason"];
+  isCurrent: boolean;
+  effectiveStatus: string | null;
+  unresolvedCount: number;
+  blockingIssueCount: number;
+  /** Kanban projection the service applied - always needs_fix or pending_confirm. */
+  kanbanProjection: { changed: boolean; targetColumnKey: string | null; reason: string | null };
+};
+
 export const PackListArgsSchema = z
   .object({ workspaceId: positiveInt, novelId: positiveInt.optional() })
   .strict();
@@ -160,4 +327,6 @@ export const JSONRPC_ERROR_CODES = {
   INVALID_PARAMS: -32602,
   /** Server-defined: capability authorization denied (scope/disabled/unknown). */
   AUTHORIZATION_DENIED: -32000,
+  /** Server-defined: sanitized tool execution failure (never raw DB text). */
+  SERVER_ERROR: -32001,
 } as const;

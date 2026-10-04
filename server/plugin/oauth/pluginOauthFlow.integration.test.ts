@@ -357,7 +357,7 @@ describe("plugin OAuth 2.1 + PKCE flow (happy path)", () => {
     expect(result!.clientId).toBe(client.clientId);
     expect(["user", "admin"]).toContain(result!.role);
 
-    // The tools/list surface exposes ONLY the nine read-only tools.
+    // The tools/list surface exposes exactly the 13 tools (11 READ_ONLY + 2 bounded mutations).
     const listing = await callMcp(grant.accessToken, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect(listing.status).toBe(200);
     const tools = (listing.body!.result as Record<string, unknown>).tools as Array<Record<string, unknown>>;
@@ -373,15 +373,19 @@ describe("plugin OAuth 2.1 + PKCE flow (happy path)", () => {
     });
     expect([...tools.map(tool => tool.name)].sort()).toEqual(
       [
-        "identity.whoami",
-        "workspace.list",
-        "workspace.get",
-        "novel.list",
-        "novel.get",
-        "pack.list",
-        "pack.get",
-        "chapter.list",
+        "checker.get",
+        "checker.run",
         "chapter.get",
+        "chapter.list",
+        "draft.edit",
+        "draft.get",
+        "identity.whoami",
+        "novel.get",
+        "novel.list",
+        "pack.get",
+        "pack.list",
+        "workspace.get",
+        "workspace.list",
       ].sort()
     );
   });
