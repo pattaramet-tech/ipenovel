@@ -1,0 +1,1714 @@
+// IPE-064 — Workspace Intake page (/workspace/intake). Everything that is
+// NOT daily editorial work moved out of WorkspacePage: Google connections,
+// Google Sheets Master Intake + sync history, novel/episode intake forms,
+// per-pack source imports, and the Operations/Advanced read models. The
+// editorial workspace keeps only the 4-pane daily work area.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "wouter";
+import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
+import { useAdminGuard } from "@/hooks/useAdminGuard";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Activity,
+  BookOpen,
+  Bot,
+  Database,
+  FileCheck2,
+  GitBranch,
+  Loader2,
+  Plus,
+  ShieldCheck,
+} from "lucide-react";
+
+function formatDate(value: unknown) {
+  if (!value) return "—";
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("th-TH");
+}
+
+function shortHash(value: unknown) {
+  if (!value) return "—";
+  const text = String(value);
+  return text.length > 16 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
+}
+
+function StatusPill({ value }: { value: unknown }) {
+  return (
+    <span className="inline-flex rounded-full border bg-muted/40 px-2 py-0.5 text-xs font-medium text-foreground">
+      {String(value ?? "unknown")}
+    </span>
+  );
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{children}</p>;
+}
+
+function parseEpisodeRangeFromFileName(fileName: string) {
+  const base = fileName.replace(/\.[^.]+$/, "").trim();
+  const match = base.match(/^(\d{1,6})(?:\s*[-–—]\s*(\d{1,6}))?(?:\s+|[_-]+)?(.*)$/);
+  if (!match) return { episodeNumber: "", episodeTitle: base };
+  const start = Number(match[1]);
+  const end = Number(match[2] ?? match[1]);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start <= 0 || end < start) {
+    return { episodeNumber: "", episodeTitle: base };
+  }
+  const episodeNumber = match[2] ? `${match[1]} - ${match[2]}` : match[1];
+  return { episodeNumber, episodeTitle: String(match[3] ?? "").replace(/[_-]+/g, " ").trim() };
+}
+
+export default function WorkspaceIntakePage() {
+  const [name, setName] = useState("");
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number>();
+  const [novelId, setNovelId] = useState("");
+  const [existingNovelSearch, setExistingNovelSearch] = useState("");
+  const [newNovelTitle, setNewNovelTitle] = useState("");
+  const [episodeWorkspaceNovelId, setEpisodeWorkspaceNovelId] = useState("");
+  const [episodeNumber, setEpisodeNumber] = useState("");
+  const [episodeTitle, setEpisodeTitle] = useState("");
+  const [episodePrice, setEpisodePrice] = useState("");
+  const [episodeFreeState, setEpisodeFreeState] = useState<"" | "free" | "paid">("");
+  const [episodeAssigneeUserId, setEpisodeAssigneeUserId] = useState("");
+  const [episodeNovelSearch, setEpisodeNovelSearch] = useState("");
+  const [googleConnectionId, setGoogleConnectionId] = useState("");
+  const [masterIntakeStartRow, setMasterIntakeStartRow] = useState("");
+  const [masterIntakeEndRow, setMasterIntakeEndRow] = useState("");
+  const [masterIntakePreviewResult, setMasterIntakePreviewResult] = useState<any>();
+  const [googleDocUrl, setGoogleDocUrl] = useState("");
+  const [episodeGoogleDocUrl, setEpisodeGoogleDocUrl] = useState("");
+  const [episodeIntakeMode, setEpisodeIntakeMode] = useState<"single" | "bulk_docs" | "bulk_files">("bulk_docs");
+  const [episodeGoogleBatchRows, setEpisodeGoogleBatchRows] = useState<Array<{
+    episodeNumber: string;
+    episodeTitle: string;
+    documentUrlOrId: string;
+  }>>([
+    { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+    { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+  ]);
+  const [episodeBatchFiles, setEpisodeBatchFiles] = useState<Array<{
+    name: string;
+    mimeType: string;
+    paragraphs: string[];
+    episodeNumber: string;
+    episodeTitle: string;
+  }>>([]);
+  const [uploadedSource, setUploadedSource] = useState<{
+    name: string;
+    mimeType: string;
+    paragraphs: string[];
+  }>();
+  const [selectedCheckerRunId, setSelectedCheckerRunId] = useState<number>();
+  const [selectedAiJobId, setSelectedAiJobId] = useState<number>();
+  const [selectedPublishRunId, setSelectedPublishRunId] = useState<number>();
+  const [checkerSnapshotId, setCheckerSnapshotId] = useState("");
+  const [checkerRuleSetId, setCheckerRuleSetId] = useState("");
+  const [aiSnapshotId, setAiSnapshotId] = useState("");
+  // IPE-064: per-pack source imports — the pack is picked here instead of
+  // being implicit from the (now separate) editorial work area.
+  const [selectedPackWorkItemId, setSelectedPackWorkItemId] = useState<number>();
+  const ensuredEditorialWorkspaces = useRef(new Set<number>());
+  const { isAdmin, loading: adminLoading } = useAdminGuard();
+
+  const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
+  const detail = trpc.workspace.detail.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const bindings = trpc.workspace.bindings.list.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const availableNovels = trpc.workspace.bindings.availablePublicationNovels.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const editorialBoard = trpc.workspace.editorial.board.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId),
+      refetchOnMount: "always",
+    }
+  );
+  const editorialGoogleConnections = trpc.workspace.editorial.googleConnections.useQuery(
+    undefined,
+    { enabled: isAdmin }
+  );
+  const masterIntakeHistory = trpc.workspace.editorial.masterIntakeHistory.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, limit: 10 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId), retry: false }
+  );
+  const masterIntakePreviewQuery = trpc.workspace.editorial.masterIntakePreview.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      googleConnectionId: Number(googleConnectionId) || 0,
+      startRow: Number(masterIntakeStartRow) || 0,
+      endRow: Number(masterIntakeEndRow || masterIntakeStartRow) || 0,
+    },
+    { enabled: false, retry: false }
+  );
+  const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedPackWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedPackWorkItemId),
+      retry: false,
+    }
+  );
+  const editorialEditor = trpc.workspace.editorial.editor.useQuery(
+    {
+      workspaceId: selectedWorkspaceId ?? 0,
+      workItemId: selectedPackWorkItemId ?? 0,
+    },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId && selectedPackWorkItemId),
+      retry: false,
+    }
+  );
+  const ownership = trpc.workspace.migrationOwnership.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const fingerprints = trpc.workspace.fingerprints.list.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const checkerRuns = trpc.workspace.checker.listRuns.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const operationalState = trpc.workspace.operationalState.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const dualRunState = trpc.workspace.dualRunState.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const aiJobs = trpc.workspace.aiQueue.list.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const publishOverview = trpc.workspace.controlCenter.publishOverview.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+
+  const effectiveCheckerRunId = selectedCheckerRunId ?? (checkerRuns.data as any[] | undefined)?.[0]?.run?.id;
+  const effectiveAiJobId = selectedAiJobId ?? (aiJobs.data as any[] | undefined)?.[0]?.id;
+  const effectivePublishRunId = selectedPublishRunId ?? (publishOverview.data as any)?.runs?.[0]?.run?.id;
+
+  const checkerDetail = trpc.workspace.checker.runDetail.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, runId: effectiveCheckerRunId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId && effectiveCheckerRunId) }
+  );
+  const aiOperational = trpc.workspace.aiQueue.operational.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, jobId: effectiveAiJobId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId && effectiveAiJobId) }
+  );
+  const publishDetail = trpc.workspace.publishDryRun.detail.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, runId: effectivePublishRunId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId && effectivePublishRunId) }
+  );
+
+  const selectedPublishSummary = useMemo(
+    () => (publishOverview.data as any)?.runs?.find((row: any) => row.run.id === effectivePublishRunId),
+    [publishOverview.data, effectivePublishRunId]
+  );
+  const selected = detail.data;
+  const canInspectFinalGate = isAdmin;
+  const readinessEligible =
+    selectedPublishSummary?.ownership?.owner === "sheets" &&
+    selectedPublishSummary?.ownership?.cutoverEpoch === 0;
+
+  const publishReadiness = trpc.workspace.publishCutover.readiness.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, runId: effectivePublishRunId ?? 0 },
+    {
+      enabled:
+        isAdmin &&
+        Boolean(selectedWorkspaceId && effectivePublishRunId && readinessEligible),
+      retry: false,
+    }
+  );
+  const finalGate = trpc.workspace.publishFinalGate.package.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, runId: effectivePublishRunId ?? 0 },
+    {
+      enabled:
+        isAdmin &&
+        Boolean(selectedWorkspaceId && effectivePublishRunId && readinessEligible && canInspectFinalGate),
+      retry: false,
+    }
+  );
+
+  useEffect(() => {
+    if (!selectedWorkspaceId && workspaces.data?.length) {
+      setSelectedWorkspaceId((workspaces.data as any[])[0].workspace.id);
+    }
+  }, [selectedWorkspaceId, workspaces.data]);
+
+  useEffect(() => {
+    setNovelId("");
+    setNewNovelTitle("");
+    setEpisodeWorkspaceNovelId("");
+    setEpisodeNumber("");
+    setEpisodeTitle("");
+    setEpisodePrice("");
+    setEpisodeFreeState("");
+    setEpisodeAssigneeUserId("");
+    setGoogleConnectionId("");
+    setMasterIntakeStartRow("");
+    setMasterIntakeEndRow("");
+    setMasterIntakePreviewResult(undefined);
+    setGoogleDocUrl("");
+    setUploadedSource(undefined);
+    setSelectedPackWorkItemId(undefined);
+    setSelectedCheckerRunId(undefined);
+    setSelectedAiJobId(undefined);
+    setSelectedPublishRunId(undefined);
+  }, [selectedWorkspaceId]);
+
+  const create = trpc.workspace.create.useMutation({
+    onSuccess: async ({ workspaceId }) => {
+      setName("");
+      setSelectedWorkspaceId(workspaceId);
+      await workspaces.refetch();
+      toast.success("Workspace created");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const ensureEditorialBoard = trpc.workspace.editorial.ensureBoard.useMutation({
+    onSuccess: async () => {
+      await editorialBoard.refetch();
+    },
+    onError: (error, variables) => {
+      ensuredEditorialWorkspaces.current.delete(variables.workspaceId);
+      toast.error(error.message);
+    },
+  });
+
+  useEffect(() => {
+    const workspaceId = selectedWorkspaceId;
+    if (
+      !isAdmin ||
+      !workspaceId ||
+      editorialBoard.isLoading ||
+      ensuredEditorialWorkspaces.current.has(workspaceId)
+    ) {
+      return;
+    }
+    ensuredEditorialWorkspaces.current.add(workspaceId);
+    ensureEditorialBoard.mutate({ workspaceId });
+  }, [editorialBoard.data, editorialBoard.isLoading, isAdmin, selectedWorkspaceId]);
+
+  const refreshChecker = async (runId?: number) => {
+    if (runId) setSelectedCheckerRunId(runId);
+    await Promise.all([checkerRuns.refetch(), operationalState.refetch()]);
+    if (runId) await checkerDetail.refetch();
+  };
+  const refreshAi = async (jobId?: number) => {
+    if (jobId) setSelectedAiJobId(jobId);
+    await aiJobs.refetch();
+    if (jobId) await aiOperational.refetch();
+  };
+  const refreshIntake = async () => {
+    await Promise.all([
+      detail.refetch(),
+      bindings.refetch(),
+      ownership.refetch(),
+      availableNovels.refetch(),
+      editorialBoard.refetch(),
+      masterIntakeHistory.refetch(),
+    ]);
+  };
+  const deleteWorkspace = trpc.workspace.delete.useMutation({
+    onSuccess: async () => {
+      setSelectedWorkspaceId(undefined);
+      setSelectedPackWorkItemId(undefined);
+      await workspaces.refetch();
+      toast.success("ลบ Workspace แล้ว");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const masterIntakeSync = trpc.workspace.editorial.masterIntakeSync.useMutation({
+    onSuccess: async (result) => {
+      setMasterIntakePreviewResult(undefined);
+      await refreshIntake();
+      toast[result.summary.failed ? "error" : "success"](
+        `Sync สำเร็จ ${result.summary.succeeded}/${result.summary.attempted} แถว${result.summary.failed ? ` · มีปัญหา ${result.summary.failed} แถว` : ""}`
+      );
+    },
+    onError: async (error) => {
+      // IPE-061R1: stale-preview recovery — refetch the preview once, swap
+      // the fresh result into the UI, and let the operator re-review before
+      // syncing again. Never auto-sync, and never clear the current preview
+      // unless the refresh actually succeeded.
+      // IPE-061R1A: structured tRPC discriminator. The server maps the
+      // Master Intake STALE_PREVIEW error to PRECONDITION_FAILED, which is
+      // allowlisted in CLIENT_SAFE_ERROR_CODES and serialized as data.code.
+      const isStalePreview = error.data?.code === "PRECONDITION_FAILED";
+      if (!isStalePreview) {
+        toast.error(error.message);
+        return;
+      }
+      try {
+        const response = await masterIntakePreviewQuery.refetch();
+        // IPE-061R5: refetch() does not reject on query errors — a failed
+        // refetch can carry stale cached data. Only a typed successful
+        // result may replace the preview the operator is looking at.
+        if (!response.isSuccess || !response.data) {
+          toast.error(
+            response.error
+              ? `อัปเดต Preview ไม่สำเร็จ: ${response.error.message}`
+              : "อัปเดต Preview ไม่สำเร็จ — กด Preview Sync อีกครั้ง"
+          );
+          return;
+        }
+        setMasterIntakePreviewResult(response.data);
+        toast.info(
+          "ข้อมูลเปลี่ยนหลัง Preview — อัปเดต Preview ล่าสุดให้แล้ว กรุณาตรวจสอบแล้วกด Sync อีกครั้ง"
+        );
+      } catch (refreshError) {
+        toast.error(
+          refreshError instanceof Error
+            ? `อัปเดต Preview ไม่สำเร็จ: ${refreshError.message}`
+            : "อัปเดต Preview ไม่สำเร็จ — กด Preview Sync อีกครั้ง"
+        );
+      }
+    },
+  });
+  const createEditorialNovel = trpc.workspace.editorial.createNovel.useMutation({
+    onSuccess: async () => {
+      setNewNovelTitle("");
+      await refreshIntake();
+      toast.success("สร้างเรื่องใหม่แล้ว — เพิ่ม Episode Pack เมื่อต้องการเริ่มงานตอน");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkImportGoogleDocs = trpc.workspace.editorial.bulkImportGoogleDocs.useMutation({
+    onSuccess: async (results, variables) => {
+      await Promise.all([editorialBoard.refetch(), masterIntakeHistory.refetch()]);
+      const failed = results.filter((result) => !result.ok);
+      const firstSuccess = results.find((result) => result.ok && result.workItemId);
+      if (firstSuccess?.workItemId) setSelectedPackWorkItemId(firstSuccess.workItemId);
+      if (!failed.length) {
+        setEpisodeGoogleBatchRows([
+          { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+          { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" },
+        ]);
+        setEpisodePrice("");
+        setEpisodeFreeState("");
+      } else {
+        const failedIndexes = new Set(failed.map((result) => result.rowIndex));
+        setEpisodeGoogleBatchRows(
+          variables.rows
+            .filter((_row, index) => failedIndexes.has(index))
+            .map((row) => ({ ...row, episodeTitle: row.episodeTitle ?? "" }))
+        );
+      }
+      const firstError = failed[0]?.error;
+      toast[failed.length ? "error" : "success"](
+        failed.length
+          ? `นำเข้า Google Docs สำเร็จ ${results.length - failed.length}/${results.length} แพ็ก · ${firstError ?? `ไม่ผ่าน ${failed.length}`}`
+          : `นำเข้า Google Docs ${results.length} แพ็กแล้ว`
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkImportEpisodeFiles = trpc.workspace.editorial.bulkImportEpisodeFiles.useMutation({
+    onSuccess: async (results) => {
+      await Promise.all([editorialBoard.refetch(), masterIntakeHistory.refetch()]);
+      const failed = results.filter((result) => !result.ok);
+      const firstSuccess = results.find((result) => result.ok && result.workItemId);
+      if (firstSuccess?.workItemId) setSelectedPackWorkItemId(firstSuccess.workItemId);
+      if (!failed.length) {
+        setEpisodeBatchFiles([]);
+        setEpisodeNumber("");
+        setEpisodeTitle("");
+        setEpisodePrice("");
+        setEpisodeFreeState("");
+        setEpisodeGoogleDocUrl("");
+      }
+      toast[failed.length ? "error" : "success"](
+        `นำเข้าไฟล์ ${results.length - failed.length}/${results.length} แพ็ก${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const createEditorialEpisode = trpc.workspace.editorial.createEpisode.useMutation({
+    onSuccess: async (result, variables) => {
+      const quickDocUrl = episodeGoogleDocUrl.trim();
+      let quickImportSucceeded = false;
+      setEpisodeNumber("");
+      setEpisodeTitle("");
+      setEpisodePrice("");
+      setEpisodeFreeState("");
+      setEpisodeGoogleDocUrl("");
+      const refreshed = await editorialBoard.refetch();
+      const board: any = refreshed.data ?? result.board;
+      const episodeCard = board?.columns
+        ?.flatMap((column: any) => column.cards ?? [])
+        .find(
+          (card: any) =>
+            card.workItemType === "NEW_EPISODE" &&
+            card.workspaceNovelId === variables.workspaceNovelId &&
+            String(card.episodeNumber ?? "").trim() === variables.episodeNumber.trim()
+        );
+      if (episodeCard?.workItemId) {
+        setSelectedPackWorkItemId(episodeCard.workItemId);
+      }
+      if (quickDocUrl) {
+        setGoogleDocUrl(quickDocUrl);
+        if (!episodeCard?.workItemId) {
+          toast.error("เพิ่มตอนแล้ว แต่ยังหา Editorial work item สำหรับ Quick Import ไม่พบ");
+        } else {
+          const connectionId =
+            Number(googleConnectionId) || Number(googleConnections[0]?.id);
+          if (!connectionId) {
+            toast.error("เพิ่มตอนแล้ว แต่ยังไม่มี Google Docs connection สำหรับ Quick Import");
+          } else {
+            try {
+              await importEditorialGoogleDoc.mutateAsync({
+                workspaceId: selectedWorkspaceId!,
+                workItemId: episodeCard.workItemId,
+                connectionId,
+                documentUrlOrId: quickDocUrl,
+              });
+              quickImportSucceeded = true;
+            } catch {
+              // The Google import mutation already reports the provider error.
+            }
+          }
+        }
+      }
+      toast.success(
+        quickImportSucceeded
+          ? "เพิ่มตอนและนำเข้า Google Docs แล้ว"
+          : "Episode work item added"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const importEditorialSource = trpc.workspace.editorial.importSource.useMutation({
+    onSuccess: async (result) => {
+      await Promise.all([
+        editorialSourceDraft.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      toast.success(
+        result.refreshBlocked
+          ? "เก็บ snapshot ใหม่แล้ว แต่ Draft เดิมมีการแก้ไข จึงไม่เขียนทับ"
+          : result.draftCreated
+            ? "นำเข้าต้นฉบับและสร้าง Draft แล้ว"
+            : "ต้นฉบับเดิม ไม่มี Draft ใหม่"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const importEditorialGoogleDoc = trpc.workspace.editorial.importGoogleDoc.useMutation({
+    onSuccess: async (result) => {
+      await Promise.all([
+        editorialSourceDraft.refetch(),
+        editorialBoard.refetch(),
+      ]);
+      toast.success(
+        result.refreshBlocked
+          ? "เก็บ Google Docs snapshot ใหม่แล้ว แต่ Draft เดิมมีการแก้ไข จึงไม่เขียนทับ"
+          : result.draftCreated
+            ? "นำเข้า Google Docs และสร้าง Draft แล้ว"
+            : "Google Docs ไม่มีการเปลี่ยนแปลง"
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const restoreEditorialTab = trpc.workspace.editorial.editorRestoreTab.useMutation({
+    onSuccess: async () => {
+      await Promise.all([editorialSourceDraft.refetch(), editorialEditor.refetch()]);
+      toast.success("คืนแท็บเข้า Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่ในหน้า Workspace");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const bindNovel = trpc.workspace.bindings.bindPublicationNovel.useMutation({
+    onSuccess: async () => {
+      setNovelId("");
+      if (selectedWorkspaceId) {
+        await ensureEditorialBoard.mutateAsync({ workspaceId: selectedWorkspaceId });
+      }
+      await refreshIntake();
+      toast.success("Novel added to Editorial Workspace");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const removeWorkspaceNovel = trpc.workspace.bindings.removePublicationNovel.useMutation({
+    onSuccess: async () => {
+      setEpisodeWorkspaceNovelId("");
+      setSelectedPackWorkItemId(undefined);
+      await refreshIntake();
+      toast.success("นำเรื่องออกจาก Workspace แล้ว — ตัวนิยายต้นฉบับยังอยู่");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const queueChecker = trpc.workspace.checker.queueRun.useMutation({
+    onSuccess: async (run: any) => {
+      await refreshChecker(run.id);
+      toast.success("Checker run queued");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const queueAi = trpc.workspace.aiQueue.queue.useMutation({
+    onSuccess: async (result: any) => {
+      await refreshAi(result.job?.id);
+      toast.success(result.created ? "AI QC job queued" : "Existing AI QC job selected");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const retryAi = trpc.workspace.aiQueue.retry.useMutation({
+    onSuccess: async (job: any) => {
+      await refreshAi(job?.id);
+      toast.success("AI QC job queued for retry");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  const operationalRows = (operationalState.data as any[] | undefined) ?? [];
+  const checkerRows = (checkerRuns.data as any[] | undefined) ?? [];
+  const aiRows = (aiJobs.data as any[] | undefined) ?? [];
+  const publishRows = ((publishOverview.data as any)?.runs as any[] | undefined) ?? [];
+  const publishTransitions = ((publishOverview.data as any)?.transitions as any[] | undefined) ?? [];
+  const editorialColumns = (((editorialBoard.data as any)?.columns as any[] | undefined) ?? []);
+  const editorialAssignees = (((editorialBoard.data as any)?.assignees as any[] | undefined) ?? []);
+  const editorialCards = editorialColumns.flatMap((column: any) =>
+    (column.cards ?? [])
+      .filter((card: any) => card.workItemType !== "NEW_STORY")
+      .map((card: any) => ({
+        ...card,
+        columnKey: column.key,
+        columnName: column.name,
+      }))
+  );
+
+  const googleConnections = (
+    (editorialGoogleConnections.data as any[] | undefined) ?? []
+  ).filter((connection: any) => connection.status === "active" && connection.scopeReady);
+  const googleDocsConnectStatus = typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.search).get("googleDocsConnect");
+  const firstGoogleConnectionId = googleConnections[0]?.id;
+  useEffect(() => {
+    if (!googleConnectionId && firstGoogleConnectionId) {
+      setGoogleConnectionId(String(firstGoogleConnectionId));
+    }
+  }, [firstGoogleConnectionId, googleConnectionId]);
+  const novelOptions = ((availableNovels.data as any[] | undefined) ?? []);
+  const unboundNovelOptions = novelOptions.filter((novel: any) => !novel.bound);
+  const normalizedExistingNovelSearch = existingNovelSearch.trim().toLocaleLowerCase("th");
+  const searchableUnboundNovelOptions = unboundNovelOptions.filter((novel: any) =>
+    !normalizedExistingNovelSearch ||
+    [novel.title, novel.id].join(" ").toLocaleLowerCase("th").includes(normalizedExistingNovelSearch)
+  );
+  const normalizedNewNovelTitle = newNovelTitle.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th");
+  const duplicateNovel = normalizedNewNovelTitle
+    ? novelOptions.find((novel: any) => String(novel.title ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("th") === normalizedNewNovelTitle)
+    : null;
+  const workspaceNovelOptions = (((selected as any)?.novels as any[] | undefined) ?? []);
+  const normalizedEpisodeNovelSearch = episodeNovelSearch.trim().toLocaleLowerCase("th");
+  const searchableWorkspaceNovelOptions = workspaceNovelOptions.filter(({ workspaceNovel, novel }: any) =>
+    !normalizedEpisodeNovelSearch ||
+    [novel.title, novel.id, workspaceNovel.id].join(" ").toLocaleLowerCase("th").includes(normalizedEpisodeNovelSearch)
+  );
+  const checkerRuleSets = (((dualRunState.data as any)?.ruleSets as any[] | undefined) ?? []).filter((ruleSet: any) => ruleSet.status === "published");
+  const snapshotOptions = Array.from(new Map(operationalRows.map((row: any) => [row.fingerprint.snapshotId, row.fingerprint])).values()) as any[];
+  const effectiveCheckerSnapshotId = Number(checkerSnapshotId) || snapshotOptions[0]?.snapshotId;
+  const effectiveCheckerRuleSetId = Number(checkerRuleSetId) || checkerRuleSets[0]?.id;
+  const effectiveAiSnapshotId = Number(aiSnapshotId) || snapshotOptions[0]?.snapshotId;
+
+  if (adminLoading) {
+    return (
+      <main className="mx-auto flex min-h-[40vh] max-w-7xl items-center justify-center px-4 py-8">
+        <Loader2 className="h-7 w-7 animate-spin" />
+      </main>
+    );
+  }
+
+  if (!isAdmin) return null;
+
+  return (
+    <main className="mx-auto max-w-7xl space-y-6 px-4 py-8" data-testid="workspace-intake-page">
+      <header className="flex flex-col gap-3 border-b pb-6 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-primary">IpeNovel Workspace · Intake</p>
+          <h1 className="text-3xl font-bold tracking-tight">ตั้งค่าและนำเข้า</h1>
+        </div>
+        <Link href="/workspace" className="text-sm text-primary underline" data-testid="intake-back-to-workspace">
+          ← กลับไปหน้า Workspace
+        </Link>
+      </header>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">Workspace</span>
+        <select aria-label="Workspace" className="h-9 min-w-64 rounded-md border bg-background px-3 text-sm" value={selectedWorkspaceId ?? ""} onChange={(event) => setSelectedWorkspaceId(Number(event.target.value) || undefined)}>
+          <option value="">เลือก Workspace</option>
+          {(workspaces.data as any[] | undefined)?.map(({ workspace }: any) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+        </select>
+        {selectedWorkspaceId && (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={deleteWorkspace.isPending}
+            onClick={() => {
+              if (window.confirm("ลบ Workspace นี้หรือไม่? ระบบจะไม่ยอมลบหากยังมีนิยายอยู่ใน Workspace")) {
+                deleteWorkspace.mutate({ workspaceId: selectedWorkspaceId });
+              }
+            }}
+          >
+            ลบ Workspace
+          </Button>
+        )}
+      </div>
+
+      <Card className={workspaces.data?.length ? "hidden" : "space-y-4 p-5"}>
+        <div>
+          <h2 className="font-semibold">Workspaces</h2>
+          <p className="text-sm text-muted-foreground">All platform admins can open every active workspace.</p>
+        </div>
+        <form
+          className="flex gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            create.mutate({ name });
+          }}
+        >
+          <Input value={name} onChange={(event) => setName(event.target.value)} maxLength={160} placeholder="Workspace name" />
+          <Button type="submit" size="icon" disabled={!name.trim() || create.isPending}>
+            {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          </Button>
+        </form>
+        {workspaces.isLoading ? (
+          <Loader2 className="mx-auto h-6 w-6 animate-spin" />
+        ) : (
+          <div className="space-y-2">
+            {(workspaces.data as any[] | undefined)?.map(({ workspace }: any) => (
+              <button
+                key={workspace.id}
+                type="button"
+                onClick={() => setSelectedWorkspaceId(workspace.id)}
+                className={`w-full rounded-md border p-3 text-left transition hover:border-primary ${selectedWorkspaceId === workspace.id ? "border-primary bg-primary/5" : ""}`}
+              >
+                <div className="font-medium">{workspace.name}</div>
+                <div className="text-xs text-muted-foreground">admin access · {workspace.status}</div>
+              </button>
+            ))}
+            {!workspaces.data?.length && <p className="text-sm text-muted-foreground">Create your first workspace to begin.</p>}
+          </div>
+        )}
+      </Card>
+
+      {!selectedWorkspaceId ? (
+        <Card className="flex min-h-72 items-center justify-center p-6 text-center text-muted-foreground">
+          Select a workspace to inspect its operational read models.
+        </Card>
+      ) : detail.isLoading ? (
+        <Card className="flex min-h-72 items-center justify-center"><Loader2 className="h-7 w-7 animate-spin" /></Card>
+      ) : selected ? (
+        <div className="space-y-6">
+            <Card className="space-y-5 p-5" data-testid="intake-tools">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold">นำเข้าและเครื่องมือกลุ่ม</h2>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/10 p-3 text-sm" data-testid="intake-google-connection">
+                <span className="font-medium">Google Docs สำหรับ Quick Import</span>
+                <select
+                  aria-label="Quick import Google Docs connection"
+                  className="h-9 min-w-52 rounded-md border bg-background px-3 text-sm"
+                  value={googleConnectionId}
+                  onChange={(event) => setGoogleConnectionId(event.target.value)}
+                >
+                  <option value="">เลือก Google connection</option>
+                  {googleConnections.map((connection: any) => (
+                    <option key={connection.id} value={connection.id}>
+                      Connection #{connection.id}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => window.location.assign("/api/workspace/google/start")}
+                >
+                  เชื่อม Google Docs
+                </Button>
+                {googleDocsConnectStatus === "success" && (
+                  <span className="text-xs text-emerald-700">เชื่อม Google Docs แล้ว</span>
+                )}
+                {googleDocsConnectStatus === "error" && (
+                  <span className="text-xs text-destructive">เชื่อม Google Docs ไม่สำเร็จ กรุณาลองใหม่</span>
+                )}
+              </div>
+
+              <div className="space-y-3 rounded-md border bg-muted/10 p-4" data-testid="intake-master-intake">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 font-semibold">
+                      <Database className="h-4 w-4" />
+                      Google Sheets Master Intake
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      รวมนิยาย / นิยายยังไม่จบ/ยังไม่ยื่น · อ่าน B/C/E/O (O ไม่บังคับ · K = หมายเหตุ) · สูงสุด 100 แถวต่อครั้ง
+                    </p>
+                  </div>
+                  <span className="rounded-full border bg-background px-2 py-1 text-xs">
+                    Preview ก่อน Sync · ไม่ Publish · ไม่เขียน L/M
+                  </span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]">
+                  <Input
+                    inputMode="numeric"
+                    value={masterIntakeStartRow}
+                    onChange={(event) => {
+                      setMasterIntakeStartRow(event.target.value);
+                      setMasterIntakePreviewResult(undefined);
+                    }}
+                    placeholder="Start row เช่น 1584"
+                  />
+                  <Input
+                    inputMode="numeric"
+                    value={masterIntakeEndRow}
+                    onChange={(event) => {
+                      setMasterIntakeEndRow(event.target.value);
+                      setMasterIntakePreviewResult(undefined);
+                    }}
+                    placeholder="End row เช่น 1600"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={masterIntakePreviewQuery.isFetching}
+                    onClick={async () => {
+                      const startRow = Number(masterIntakeStartRow);
+                      const endRow = Number(masterIntakeEndRow || masterIntakeStartRow);
+                      const connectionId = Number(googleConnectionId);
+                      if (!Number.isInteger(connectionId) || connectionId <= 0) {
+                        toast.error("เลือก Google connection ก่อน");
+                        return;
+                      }
+                      if (
+                        !Number.isInteger(startRow) ||
+                        !Number.isInteger(endRow) ||
+                        startRow < 2 ||
+                        endRow < startRow ||
+                        endRow - startRow + 1 > 100
+                      ) {
+                        toast.error("ช่วง Sync ต้องเป็น 1-100 แถว และเริ่มตั้งแต่แถว 2");
+                        return;
+                      }
+                      try {
+                        const response = await masterIntakePreviewQuery.refetch();
+                        if (response.data) setMasterIntakePreviewResult(response.data);
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : "Preview Sync ไม่สำเร็จ");
+                      }
+                    }}
+                  >
+                    {masterIntakePreviewQuery.isFetching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Preview Sync
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={
+                      !masterIntakePreviewResult ||
+                      masterIntakeSync.isPending ||
+                      masterIntakePreviewResult.rows.every((row: any) =>
+                        row.status === "CONFLICT" || row.status === "UNCHANGED"
+                      )
+                    }
+                    onClick={() => {
+                      if (!masterIntakePreviewResult || !selectedWorkspaceId) return;
+                      masterIntakeSync.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        googleConnectionId: Number(googleConnectionId),
+                        startRow: masterIntakePreviewResult.startRow,
+                        endRow: masterIntakePreviewResult.endRow,
+                        expectedPreviewFingerprint: masterIntakePreviewResult.previewFingerprint,
+                      });
+                    }}
+                  >
+                    {masterIntakeSync.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Sync
+                  </Button>
+                </div>
+
+                {masterIntakePreviewResult && (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      {(["NEW", "MATCH", "UNCHANGED", "UPDATED", "CONFLICT"] as const).map((status) => (
+                        <span key={status} className="rounded border bg-background px-2 py-1">
+                          {status}: {masterIntakePreviewResult.summary?.[status] ?? 0}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="overflow-x-auto rounded border bg-background">
+                      <table className="w-full text-left text-xs">
+                        <thead className="border-b bg-muted/30">
+                          <tr>
+                            <th className="px-2 py-2">Row</th>
+                            <th className="px-2 py-2">เรื่อง</th>
+                            <th className="px-2 py-2">ตอน</th>
+                            <th className="px-2 py-2">สถานะ</th>
+                            <th className="px-2 py-2">Links</th>
+                            <th className="px-2 py-2">หมายเหตุ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {masterIntakePreviewResult.rows.map((row: any) => (
+                            <tr key={row.rowNumber} className="border-b last:border-0">
+                              <td className="px-2 py-2">{row.rowNumber}</td>
+                              <td className="max-w-72 px-2 py-2">{row.novelTitle ?? row.rawTitle}</td>
+                              <td className="whitespace-nowrap px-2 py-2">{row.episodeNumber ?? "—"}</td>
+                              <td className="px-2 py-2"><StatusPill value={row.status} /></td>
+                              <td className="whitespace-nowrap px-2 py-2">
+                                {row.translationDocUrl && <a className="mr-2 text-primary underline" href={row.translationDocUrl} target="_blank" rel="noreferrer">C</a>}
+                                {row.webSourceUrl && <a className="mr-2 text-primary underline" href={row.webSourceUrl} target="_blank" rel="noreferrer">E</a>}
+                                {row.preparedSourceDocUrl && <a className="text-primary underline" href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">O</a>}
+                              </td>
+                              <td className="px-2 py-2 text-muted-foreground">
+                                {row.blockers?.length ? row.blockers.join(", ") : row.existingNovelId ? `Novel #${row.existingNovelId}` : "พร้อมสร้างฉบับซ่อน"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {((masterIntakeHistory.data as any[]) ?? []).length > 0 && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer font-medium">Sync History</summary>
+                    <div className="mt-2 space-y-1">
+                      {((masterIntakeHistory.data as any[]) ?? []).slice(0, 10).map((entry: any) => (
+                        <div key={entry.id} className="rounded border bg-background px-2 py-1">
+                          {formatDate(entry.createdAt)} · rows {entry.metadata?.startRow ?? "?"}-{entry.metadata?.endRow ?? "?"}
+                          {" · "}{entry.metadata?.summary?.succeeded ?? 0}/{entry.metadata?.summary?.attempted ?? 0} สำเร็จ
+                          {" · "}{shortHash(entry.correlationId)}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-3">
+                <form
+                  className="space-y-2 rounded-md border bg-muted/20 p-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const parsed = Number(novelId);
+                    if (!Number.isInteger(parsed) || parsed <= 0) {
+                      toast.error("Select an existing novel");
+                      return;
+                    }
+                    bindNovel.mutate({ workspaceId: selectedWorkspaceId, novelId: parsed });
+                  }}
+                >
+                  <div className="text-sm font-medium">เพิ่มเรื่องเดิม</div>
+                  <Input
+                    value={existingNovelSearch}
+                    onChange={(event) => setExistingNovelSearch(event.target.value)}
+                    placeholder="ค้นหาชื่อเรื่อง / Novel ID"
+                  />
+                  <select
+                    aria-label="Existing publication novel"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    value={novelId}
+                    onChange={(event) => setNovelId(event.target.value)}
+                    disabled={bindNovel.isPending || availableNovels.isLoading}
+                  >
+                    <option value="">เลือกนิยาย</option>
+                    {searchableUnboundNovelOptions.map((novel: any) => (
+                      <option key={novel.id} value={novel.id}>
+                        {novel.title} · #{novel.id}
+                      </option>
+                    ))}
+                  </select>
+                  <Button type="submit" className="w-full" disabled={!novelId || bindNovel.isPending}>
+                    {bindNovel.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BookOpen className="mr-2 h-4 w-4" />}
+                    เพิ่มเข้า Workspace
+                  </Button>
+                </form>
+
+                {workspaceNovelOptions.length > 0 && (
+                  <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                    <div className="text-sm font-medium">เรื่องใน Workspace</div>
+                    {workspaceNovelOptions.map(({ workspaceNovel, novel }: any) => (
+                      <div key={workspaceNovel.id} className="flex items-center justify-between gap-2 rounded-md border bg-background p-2">
+                        <div className="min-w-0 text-sm">
+                          <div className="truncate font-medium">{novel.title}</div>
+                          <div className="text-xs text-muted-foreground">Novel #{novel.id}</div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={removeWorkspaceNovel.isPending}
+                          onClick={() => {
+                            if (window.confirm(`นำ “${novel.title}” ออกจาก Workspace หรือไม่? ตัวนิยายต้นฉบับจะไม่ถูกลบ`)) {
+                              removeWorkspaceNovel.mutate({ workspaceId: selectedWorkspaceId, workspaceNovelId: workspaceNovel.id });
+                            }
+                          }}
+                        >
+                          นำออก
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <form
+                  className="space-y-2 rounded-md border bg-muted/20 p-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!newNovelTitle.trim()) return;
+                    createEditorialNovel.mutate({
+                      workspaceId: selectedWorkspaceId,
+                      title: newNovelTitle.trim(),
+                    });
+                  }}
+                >
+                  <div className="text-sm font-medium">1. สร้างเรื่องใหม่</div>
+                  <Input
+                    value={newNovelTitle}
+                    onChange={(event) => setNewNovelTitle(event.target.value)}
+                    maxLength={500}
+                    placeholder="ชื่อเรื่อง"
+                  />
+                  {duplicateNovel && (
+                    <div className="text-xs font-medium text-destructive">
+                      มีเรื่องนี้แล้ว: {duplicateNovel.title} · Novel #{duplicateNovel.id}
+                    </div>
+                  )}
+                  <Button type="submit" className="w-full" disabled={!newNovelTitle.trim() || Boolean(duplicateNovel) || createEditorialNovel.isPending}>
+                    {createEditorialNovel.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    สร้างเป็นฉบับซ่อน
+                  </Button>
+                </form>
+
+                <form
+                  className="space-y-2 rounded-md border bg-muted/20 p-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const workspaceNovelId = Number(episodeWorkspaceNovelId);
+                    if (!Number.isInteger(workspaceNovelId) || workspaceNovelId <= 0) {
+                      toast.error("เลือกเรื่องก่อน");
+                      return;
+                    }
+                    if (!episodeFreeState || (episodeFreeState === "paid" && !episodePrice.trim())) {
+                      toast.error("เลือก ฟรี/ขาย และระบุราคาสำหรับแพ็กที่ขาย");
+                      return;
+                    }
+                    if (episodeIntakeMode === "bulk_docs") {
+                      const rows = episodeGoogleBatchRows.filter((row) =>
+                        row.episodeNumber.trim() || row.episodeTitle.trim() || row.documentUrlOrId.trim()
+                      );
+                      if (!rows.length) {
+                        toast.error("เพิ่มช่วงตอนและลิงก์ Google Docs อย่างน้อย 1 แถว");
+                        return;
+                      }
+                      const incomplete = rows.find((row) => !row.episodeNumber.trim() || !row.documentUrlOrId.trim());
+                      if (incomplete) {
+                        toast.error("ทุกแถวต้องมีช่วงตอนและลิงก์ Google Docs");
+                        return;
+                      }
+                      const connectionId = Number(googleConnectionId) || Number(googleConnections[0]?.id);
+                      if (!connectionId) {
+                        toast.error("ยังไม่มี Google Docs connection");
+                        return;
+                      }
+                      bulkImportGoogleDocs.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        workspaceNovelId,
+                        connectionId,
+                        price: episodeFreeState === "free" ? "0.00" : episodePrice.trim(),
+                        isFree: episodeFreeState === "free",
+                        assigneeUserId: episodeAssigneeUserId ? Number(episodeAssigneeUserId) : null,
+                        rows: rows.map((row) => ({
+                          episodeNumber: row.episodeNumber.trim(),
+                          episodeTitle: row.episodeTitle.trim() || undefined,
+                          documentUrlOrId: row.documentUrlOrId.trim(),
+                        })),
+                      });
+                      return;
+                    }
+                    if (episodeIntakeMode === "bulk_files") {
+                      if (!episodeBatchFiles.length) {
+                        toast.error("เลือกไฟล์ก่อน");
+                        return;
+                      }
+                      const incomplete = episodeBatchFiles.find((file) => !file.episodeNumber.trim());
+                      if (incomplete) {
+                        toast.error(`ระบุช่วงตอนให้ไฟล์ ${incomplete.name}`);
+                        return;
+                      }
+                      bulkImportEpisodeFiles.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        workspaceNovelId,
+                        price: episodeFreeState === "free" ? "0.00" : episodePrice.trim(),
+                        isFree: episodeFreeState === "free",
+                        assigneeUserId: episodeAssigneeUserId ? Number(episodeAssigneeUserId) : null,
+                        files: episodeBatchFiles.map((file) => ({
+                          episodeNumber: file.episodeNumber.trim(),
+                          episodeTitle: file.episodeTitle.trim() || undefined,
+                          fileName: file.name,
+                          mimeType: file.mimeType,
+                          paragraphs: file.paragraphs,
+                        })),
+                      });
+                      return;
+                    }
+                    if (!episodeNumber.trim()) {
+                      toast.error("ระบุตอน / ช่วงตอน");
+                      return;
+                    }
+                    createEditorialEpisode.mutate({
+                      workspaceId: selectedWorkspaceId,
+                      workspaceNovelId,
+                      episodeNumber: episodeNumber.trim(),
+                      episodeTitle: episodeTitle.trim() || undefined,
+                      saleMode: "package",
+                      price: episodeFreeState === "free" ? "0.00" : episodePrice.trim(),
+                      isFree: episodeFreeState === "free",
+                      assigneeUserId: episodeAssigneeUserId ? Number(episodeAssigneeUserId) : null,
+                    });
+                  }}
+                >
+                  <div className="text-sm font-medium">2. เพิ่มตอนใหม่</div>
+                  <Input
+                    value={episodeNovelSearch}
+                    onChange={(event) => setEpisodeNovelSearch(event.target.value)}
+                    placeholder="ค้นหาเรื่องด้วยชื่อ / Novel ID"
+                  />
+                  <select
+                    aria-label="Episode novel"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    value={episodeWorkspaceNovelId}
+                    onChange={(event) => setEpisodeWorkspaceNovelId(event.target.value)}
+                  >
+                    <option value="">เลือกเรื่อง</option>
+                    {searchableWorkspaceNovelOptions.map(({ workspaceNovel, novel }: any) => (
+                      <option key={workspaceNovel.id} value={workspaceNovel.id}>
+                        {novel.title} · Novel #{novel.id}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant={episodeIntakeMode === "bulk_docs" ? "default" : "outline"} onClick={() => setEpisodeIntakeMode("bulk_docs")}>Google Docs หลายตอน</Button>
+                    <Button type="button" size="sm" variant={episodeIntakeMode === "single" ? "default" : "outline"} onClick={() => setEpisodeIntakeMode("single")}>ตอนเดียว</Button>
+                    <Button type="button" size="sm" variant={episodeIntakeMode === "bulk_files" ? "default" : "outline"} onClick={() => setEpisodeIntakeMode("bulk_files")}>ไฟล์หลายตอน</Button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="flex h-10 items-center rounded-md border bg-violet-50 px-3 text-sm font-medium text-violet-700">Episode Pack</div>
+                    <select aria-label="Episode free or paid" className="h-10 rounded-md border bg-background px-3 text-sm" value={episodeFreeState} onChange={(event) => setEpisodeFreeState(event.target.value as "" | "free" | "paid")}>
+                      <option value="">ฟรี / ขาย</option>
+                      <option value="free">ฟรี</option>
+                      <option value="paid">ขาย</option>
+                    </select>
+                    <Input value={episodeFreeState === "free" ? "0.00" : episodePrice} onChange={(event) => setEpisodePrice(event.target.value)} placeholder={episodeFreeState === "paid" ? "ราคาแพ็ก" : "ราคา"} disabled={episodeFreeState === "free"} />
+                  </div>
+                  {episodeIntakeMode === "single" && (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input value={episodeNumber} onChange={(event) => setEpisodeNumber(event.target.value)} maxLength={100} placeholder="ตอน / ช่วงตอน" />
+                        <Input value={episodeTitle} onChange={(event) => setEpisodeTitle(event.target.value)} maxLength={500} placeholder="ชื่อตอน (ถ้ามี)" />
+                      </div>
+                      <Input
+                        value={episodeGoogleDocUrl}
+                        onChange={(event) => setEpisodeGoogleDocUrl(event.target.value)}
+                        maxLength={1000}
+                        placeholder="Google Docs link สำหรับ Import (ถ้ามี)"
+                        disabled={createEditorialEpisode.isPending}
+                      />
+                    </div>
+                  )}
+                  {episodeIntakeMode === "bulk_docs" && (
+                    <div className="space-y-2 rounded-md border bg-background p-2">
+                      <div className="text-sm font-medium">Bulk Google Docs</div>
+                      {episodeGoogleBatchRows.map((row, index) => (
+                        <div key={index} className="grid gap-2 md:grid-cols-[120px_minmax(0,0.7fr)_minmax(0,1.5fr)_auto]">
+                          <Input
+                            value={row.episodeNumber}
+                            onChange={(event) => setEpisodeGoogleBatchRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, episodeNumber: event.target.value } : item))}
+                            placeholder="ช่วงตอน"
+                            maxLength={100}
+                            aria-label={`Bulk episode range ${index + 1}`}
+                          />
+                          <Input
+                            value={row.episodeTitle}
+                            onChange={(event) => setEpisodeGoogleBatchRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, episodeTitle: event.target.value } : item))}
+                            placeholder="ชื่อตอน (ถ้ามี)"
+                            maxLength={500}
+                            aria-label={`Bulk episode title ${index + 1}`}
+                          />
+                          <Input
+                            value={row.documentUrlOrId}
+                            onChange={(event) => setEpisodeGoogleBatchRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, documentUrlOrId: event.target.value } : item))}
+                            placeholder="วางลิงก์ Google Docs"
+                            maxLength={1000}
+                            aria-label={`Bulk Google Docs link ${index + 1}`}
+                          />
+                          <Button type="button" size="sm" variant="ghost" disabled={episodeGoogleBatchRows.length <= 1} onClick={() => setEpisodeGoogleBatchRows((current) => current.filter((_item, rowIndex) => rowIndex !== index))}>ลบ</Button>
+                        </div>
+                      ))}
+                      <Button type="button" size="sm" variant="outline" disabled={episodeGoogleBatchRows.length >= 30} onClick={() => setEpisodeGoogleBatchRows((current) => [...current, { episodeNumber: "", episodeTitle: "", documentUrlOrId: "" }])}>
+                        <Plus className="mr-1 h-4 w-4" /> เพิ่มแถว
+                      </Button>
+                    </div>
+                  )}
+                  {episodeIntakeMode === "bulk_files" && (
+                    <div className="space-y-2">
+                      <input
+                        type="file"
+                        multiple
+                        accept=".txt,.md,text/plain,text/markdown"
+                        aria-label="Import multiple Episode Pack files"
+                        className="block w-full text-sm"
+                        disabled={bulkImportEpisodeFiles.isPending || createEditorialEpisode.isPending}
+                        onChange={async (event) => {
+                          const files = Array.from(event.target.files ?? []);
+                          if (!files.length) {
+                            setEpisodeBatchFiles([]);
+                            return;
+                          }
+                          if (files.length > 50) {
+                            toast.error("เลือกได้สูงสุด 50 ไฟล์ต่อครั้ง");
+                            event.target.value = "";
+                            return;
+                          }
+                          if (files.some((file) => file.size > 10 * 1024 * 1024) || files.reduce((sum, file) => sum + file.size, 0) > 40 * 1024 * 1024) {
+                            toast.error("แต่ละไฟล์ต้องไม่เกิน 10 MB และรวมไม่เกิน 40 MB");
+                            event.target.value = "";
+                            return;
+                          }
+                          const rows = await Promise.all(files.map(async (file) => {
+                            const content = await file.text();
+                            const paragraphs = content.replace(/\r\n?/g, "\n").split("\n");
+                            const parsed = parseEpisodeRangeFromFileName(file.name);
+                            return {
+                              name: file.name,
+                              mimeType: file.type || "text/plain",
+                              paragraphs,
+                              episodeNumber: parsed.episodeNumber,
+                              episodeTitle: parsed.episodeTitle,
+                            };
+                          }));
+                          if (rows.some((row) => row.paragraphs.length > 10000)) {
+                            toast.error("ไฟล์ต้องมีไม่เกิน 10,000 บรรทัด");
+                            event.target.value = "";
+                            return;
+                          }
+                          setEpisodeBatchFiles(rows);
+                        }}
+                      />
+                      {episodeBatchFiles.length > 0 && (
+                        <div className="max-h-64 space-y-2 overflow-auto rounded-md border bg-background p-2">
+                          {episodeBatchFiles.map((file, index) => (
+                            <div key={`${file.name}:${index}`} className="grid gap-2 md:grid-cols-[minmax(0,1fr)_120px_minmax(0,1fr)]">
+                              <div className="truncate self-center text-xs font-medium" title={file.name}>{file.name}</div>
+                              <Input
+                                value={file.episodeNumber}
+                                onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeNumber: event.target.value } : row))}
+                                placeholder="ช่วงตอน"
+                                maxLength={100}
+                              />
+                              <Input
+                                value={file.episodeTitle}
+                                onChange={(event) => setEpisodeBatchFiles((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, episodeTitle: event.target.value } : row))}
+                                placeholder="ชื่อตอน"
+                                maxLength={500}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <select
+                    aria-label="Initial episode assignee"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    value={episodeAssigneeUserId}
+                    onChange={(event) => setEpisodeAssigneeUserId(event.target.value)}
+                  >
+                    <option value="">ยังไม่มอบหมาย</option>
+                    {editorialAssignees.map((admin: any) => (
+                      <option key={admin.id} value={admin.id}>{admin.name || admin.email || `Admin #${admin.id}`}</option>
+                    ))}
+                  </select>
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={!episodeWorkspaceNovelId || createEditorialEpisode.isPending || bulkImportGoogleDocs.isPending || bulkImportEpisodeFiles.isPending}
+                  >
+                    {(createEditorialEpisode.isPending || bulkImportGoogleDocs.isPending || bulkImportEpisodeFiles.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    {episodeIntakeMode === "bulk_docs"
+                      ? `นำเข้า Google Docs ${episodeGoogleBatchRows.filter((row) => row.episodeNumber.trim() || row.documentUrlOrId.trim()).length} แพ็ก`
+                      : episodeIntakeMode === "bulk_files"
+                        ? `นำเข้า ${episodeBatchFiles.length} ไฟล์`
+                        : "เพิ่มงานตอน"}
+                  </Button>
+                </form>
+              </div>
+            </Card>
+
+            <Card className="space-y-3 p-5" data-testid="intake-pack-imports">
+              <div>
+                <h2 className="text-lg font-semibold">แหล่งข้อความต่อแพ็ก</h2>
+                <p className="text-xs text-muted-foreground">
+                  เลือก Episode Pack แล้วนำเข้า/รีเฟรชต้นฉบับ (Google Docs · ไฟล์) — การรีเฟรชไม่เขียนทับ Draft ที่แก้ไขแล้ว
+                </p>
+              </div>
+              <select
+                aria-label="Intake pack selector"
+                className="h-10 w-full max-w-xl rounded-md border bg-background px-3 text-sm"
+                value={selectedPackWorkItemId ?? ""}
+                onChange={(event) => setSelectedPackWorkItemId(Number(event.target.value) || undefined)}
+              >
+                <option value="">เลือก Episode Pack</option>
+                {editorialCards.map((card: any) => (
+                  <option key={card.id} value={card.workItemId ?? ""}>
+                    {(card.novel?.title ?? "ไม่ทราบเรื่อง") + " · " + (card.workItemType === "NEW_EPISODE" ? card.episodeNumber || "ตอนใหม่" : "เรื่องใหม่ / Draft แรก")}
+                  </option>
+                ))}
+              </select>
+              {selectedPackWorkItemId ? (
+                <>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <form
+                      className="space-y-2 rounded-md border p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!googleConnectionId || !googleDocUrl.trim()) {
+                          toast.error("เลือก Google connection และใส่ลิงก์ Google Docs");
+                          return;
+                        }
+                        importEditorialGoogleDoc.mutate({
+                          workspaceId: selectedWorkspaceId,
+                          workItemId: selectedPackWorkItemId,
+                          connectionId: Number(googleConnectionId),
+                          documentUrlOrId: googleDocUrl.trim(),
+                        });
+                      }}
+                    >
+                      <div className="font-medium">Google Docs</div>
+                      <select
+                        aria-label="Google Docs connection"
+                        className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                        value={googleConnectionId}
+                        onChange={(event) => setGoogleConnectionId(event.target.value)}
+                      >
+                        <option value="">เลือก Google connection</option>
+                        {googleConnections.map((connection: any) => (
+                          <option key={connection.id} value={connection.id}>
+                            Connection #{connection.id}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        value={googleDocUrl}
+                        onChange={(event) => setGoogleDocUrl(event.target.value)}
+                        placeholder="https://docs.google.com/document/d/..."
+                        maxLength={1000}
+                      />
+                      <Button
+                        type="submit"
+                        className="w-full"
+                        disabled={!googleConnectionId || !googleDocUrl.trim() || importEditorialGoogleDoc.isPending}
+                      >
+                        {importEditorialGoogleDoc.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Add / Refresh Google Doc
+                      </Button>
+                      {!googleConnections.length && (
+                        <p className="text-xs text-muted-foreground">
+                          ยังไม่มี active Google Docs connection ที่มี read-only scope
+                        </p>
+                      )}
+                    </form>
+
+                    <form
+                      className="space-y-2 rounded-md border p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!uploadedSource) {
+                          toast.error("เลือกไฟล์ข้อความก่อน");
+                          return;
+                        }
+                        importEditorialSource.mutate({
+                          workspaceId: selectedWorkspaceId,
+                          workItemId: selectedPackWorkItemId,
+                          payload: {
+                            sourceKind: "uploaded_file",
+                            sourceKey: `uploaded-file:work-item-${selectedPackWorkItemId}`,
+                            mimeType: uploadedSource.mimeType,
+                            title: uploadedSource.name,
+                            tabs: [
+                              {
+                                sourceTabId: "file-main",
+                                tabOrder: 0,
+                                title: uploadedSource.name,
+                                paragraphs: uploadedSource.paragraphs,
+                              },
+                            ],
+                          },
+                        });
+                      }}
+                    >
+                      <div className="font-medium">ไฟล์ข้อความ</div>
+                      <input
+                        type="file"
+                        accept=".txt,.md,text/plain,text/markdown"
+                        className="block w-full text-sm"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) {
+                            setUploadedSource(undefined);
+                            return;
+                          }
+                          if (file.size > 10 * 1024 * 1024) {
+                            toast.error("ไฟล์ต้องไม่เกิน 10 MB");
+                            event.target.value = "";
+                            return;
+                          }
+                          const content = await file.text();
+                          setUploadedSource({
+                            name: file.name,
+                            mimeType: file.type || "text/plain",
+                            paragraphs: content.replace(/\r\n?/g, "\n").split("\n"),
+                          });
+                        }}
+                      />
+                      <div className="text-xs text-muted-foreground">
+                        {uploadedSource
+                          ? `${uploadedSource.name} · ${uploadedSource.paragraphs.length} บรรทัด`
+                          : "—"}
+                      </div>
+                      <Button
+                        type="submit"
+                        className="w-full"
+                        disabled={!uploadedSource || importEditorialSource.isPending}
+                      >
+                        {importEditorialSource.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Add / Refresh File
+                      </Button>
+                    </form>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-md border p-3 text-sm">
+                      <div className="font-medium">Source</div>
+                      <div className="mt-1 text-muted-foreground">
+                        {(editorialSourceDraft.data as any)?.source?.title ?? "ยังไม่มีต้นฉบับ"}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        snapshots {(editorialSourceDraft.data as any)?.snapshots?.length ?? 0}
+                      </div>
+                    </div>
+                    <div className="rounded-md border p-3 text-sm">
+                      <div className="font-medium">Latest Draft</div>
+                      <div className="mt-1 text-muted-foreground">
+                        {(editorialSourceDraft.data as any)?.latestDraft
+                          ? `v${(editorialSourceDraft.data as any).latestDraft.version} · ${(editorialSourceDraft.data as any).latestDraft.transformCode}`
+                          : "ยังไม่มี Draft"}
+                      </div>
+                      <details className="mt-1 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer">Advanced</summary>
+                        <div className="mt-1">SHA {shortHash((editorialSourceDraft.data as any)?.latestDraft?.draftSha256)}</div>
+                      </details>
+                    </div>
+                    <div className="rounded-md border p-3 text-sm">
+                      <div className="font-medium">Refresh safety</div>
+                      <div className="mt-1 text-muted-foreground">
+                        {(editorialSourceDraft.data as any)?.refreshPending
+                          ? "มี snapshot ใหม่รอ review — ไม่เขียนทับ Draft"
+                          : "Draft ตรงกับ source snapshot ล่าสุด"}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        transforms {(editorialSourceDraft.data as any)?.transforms?.length ?? 0}
+                      </div>
+                    </div>
+                  </div>
+                  {(editorialEditor.data as any)?.excludedTabs?.length > 0 && (
+                    <details className="rounded-md border bg-background">
+                      <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+                        แท็บที่นำออก {(editorialEditor.data as any).excludedTabs.length}
+                      </summary>
+                      <div className="space-y-2 border-t p-3">
+                        {(editorialEditor.data as any).excludedTabs.map((tab: any) => (
+                          <div key={tab.sourceTabId} className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-sm">
+                            <span>{tab.title}</span>
+                            <Button type="button" size="sm" variant="outline" disabled={restoreEditorialTab.isPending} onClick={() => restoreEditorialTab.mutate({ workspaceId: selectedWorkspaceId!, workItemId: selectedPackWorkItemId!, expectedDraftId: (editorialEditor.data as any).latestDraft.id, expectedDraftSha256: (editorialEditor.data as any).latestDraft.draftSha256, sourceTabId: tab.sourceTabId })}>คืนแท็บ</Button>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </>
+              ) : (
+                <EmptyState>เลือก Episode Pack เพื่อนำเข้าหรือรีเฟรชแหล่งข้อความ</EmptyState>
+              )}
+            </Card>
+
+            <details className="rounded-lg border bg-background" data-testid="intake-ops-advanced">
+              <summary className="cursor-pointer select-none px-5 py-4">
+                <span className="font-semibold">Operations / Advanced</span>
+              </summary>
+              <div className="space-y-5 border-t p-5">
+            <Card className="space-y-5 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="h-5 w-5 text-primary" />
+                    <h2 className="text-xl font-semibold">{selected.workspace.name}</h2>
+                  </div>
+                </div>
+                <StatusPill value={selected.workspace.status} />
+              </div>
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <div>
+                  <h3 className="font-medium">Capability ownership</h3>
+                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                    {(ownership.data as any[] | undefined)?.map(({ entry, novel }: any) => (
+                      <li key={entry.id}>{novel.title}: {entry.capability} → <strong>{entry.owner}</strong> · epoch {entry.cutoverEpoch} · v{entry.version}</li>
+                    ))}
+                    {!ownership.data?.length && <li>No novel binding yet; Sheets remains unchanged.</li>}
+                  </ul>
+                </div>
+                <div>
+                  <h3 className="font-medium">Source bindings</h3>
+                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                    {(bindings.data as any[] | undefined)?.map(({ binding, novel }: any) => <li key={binding.id}>{novel.title}: {binding.displayName} ({binding.sourceKind})</li>)}
+                    {!bindings.data?.length && <li>No source bindings yet.</li>}
+                  </ul>
+                </div>
+              </div>
+            </Card>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <Card className="p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground"><Database className="h-4 w-4" /> Fingerprints</div>
+                <div className="mt-2 text-2xl font-semibold">{fingerprints.data?.length ?? 0}</div>
+              </Card>
+              <Card className="p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground"><FileCheck2 className="h-4 w-4" /> Checker runs</div>
+                <div className="mt-2 text-2xl font-semibold">{checkerRows.length}</div>
+              </Card>
+              <Card className="p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground"><Bot className="h-4 w-4" /> AI jobs</div>
+                <div className="mt-2 text-2xl font-semibold">{aiRows.length}</div>
+              </Card>
+              <Card className="p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground"><Activity className="h-4 w-4" /> Publish runs</div>
+                <div className="mt-2 text-2xl font-semibold">{publishRows.length}</div>
+              </Card>
+            </div>
+
+            <Card className="space-y-4 p-5">
+              <div className="flex items-center gap-2">
+                <Database className="h-5 w-5 text-primary" />
+                <div>
+                  <h3 className="font-semibold">Document fingerprints & operational projection</h3>
+                </div>
+              </div>
+              {operationalState.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : operationalRows.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[760px] text-left text-sm">
+                    <thead className="border-b text-xs uppercase text-muted-foreground">
+                      <tr><th className="py-2 pr-3">Binding</th><th className="py-2 pr-3">Snapshot</th><th className="py-2 pr-3">Revision / hash</th><th className="py-2 pr-3">Checker</th><th className="py-2 pr-3">Parity</th><th className="py-2">Kanban projection</th></tr>
+                    </thead>
+                    <tbody>
+                      {operationalRows.map((row: any) => (
+                        <tr key={row.bindingId} className="border-b last:border-0">
+                          <td className="py-3 pr-3">#{row.bindingId}</td>
+                          <td className="py-3 pr-3">#{row.fingerprint.snapshotId}</td>
+                          <td className="py-3 pr-3 font-mono text-xs">{row.fingerprint.providerRevisionId}<br />{shortHash(row.fingerprint.normalizedSha256)}</td>
+                          <td className="py-3 pr-3"><StatusPill value={row.checkerStatus} />{row.checker && <div className="mt-1 text-xs text-muted-foreground">E {row.checker.severityCounts.error} · W {row.checker.severityCounts.warning} · I {row.checker.severityCounts.info}</div>}</td>
+                          <td className="py-3 pr-3"><StatusPill value={row.parityStatus} /></td>
+                          <td className="py-3"><StatusPill value={row.kanbanProjectionStatus} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <EmptyState>No fingerprint projection exists in this workspace yet.</EmptyState>}
+              <div className="text-xs text-muted-foreground">
+                Dual-run foundation: {(dualRunState.data as any)?.boards?.length ?? 0} board(s), {(dualRunState.data as any)?.ruleSets?.length ?? 0} rule set(s).
+              </div>
+            </Card>
+
+            <Card className="space-y-4 p-5">
+              <div className="flex items-center gap-2">
+                <FileCheck2 className="h-5 w-5 text-primary" />
+                <div>
+                  <h3 className="font-semibold">Checker runs & findings</h3>
+                </div>
+              </div>
+              <div className="grid gap-2 rounded-md border bg-muted/20 p-3 md:grid-cols-[1fr_1fr_auto]">
+                <select aria-label="Checker snapshot" className="h-10 rounded-md border bg-background px-3 text-sm" value={checkerSnapshotId} onChange={(event) => setCheckerSnapshotId(event.target.value)} disabled={!snapshotOptions.length || queueChecker.isPending}>
+                  {snapshotOptions.map((snapshot: any) => <option key={snapshot.snapshotId} value={snapshot.snapshotId}>Snapshot #{snapshot.snapshotId} - {shortHash(snapshot.normalizedSha256)}</option>)}
+                </select>
+                <select aria-label="Checker rule set" className="h-10 rounded-md border bg-background px-3 text-sm" value={checkerRuleSetId} onChange={(event) => setCheckerRuleSetId(event.target.value)} disabled={!checkerRuleSets.length || queueChecker.isPending}>
+                  {checkerRuleSets.map((ruleSet: any) => <option key={ruleSet.id} value={ruleSet.id}>{ruleSet.name} v{ruleSet.versionNo}</option>)}
+                </select>
+                <Button disabled={!selectedWorkspaceId || !effectiveCheckerSnapshotId || !effectiveCheckerRuleSetId || queueChecker.isPending} onClick={() => queueChecker.mutate({ workspaceId: selectedWorkspaceId!, snapshotId: effectiveCheckerSnapshotId, ruleSetId: effectiveCheckerRuleSetId })}>
+                  {queueChecker.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Run Checker
+                </Button>
+                {(!snapshotOptions.length || !checkerRuleSets.length) && <p className="text-xs text-muted-foreground md:col-span-3">Requires a fingerprint snapshot and a published Checker rule set. Duplicate requests are idempotent.</p>}
+              </div>
+              {checkerRows.length ? (
+                <div className="grid gap-4 lg:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.8fr)]">
+                  <div className="space-y-2">
+                    {checkerRows.map((row: any) => (
+                      <button key={row.run.id} type="button" onClick={() => setSelectedCheckerRunId(row.run.id)} className={`w-full rounded-md border p-3 text-left text-sm ${effectiveCheckerRunId === row.run.id ? "border-primary bg-primary/5" : ""}`}>
+                        <div className="flex items-center justify-between gap-2"><strong>Run #{row.run.id}</strong><StatusPill value={row.run.status} /></div>
+                        <div className="mt-1 text-xs text-muted-foreground">Snapshot #{row.run.snapshotId} · {row.ruleSet.name} v{row.ruleSet.versionNo}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="rounded-md border p-4">
+                    {checkerDetail.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : checkerDetail.data ? (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2"><strong>Run #{(checkerDetail.data as any).run.id}</strong><StatusPill value={(checkerDetail.data as any).run.status} /></div>
+                        <div className="text-xs text-muted-foreground">Engine {(checkerDetail.data as any).run.engineVersion} · created {formatDate((checkerDetail.data as any).run.createdAt)}</div>
+                        {(checkerDetail.data as any).findings.length ? (
+                          <ul className="space-y-2 text-sm">
+                            {(checkerDetail.data as any).findings.map((finding: any) => <li key={finding.id} className="rounded border p-2"><StatusPill value={finding.severity} /> <span className="font-medium">{finding.ruleKey}</span><div className="mt-1 text-xs text-muted-foreground">{finding.locationKey} · {shortHash(finding.excerptSha256)}</div></li>)}
+                          </ul>
+                        ) : <EmptyState>No findings persisted for this run.</EmptyState>}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : <EmptyState>No Checker runs exist in this workspace.</EmptyState>}
+            </Card>
+
+            <Card className="space-y-4 p-5">
+              <div className="flex items-center gap-2">
+                <Bot className="h-5 w-5 text-primary" />
+                <div>
+                  <h3 className="font-semibold">AI QC operational state</h3>
+                </div>
+              </div>
+              <div className="grid gap-2 rounded-md border bg-muted/20 p-3 md:grid-cols-[1fr_auto]">
+                <select aria-label="AI QC snapshot" className="h-10 rounded-md border bg-background px-3 text-sm" value={aiSnapshotId} onChange={(event) => setAiSnapshotId(event.target.value)} disabled={!snapshotOptions.length || queueAi.isPending}>
+                  {snapshotOptions.map((snapshot: any) => <option key={snapshot.snapshotId} value={snapshot.snapshotId}>Snapshot #{snapshot.snapshotId} - {shortHash(snapshot.normalizedSha256)}</option>)}
+                </select>
+                <Button disabled={!selectedWorkspaceId || !effectiveAiSnapshotId || queueAi.isPending} onClick={() => queueAi.mutate({ workspaceId: selectedWorkspaceId!, snapshotId: effectiveAiSnapshotId, operation: "semantic_qc", promptVersion: "qc-prompt-v1", modelPolicyVersion: "qc-policy-v1" })}>
+                  {queueAi.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Queue AI QC
+                </Button>
+                {!snapshotOptions.length && <p className="text-xs text-muted-foreground md:col-span-2">Requires a fingerprint snapshot. AI output remains advisory; this action does not write Docs, transition Kanban, or publish.</p>}
+              </div>
+              {aiRows.length ? (
+                <div className="grid gap-4 lg:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.8fr)]">
+                  <div className="space-y-2">
+                    {aiRows.map((job: any) => (
+                      <button key={job.id} type="button" onClick={() => setSelectedAiJobId(job.id)} className={`w-full rounded-md border p-3 text-left text-sm ${effectiveAiJobId === job.id ? "border-primary bg-primary/5" : ""}`}>
+                        <div className="flex items-center justify-between gap-2"><strong>Job #{job.id}</strong><StatusPill value={job.status} /></div>
+                        <div className="mt-1 text-xs text-muted-foreground">Snapshot #{job.snapshotId} · {job.operation}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="rounded-md border p-4">
+                    {aiOperational.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : aiOperational.data ? (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2"><strong>Job #{(aiOperational.data as any).job.id}</strong><div className="flex items-center gap-2"><StatusPill value={(aiOperational.data as any).operational.state} />{(aiOperational.data as any).job.status === "failed" && <Button size="sm" variant="outline" disabled={retryAi.isPending} onClick={() => retryAi.mutate({ workspaceId: selectedWorkspaceId!, jobId: (aiOperational.data as any).job.id })}>{retryAi.isPending && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}Retry</Button>}</div></div>
+                        <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                          <div>Attempts: {(aiOperational.data as any).attempts.length}</div>
+                          <div>Artifacts: {(aiOperational.data as any).artifacts.length}</div>
+                          <div>Receipt count: {(aiOperational.data as any).operational.distinctProviderReceiptCount}</div>
+                        </div>
+                        <div className="text-sm">Recovery required: <strong>{(aiOperational.data as any).operational.recoveryRequired ? "yes" : "no"}</strong></div>
+                        {(aiOperational.data as any).attempts.length ? <ul className="space-y-1 text-xs text-muted-foreground">{(aiOperational.data as any).attempts.map((attempt: any) => <li key={attempt.id}>Attempt #{attempt.attemptNo} · {attempt.status} · receipt {attempt.providerRequestId ?? "—"} · {attempt.errorClass ?? "no error"}</li>)}</ul> : <EmptyState>No attempts persisted yet.</EmptyState>}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : <EmptyState>No AI QC jobs exist in this workspace.</EmptyState>}
+            </Card>
+
+            <Card className="space-y-4 p-5">
+              <div className="flex items-center gap-2">
+                <Activity className="h-5 w-5 text-primary" />
+                <div>
+                  <h3 className="font-semibold">Publish runs, outbox & readiness</h3>
+                </div>
+              </div>
+              {publishRows.length ? (
+                <div className="grid gap-4 xl:grid-cols-[minmax(240px,0.85fr)_minmax(0,1.9fr)]">
+                  <div className="space-y-2">
+                    {publishRows.map((row: any) => (
+                      <button key={row.run.id} type="button" onClick={() => setSelectedPublishRunId(row.run.id)} className={`w-full rounded-md border p-3 text-left text-sm ${effectivePublishRunId === row.run.id ? "border-primary bg-primary/5" : ""}`}>
+                        <div className="flex items-center justify-between gap-2"><strong>Run #{row.run.id}</strong><StatusPill value={row.run.status} /></div>
+                        <div className="mt-1 text-xs text-muted-foreground">Novel #{row.workspaceNovel.id} · owner {row.ownership?.owner ?? "unknown"} epoch {row.ownership?.cutoverEpoch ?? "?"}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">Items {row.itemCount} · unresolved {row.unresolvedItemCount} · outbox backlog {row.outboxBacklogCount}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="space-y-4 rounded-md border p-4">
+                    {publishDetail.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : publishDetail.data ? (
+                      <>
+                        <div className="flex flex-wrap items-center justify-between gap-2"><strong>Publish run #{(publishDetail.data as any).run.id}</strong><StatusPill value={(publishDetail.data as any).run.status} /></div>
+                        <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
+                          <div>Snapshot #{(publishDetail.data as any).run.snapshotId}</div>
+                          <div>Items {(publishDetail.data as any).items.length}</div>
+                          <div>Outbox {(publishDetail.data as any).outbox.length}</div>
+                          <div>Expected hash {shortHash((publishDetail.data as any).run.expectedLastPublishedSha256)}</div>
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-medium">Items</h4>
+                          {(publishDetail.data as any).items.length ? <ul className="mt-2 space-y-1 text-xs text-muted-foreground">{(publishDetail.data as any).items.map((item: any) => <li key={item.id}>{item.itemKey} · {item.status} · receipt {item.providerReceipt ?? "—"}</li>)}</ul> : <EmptyState>No publish items persisted.</EmptyState>}
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-medium">Outbox</h4>
+                          {(publishDetail.data as any).outbox.length ? <ul className="mt-2 space-y-1 text-xs text-muted-foreground">{(publishDetail.data as any).outbox.map((entry: any) => <li key={entry.id}>#{entry.id} · {entry.status} · attempts {entry.attempts} · epoch {entry.ownershipEpoch ?? "—"}</li>)}</ul> : <EmptyState>No outbox rows for this run.</EmptyState>}
+                        </div>
+                        <div className="rounded-md bg-muted/30 p-3 text-sm">
+                          {readinessEligible ? (
+                            publishReadiness.isLoading ? <span>Loading readiness…</span> : publishReadiness.data ? (
+                              <div className="space-y-1"><div>Cutover readiness: <strong>{(publishReadiness.data as any).readyForSyntheticCutover ? "ready" : "blocked"}</strong></div><div className="text-xs text-muted-foreground">Blockers: {(publishReadiness.data as any).blockers.join(", ") || "none"}</div><div className="font-mono text-xs">Digest {shortHash((publishReadiness.data as any).readinessDigest)}</div></div>
+                            ) : publishReadiness.error ? <span className="text-destructive">Readiness unavailable: {publishReadiness.error.message}</span> : null
+                          ) : <span className="text-muted-foreground">Cutover readiness applies only to exactly one Sheets-owned publish registry row at epoch 0. Current state: {selectedPublishSummary?.ownership?.owner ?? "unknown"} epoch {selectedPublishSummary?.ownership?.cutoverEpoch ?? "?"}.</span>}
+                        </div>
+                        <div className="rounded-md bg-muted/30 p-3 text-sm">
+                          {!canInspectFinalGate ? <span className="text-muted-foreground">Final gate package requires platform admin access.</span> : !readinessEligible ? <span className="text-muted-foreground">Final gate package is not applicable in the current ownership epoch.</span> : finalGate.isLoading ? <span>Loading final gate…</span> : finalGate.data ? <div className="space-y-1"><div>Gate ready: <strong>{(finalGate.data as any).gate.gateReady ? "yes" : "no"}</strong></div><div>Operator cutover eligible: <strong>{(finalGate.data as any).gate.operatorCutoverEligible ? "yes" : "no"}</strong></div><div className="text-xs text-muted-foreground">Blockers: {(finalGate.data as any).gate.blockers.join(", ") || "none"}</div></div> : finalGate.error ? <span className="text-destructive">Final gate unavailable: {finalGate.error.message}</span> : null}
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              ) : <EmptyState>No publish runs exist in this workspace.</EmptyState>}
+            </Card>
+
+            <Card className="space-y-4 p-5">
+              <div className="flex items-center gap-2">
+                <GitBranch className="h-5 w-5 text-primary" />
+                <div>
+                  <h3 className="font-semibold">Ownership & cutover history</h3>
+                </div>
+              </div>
+              {publishTransitions.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[760px] text-left text-sm">
+                    <thead className="border-b text-xs uppercase text-muted-foreground"><tr><th className="py-2 pr-3">When</th><th className="py-2 pr-3">Novel</th><th className="py-2 pr-3">Run</th><th className="py-2 pr-3">Direction</th><th className="py-2 pr-3">Owner</th><th className="py-2">Epoch / version</th></tr></thead>
+                    <tbody>{publishTransitions.map((transition: any) => <tr key={transition.id} className="border-b last:border-0"><td className="py-3 pr-3">{formatDate(transition.createdAt)}</td><td className="py-3 pr-3">#{transition.workspaceNovelId}</td><td className="py-3 pr-3">#{transition.publishRunId}</td><td className="py-3 pr-3"><StatusPill value={transition.direction} /></td><td className="py-3 pr-3">{transition.fromOwner} → {transition.toOwner}</td><td className="py-3">{transition.fromEpoch}→{transition.toEpoch} / v{transition.fromVersion}→v{transition.toVersion}</td></tr>)}</tbody>
+                  </table>
+                </div>
+              ) : <EmptyState>No publish ownership transitions exist in this workspace.</EmptyState>}
+            </Card>
+              </div>
+            </details>
+        </div>
+      ) : null}
+    </main>
+  );
+}

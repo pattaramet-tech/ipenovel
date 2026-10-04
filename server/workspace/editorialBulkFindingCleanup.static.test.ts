@@ -68,11 +68,12 @@ describe("M29.1 Bulk Finding Cleanup safety", () => {
     );
   });
 
-  it("surfaces grouped cleanup controls in Workspace", () => {
+  it("retires the grouped cleanup UI from the workspace page (IPE-064)", () => {
+    // IPE-064: the bulk cleanup preview/apply surfaces were cut from the
+    // daily work area; the admin procedure boundary stays server-side.
     const page = read("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("3.1 จัดกลุ่ม / ลบซ้ำ");
-    expect(page).toContain("ลบ Source Junk ทั้งหมด");
-    expect(page).toContain("ลบทั้งหมด {group.occurrenceCount} จุด");
-    expect(page).toContain("สร้าง Draft ใหม่ 1 version ต่อ Episode Pack");
+    const router = read("server/workspace/router.ts");
+    expect(page).not.toContain("3.1 จัดกลุ่ม / ลบซ้ำ");
+    expect(router).toContain("bulkFindingCleanupApply: adminProcedure");
   });
 });

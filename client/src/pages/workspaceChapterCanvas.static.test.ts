@@ -42,9 +42,12 @@ describe("Workspace chapter editor single-canvas static contract", () => {
     expect(page).toContain("runEditorialForeignChecker");
   });
 
-  it("does not touch Stage/Publish read-model surfaces", () => {
-    expect(page).toContain("stagePlan");
-    expect(page).toContain("reconciliation");
+  it("keeps the save-draft boundary explicit in the editor surface", () => {
+    // IPE-064: the Stage/Publish diagnostics sections were retired from the
+    // page — Stage runs through the action bar (bulk) / toolbar CTA, and the
+    // canvas save boundary stays the explicit Draft-revision button.
     expect(page).toContain("บันทึก Draft + ตรวจซ้ำ");
+    expect(page).not.toContain('data-testid="workspace-stage-section"');
+    expect(page).not.toContain('data-testid="workspace-publish-section"');
   });
 });

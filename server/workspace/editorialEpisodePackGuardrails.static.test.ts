@@ -22,12 +22,13 @@ describe("IPE-056-J Episode Pack guardrails", () => {
     expect(service).not.toContain("delete(workspaceEditorialWorkItems)");
   });
 
-  it("exposes edit/remove actions in Table for New packs", () => {
+  it("exposes edit/remove actions via the pack row menu (table retired, IPE-064)", () => {
     expect(router).toContain("updateEpisode: adminProcedure");
     expect(router).toContain("removeEpisode: adminProcedure");
-    expect(page).toContain("updateEpisode.useMutation");
-    expect(page).toContain("removeEpisode.useMutation");
-    expect(page).toContain("แก้ช่วงตอน");
-    expect(page).toContain("นำออก");
+    expect(page).toContain("updateEditorialEpisode");
+    expect(page).toContain("removeEditorialEpisode");
+    const menu = fs.readFileSync(path.resolve(process.cwd(), "client/src/pages/EditorialPackRowActionsMenu.tsx"), "utf8");
+    expect(menu).toContain("แก้ช่วงตอน");
+    expect(menu).toContain("นำออก");
   });
 });

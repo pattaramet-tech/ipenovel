@@ -69,6 +69,9 @@ interface WorkspacePackListPanelProps {
   selectedWorkItemId: number | null | undefined;
   bulkSelectedWorkItemIds: Set<number>;
   bulkBusy?: boolean;
+  /** IPE-064: master "เลือกทั้งหมด" checkbox over this story's packs. */
+  allSelected?: boolean;
+  onToggleAll?: () => void;
   onSelectPack: (workItemId: number) => void;
   onToggleBulk: (workItemId: number) => void;
   onOpenEditor: (card: any) => void;
@@ -92,6 +95,8 @@ export function WorkspacePackListPanel({
   selectedWorkItemId,
   bulkSelectedWorkItemIds,
   bulkBusy,
+  allSelected,
+  onToggleAll,
   onSelectPack,
   onToggleBulk,
   onOpenEditor,
@@ -138,6 +143,17 @@ export function WorkspacePackListPanel({
         aria-label="ค้นหาแพ็กในเรื่องนี้"
         className="h-8 text-sm"
       />
+      <label className="flex items-center gap-2 text-xs font-medium" data-testid="workspace-pack-select-all-row">
+        <input
+          type="checkbox"
+          aria-label="เลือกทั้งหมด (ทุกแพ็กในเรื่องนี้)"
+          data-testid="workspace-pack-select-all"
+          checked={Boolean(allSelected)}
+          disabled={bulkBusy || !packs.length}
+          onChange={() => onToggleAll?.()}
+        />
+        เลือกทั้งหมด
+      </label>
       <div className="max-h-[28rem] space-y-1 overflow-auto pr-1" data-testid="workspace-pack-list">
         {visiblePacks.length ? (
           visiblePacks.map((card) => {

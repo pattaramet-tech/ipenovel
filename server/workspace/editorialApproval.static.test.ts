@@ -189,9 +189,12 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
   });
 
   it("shows explicit Confirm and unpublished Episode staging controls in Workspace", () => {
+    // IPE-064: the per-pack ยืนยัน/Stage controls live in the sticky
+    // toolbar CTA and the bulk action bar; the old rail sections retired.
     const page = source("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("4. ยืนยัน Draft ปัจจุบัน");
-    expect(page).toContain("5. Stage");
+    expect(page).toContain("onConfirm={submitApprovalConfirm}");
+    expect(page).toContain("onStage={submitStageDraft}");
+    expect(page).toContain("bulkStageEditorialDrafts.mutate");
     expect(page).toContain("unpublished");
   });
 });

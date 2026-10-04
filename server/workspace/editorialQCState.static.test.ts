@@ -51,11 +51,10 @@ describe("Workspace QC state hardening static contract", () => {
   it("derives UI status chips from the server state machine", () => {
     const page = source("client/src/pages/WorkspacePage.tsx");
     expect(page).toContain("editorialCheckerState");
-    // pending_confirm is derived from the presentation helper — never a fallback.
-    expect(page).toContain('deriveApprovalPresentationState({');
-    expect(page).toContain('hasDraft: Boolean(editorialApprovalData?.latestDraft)');
-    expect(page).toContain("editorialQCReasonText");
-    expect(page).toContain("Checker ERROR —");
+    // IPE-064: the QC/Stage diagnostics sections retired — the state machine
+    // still feeds the sticky toolbar CTA and the stale hints in the rail.
+    expect(page).toContain("checkerState={editorialCheckerState}");
+    expect(page).toContain("editorialCheckerRunStale");
   });
 
   it("deduplicates automatic recheck per draft identity (exactly once)", () => {

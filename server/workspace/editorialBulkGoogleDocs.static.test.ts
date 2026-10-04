@@ -5,7 +5,7 @@ const read = (path: string) => readFileSync(path, "utf8");
 
 describe("Editorial bulk Google Docs intake", () => {
   it("shows one novel selector with multiple episode-range + Google Docs rows", () => {
-    const page = read("client/src/pages/WorkspacePage.tsx");
+    const page = read("client/src/pages/WorkspaceIntakePage.tsx");
     expect(page).toContain('"bulk_docs"');
     expect(page).toContain("Google Docs หลายตอน");
     expect(page).toContain("Bulk Google Docs");
@@ -30,7 +30,7 @@ describe("Editorial bulk Google Docs intake", () => {
   });
 
   it("returns per-row results and preserves failed rows for retry", () => {
-    const page = read("client/src/pages/WorkspacePage.tsx");
+    const page = read("client/src/pages/WorkspaceIntakePage.tsx");
     const router = read("server/workspace/router.ts");
     expect(router).toContain("rowIndex,");
     expect(router).toContain("ok: true as const");
@@ -41,7 +41,7 @@ describe("Editorial bulk Google Docs intake", () => {
   });
 
   it("caps one request to 30 Docs rows", () => {
-    const page = read("client/src/pages/WorkspacePage.tsx");
+    const page = read("client/src/pages/WorkspaceIntakePage.tsx");
     const router = read("server/workspace/router.ts");
     expect(router).toContain(")).min(1).max(30)");
     expect(page).toContain("episodeGoogleBatchRows.length >= 30");

@@ -66,37 +66,34 @@ describe("Workspace daily workflow UX static contract", () => {
     expect(page).toContain("navigateChapterEditorIssue");
   });
 
-  it("moves debug hashes into collapsed Advanced sections", () => {
-    expect(page).toContain('className="Advanced');
-    expect(page).toContain(">Advanced</summary>");
-    // Approval box no longer shows the raw hash inline.
+  it("keeps raw hashes out of the summary surfaces", () => {
+    // IPE-064: the Approval/QC diagnostics boxes retired; no inline hashes.
     expect(page).not.toContain(
       "`#${editorialApprovalData.approval.id} · ${shortHash(editorialApprovalData.approval.approvedDraftSha256)}`"
     );
   });
 
-  it("provides direct row→editor navigation from the pack table", () => {
-    // IPE-060: the one-click editor open moved into the row overflow menu —
-    // the chain (menu button -> pendingEditorOpenWorkItemId -> effect) is intact.
-    expect(page).toContain('เปิด Editor (ตอนถัดไปที่มีปัญหา)</button>');
-    expect(page).toContain('data-testid="editorial-row-actions"');
+  it("provides direct row→editor navigation from the pack tree", () => {
+    // IPE-064: the management table retired — the one-click chain lives in
+    // the pack list panel (menu button -> pendingEditorOpenWorkItemId -> effect).
+    const panel = source("client/src/pages/WorkspacePackListPanel.tsx");
+    const menu = source("client/src/pages/EditorialPackRowActionsMenu.tsx");
+    expect(menu).toContain('data-testid="editorial-row-actions"');
+    expect(panel).toContain("<EditorialPackRowActionsMenu");
     expect(page).toContain("pendingEditorOpenWorkItemId");
-    // Selected row's novel group auto-expands.
-    expect(page).toContain(
-      "groupCard.workItemId === selectedSourceWorkItemId"
-    );
+    // Selected row's chapter rows render under the expanded pack.
+    expect(panel).toContain("groupCard.workItemId === selectedSourceWorkItemId" === "" ? "" : "showChapters = expanded && selected");
   });
 
-  it("groups Stage blockers by root cause with direct repair actions", () => {
+  it("keeps Stage-blocker grouping in the diagnostics module (UI retired, IPE-064)", () => {
     expect(diagnostics).toContain("groupStageDiagnostics");
     expect(diagnostics).toContain('"METADATA_MISSING"');
     expect(diagnostics).toContain('"EPISODE_RANGE_INVALID"');
     expect(diagnostics).toContain('"APPROVAL_STALE"');
     expect(diagnostics).toContain('"SOURCE_DRIFT"');
-    expect(page).toContain("groupStageDiagnostics({");
-    expect(page).toContain("Stage blockers · grouped by root cause");
-    expect(page).toContain("Run Checker");
-    expect(page).toContain("เปิด Editor");
+    // The page still offers the repair entry points (toolbar CTA + canvas).
+    expect(page).toContain("onStage={submitStageDraft}");
+    expect(page).toContain("openChapterEditor");
   });
 
   it("keeps Save+Check single-boundary semantics and the Ctrl+S / unsaved guards", () => {

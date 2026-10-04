@@ -87,16 +87,16 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(router).toContain("editorUndo: adminProcedure");
   });
 
-  it("provides sentence edit, paragraph edit, autosave, recheck and undo UX without requiring AI", () => {
+  it("provides the canvas-first edit, recheck and undo UX without requiring AI", () => {
     const page = source("client/src/pages/WorkspacePage.tsx");
     // IPE-062R4D: the center IS the chapter editor (no Workspace Editor shell).
+    // IPE-064: the finding quick-editor (แก้ประโยค / autosave) retired — the
+    // canvas is the single editing surface; finding navigation moved to the
+    // WorkspaceFindingActions card in the right rail.
     expect(page).toContain("Chapter Editor");
-    expect(page).toContain("แก้ประโยค");
-    expect(page).toContain("แก้ย่อหน้า");
-    expect(page).toContain("editorTarget && editorTarget.findingId === finding.id");
-    expect(page).toContain("editorTarget && !editorTarget.findingId");
-    expect(page).toContain('submitEditorEdit("autosave")');
-    expect(page).toContain("บันทึกทันที + ตรวจซ้ำ");
+    expect(page).not.toContain("submitEditorEdit");
+    expect(page).not.toContain("editorTarget");
+    expect(page).toContain("บันทึก Draft + ตรวจซ้ำ");
     expect(page).toContain("Chapter Editor");
     expect(page).toContain('id="workspace-chapter-editor"');
     expect(page).toContain("แท็บใน Draft");
@@ -108,17 +108,13 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).not.toContain("Draft structure ·");
     expect(page).not.toContain("Draft tabs");
     expect(page).toContain("Undo");
-    expect(page).toContain("Chapter Editor");
-    expect(page).toContain("เติมเนื้อหา");
+    const packPanel = source("client/src/pages/WorkspacePackListPanel.tsx");
+    expect(packPanel).toContain("เติมเนื้อหา");
     expect(page).toContain('kind: "replace_tab"');
     // IPE-058-C: single continuous canvas replaces per-paragraph textareas.
     expect(page).toContain("ChapterEditorCanvas");
     expect(page).toContain("workspace-chapter-editor-canvas");
     expect(page).not.toContain("ChapterEditorParagraphBlock");
-    // IPE-062R4A/R4D: the canvas is the ONLY full-content editor surface —
-    // the main-editor card contains no raw <textarea> other than the canvas
-    // component itself (finding quick-edits live in the right rail, the bulk
-    // finding editor in Advanced — single-purpose, non-chapter textareas).
     const canvasPane = page.slice(
       page.indexOf('data-testid="workspace-main-editor"'),
       page.indexOf('data-testid="workspace-pack-secondary"')
@@ -135,9 +131,9 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("sessionStorage");
     expect(page).toContain("ยังไม่บันทึก");
     expect(page).toContain("savedChapterTarget");
-    expect(page).toContain("Issue Queue");
-    expect(page).toContain("Previous finding");
-    expect(page).toContain("Next finding");
+    const findingCard = source("client/src/pages/WorkspaceFindingActions.tsx");
+    expect(findingCard).toContain('data-testid="workspace-finding-prev"');
+    expect(findingCard).toContain('data-testid="workspace-finding-next"');
     expect(page).toContain("บทมีปัญหาถัดไป");
     expect(page).toContain('["issue", "มีปัญหา"]');
     expect(page).toContain('["unedited", "ยังไม่แก้"]');
@@ -146,7 +142,9 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(page).toContain("ค้าง {chapterEditorProgress.pending}");
     expect(page).toContain("ยืนยันแล้ว {chapterEditorProgress.confirmed}");
     expect(page).toContain("navigateChapterEditorIssue");
-    expect(page).toContain("ไปยัง structural issue");
+    const findingCardSource = source("client/src/pages/WorkspaceFindingActions.tsx");
+    expect(findingCardSource).toContain("Structural · {currentIssue.anomalyType}");
+    expect(findingCardSource).toContain("เปิดแท็บ {tab.title}");
     expect(page).toContain("StatusPill");
     expect(page).toContain("ไม่ Publish อัตโนมัติ");
   });

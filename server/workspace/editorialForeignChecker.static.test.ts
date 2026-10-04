@@ -58,7 +58,7 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(domain).toContain("normal narrative paragraph is an explicit block boundary");
     expect(domain).not.toContain("ordered.slice(anchorIndex)");
     expect(service).toContain("EDITORIAL_FOREIGN_CHECKER_RULES.sourceJunk");
-    expect(page).toContain('finding.ruleKey === "source_junk"');
+    expect(page).toContain('ruleKey !== "source_junk"');
     expect(service + domain).not.toMatch(/deleteEditorial|autoDelete|removeParagraph/);
   });
 
@@ -97,16 +97,16 @@ describe("Workspace Editorial foreign-word checker static boundaries", () => {
     expect(router).toContain("foreignCheckerUnallow: adminProcedure");
   });
 
-  it("provides a minimal sentence-finding QC surface without introducing the full editor early", () => {
+  it("provides the finding QC workflow card in the right rail (IPE-064)", () => {
+    // IPE-064: the sentence quick-editor retired — the canvas is the single
+    // editing surface; skip/allow/confirm-note live in the finding card.
     const page = source("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("3. ตรวจ / ตรวจซ้ำ");
+    const findingCard = source("client/src/pages/WorkspaceFindingActions.tsx");
     expect(page).toContain("finding.sentenceText");
-    expect(page).toContain("editorTarget && editorTarget.findingId === finding.id");
-    expect(page).toContain("แก้ตรง finding นี้");
-    expect(page).toContain("ยอมรับคำนี้");
-    expect(page).toContain("ยกเว้นคำ “");
-    expect(page).toContain("foreignCheckerAllow.useMutation");
-    expect(page).toContain("Mark fixed");
+    expect(findingCard).toContain("ข้าม");
+    expect(findingCard).toContain("เพิ่มอนุญาต");
+    expect(page).toContain("allowEditorialFinding.mutate");
+    expect(page).toContain("resolveEditorialFinding.mutate");
     expect(page).not.toContain("contentEditable");
   });
 });

@@ -6,7 +6,7 @@ const read = (path: string) => readFileSync(new URL(path, root), "utf8");
 
 describe("M12D.11 Production Workspace bootstrap", () => {
   it("shows first-run Workspace creation instead of a permanently hidden form", () => {
-    const page = read("client/src/pages/WorkspacePage.tsx");
+    const page = read("client/src/pages/WorkspaceIntakePage.tsx");
     expect(page).toContain(
       'workspaces.data?.length ? "hidden" : "space-y-4 p-5"'
     );
@@ -16,7 +16,7 @@ describe("M12D.11 Production Workspace bootstrap", () => {
   });
 
   it("exposes a self-service Google Docs connect action and fixed callback flow", () => {
-    const page = read("client/src/pages/WorkspacePage.tsx");
+    const page = read("client/src/pages/WorkspaceIntakePage.tsx");
     const oauth = read("server/workspace/googleDocs.oauth.ts");
     const index = read("server/_core/index.ts").replace(/\r\n/g, "\n");
 

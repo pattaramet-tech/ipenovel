@@ -13,7 +13,6 @@ const page = source("client/src/pages/WorkspacePage.tsx");
 const overview = source("client/src/pages/WorkspaceStoryOverview.tsx");
 const packList = source("client/src/pages/WorkspacePackListPanel.tsx");
 const summary = source("client/src/pages/WorkspaceReviewSummaryPanel.tsx");
-const actions = source("client/src/pages/WorkspaceWorkflowActions.tsx");
 const rowMenu = source("client/src/pages/EditorialPackRowActionsMenu.tsx");
 const model = source("client/src/pages/workspaceMultiStory.ts");
 
@@ -35,7 +34,6 @@ describe("IPE-062 multi-story state model", () => {
     expect(model).toContain("export function storyOverallStatus");
     // No new readiness source: the summary consumes evidence the board loads.
     expect(page).toContain("summarizeStoryPacks(group.cards)");
-    expect(page).toContain("visibleEditorialNovelGroups.map");
   });
 
   it("seeds the daily story model from bound novels so zero-pack stories remain focusable (IPE-062R3 P2-A)", () => {
@@ -48,24 +46,17 @@ describe("IPE-062 multi-story state model", () => {
     expect(model).toContain(
       "const aliasKey = Number.isFinite(novelId) ? aliasByNovelId.get(novelId) : undefined;"
     );
-    // The overview groups the COMPLETE unfiltered board; the filtered list
-    // stays scoped to the legacy management table.
+    // The overview groups the COMPLETE unfiltered board (IPE-064: the legacy
+    // filtered management-table projection was retired).
     expect(page).toContain("groupStoriesByNovel(editorialCards, workspaceNovelOptions as any[])");
-    expect(page).toContain("groupStoriesByNovel(visibleEditorialCards)");
   });
 
   it("enforces the editor save-identity invariant at runtime (IPE-062R3 P2-B)", () => {
     // Pure invariant, unit-tested (match / mismatch / missing identity).
     expect(model).toContain("export function editorDraftBelongsToSelectedPack");
     expect(model).toContain("if (targetDraftId == null || selectedLatestDraftId == null) return false;");
-    // BOTH save paths refuse to mutate a stale editor target after a pack
-    // switch — the UI guard is never the only line of defense.
-    const editorEdit = page.slice(
-      page.indexOf('const submitEditorEdit = (source: "manual" | "autosave") => {'),
-      page.indexOf("const submitChapterEditorEdit = () => {")
-    );
-    expect(editorEdit).toContain("editorDraftBelongsToSelectedPack(");
-    expect(editorEdit).toContain("Editor นี้เปิดจากแพ็กอื่น");
+    // IPE-064: the canvas save is the single guarded path — a pack switch
+    // must never submit the old draft under the new pack's work item.
     const chapterEdit = page.slice(
       page.indexOf("const submitChapterEditorEdit = () => {"),
       page.indexOf("idempotencyKey: `editor-tab:")
@@ -160,24 +151,25 @@ describe("IPE-062 compact review summary panel", () => {
 
 describe("IPE-062 primary workflow actions", () => {
   it("exposes the flow บันทึก+ตรวจ → ยืนยัน → Stage → Publish with the existing handlers", () => {
-    expect(actions).toContain('data-testid="workspace-workflow-actions"');
-    expect(actions).toContain("บันทึก Draft + ตรวจซ้ำ");
-    expect(actions).toContain("ยืนยัน Draft");
-    expect(actions).toContain("ไป Stage");
-    expect(actions).toContain("Publish");
-    expect(actions).toContain("disabled={!hasDraft || savePending || !dirty}");
+    // IPE-064: WorkspaceWorkflowActions was retired — the numbered flow runs
+    // through the sticky toolbar CTA and the bulk action bar.
+    const actionBar = source("client/src/pages/WorkspaceActionBar.tsx");
+    expect(actionBar).toContain('data-testid="workspace-action-bar"');
+    expect(actionBar).toContain("4. ยืนยัน");
+    expect(actionBar).toContain("5. Stage");
+    expect(actionBar).toContain("6. Publish");
+    expect(page).toContain("บันทึก Draft + ตรวจซ้ำ");
+    expect(page).toContain("onConfirm={submitApprovalConfirm}");
+    expect(page).toContain("onStage={submitStageDraft}");
   });
 
-  it("wires the side panel to the same save/confirm boundaries as the toolbar", () => {
+  it("wires the side panel to the same save boundary as the toolbar", () => {
     expect(page).toContain('data-testid="workspace-side-panel"');
     expect(page).toContain("<WorkspaceReviewSummaryPanel");
-    expect(page).toContain("<WorkspaceWorkflowActions");
-    expect(page).toContain("onSaveCheck={submitChapterEditorEdit}");
-    expect(page).toContain("onConfirm={submitApprovalConfirm}");
-    // IPE-062R4D: ไป Stage / Publish scroll to the rail sections instead of
-    // switching detail tabs.
-    expect(page).toContain('document.getElementById("workspace-stage-section")');
-    expect(page).toContain('document.getElementById("workspace-publish-section")');
+    // IPE-064: WorkspaceWorkflowActions was retired; the finding actions
+    // card carries the save-draft boundary instead.
+    expect(page).toContain("<WorkspaceFindingActions");
+    expect(page).toContain("onSave={submitChapterEditorEdit}");
   });
 });
 
@@ -192,12 +184,14 @@ describe("IPE-062R4D editor-first center (supersedes the in-place split)", () =>
     expect(page).toContain("Editor จะเปิดในพื้นที่นี้ทันที ไม่ต้องเลื่อนหา");
   });
 
-  it("collapses pack import sources below the editor surface", () => {
-    expect(page).toContain('data-testid="workspace-pack-imports"');
-    // Secondary block sits AFTER the main editor in source order.
+  it("collapses pack import sources out of the editor surface (moved to intake, IPE-064)", () => {
+    expect(page).not.toContain('data-testid="workspace-pack-imports"');
+    const intakeSource = source("client/src/pages/WorkspaceIntakePage.tsx");
+    expect(intakeSource).toContain('data-testid="intake-pack-imports"');
+    // The collapsed secondary pack metadata still sits AFTER the main editor.
     const editorStart = page.indexOf('data-testid="workspace-main-editor"');
-    const importsStart = page.indexOf('data-testid="workspace-pack-imports"');
-    expect(importsStart).toBeGreaterThan(editorStart);
+    const secondaryStart = page.indexOf('data-testid="workspace-pack-secondary"');
+    expect(secondaryStart).toBeGreaterThan(editorStart);
   });
 });
 
@@ -217,7 +211,8 @@ describe("IPE-062 page-level multi-story wiring", () => {
     expect(page).toContain("const activeStoryPacks = activeStoryGroup ? activeStoryGroup.cards : [];");
     expect(page).toContain("packs={activeStoryPacks}");
     expect(page).toContain("<WorkspaceStoryOverview");
-    expect(page).toContain("onFocusStory={selectStory}");
+    // IPE-064: focusing a story from the overview enters the work area.
+    expect(page).toContain("if (selectStory(storyKey)) setStoryEntered(true);");
   });
 
   it("guards same-story pack switches before changing the selected work item", () => {
@@ -228,13 +223,12 @@ describe("IPE-062 page-level multi-story wiring", () => {
     expect(page).toContain("if (selectPackForActiveStory(card.workItemId)) {");
   });
 
-  it("keeps cross-story management-table selections synchronized with story focus", () => {
-    expect(page).toContain("const selectPackAcrossStories = (card: any) => {");
-    expect(page).toContain("const storyKey = storyKeyFor(card.workspaceNovelId, card.novel?.id);");
-    expect(page).toContain("if (storyKey === activeStoryKey) return selectPackForActiveStory(card.workItemId);");
-    expect(page).toContain("if (!selectStory(storyKey)) return false;");
-    expect(page).toContain("onClick={() => selectPackAcrossStories(card)}");
-    expect(page).toContain("selectPackAcrossStories(card);");
-    expect(page).toContain("if(selectPackAcrossStories(card))setPendingEditorOpenWorkItemId(card.workItemId);");
+  it("keeps the story gate synchronized with the workspace switch (IPE-064)", () => {
+    expect(page).toContain("const [storyEntered, setStoryEntered] = useState(false);");
+    expect(page).toContain('data-testid="workspace-back-to-stories"');
+    // Switching workspace resets back to the story picker.
+    expect(page).toContain("setStoryEntered(false);");
+    // Cross-story selection still resolves the story key from the group.
+    expect(page).toContain("storyKeyFor(group.workspaceNovelId, group.novel?.id)");
   });
 });
