@@ -215,6 +215,12 @@ function mapEditorialServiceError(error: unknown): EditorialToolStatus<never> {
   if (code === "ADMIN_REQUIRED") {
     return { status: "denied", reason: "ADMIN_REQUIRED" };
   }
+  // IPE-PLUGIN-001D-R2: effective member whose role is below the tool policy
+  // (reviewer/viewer calling a mutation) - denied; NOT_FOUND stays reserved
+  // for non-members so there is no existence oracle.
+  if (code === "EDIT_FORBIDDEN") {
+    return { status: "denied", reason: "EDIT_FORBIDDEN" };
+  }
   if (
     code.endsWith("_CONFLICT") ||
     code === "STALE_PREVIEW" ||
@@ -243,12 +249,14 @@ export type EditorialToolDeps = {
     actorUserId: number;
     workspaceId: number;
     workItemId: number;
+    accessPolicy?: string;
   }) => Promise<unknown>;
   getCheckerReadModel: (input: {
     actorUserId: number;
     workspaceId: number;
     workItemId: number;
     runId?: number;
+    accessPolicy?: string;
   }) => Promise<unknown>;
   applyEdit: (input: {
     actorUserId: number;
@@ -259,12 +267,14 @@ export type EditorialToolDeps = {
     expectedDraftSha256: string;
     command: unknown;
     idempotencyKey: string;
+    accessPolicy?: string;
   }) => Promise<unknown>;
   runChecker: (input: {
     actorUserId: number;
     workspaceId: number;
     workItemId: number;
-    expectedDraftId?: number;
+    expectedDraftId: number;
+    accessPolicy?: string;
   }) => Promise<unknown>;
 };
 
@@ -426,7 +436,7 @@ export async function handleDraftEdit(
 
 export async function handleCheckerRun(
   principal: { userId: number },
-  args: { workspaceId: number; packId: number; expectedDraftId?: number },
+  args: { workspaceId: number; packId: number; expectedDraftId: number },
   deps: EditorialToolDeps
 ): Promise<EditorialToolStatus<Record<string, unknown>>> {
   if (!(await provePackLineage(principal, args, deps))) return { status: "not_found" };
@@ -435,7 +445,7 @@ export async function handleCheckerRun(
       actorUserId: principal.userId,
       workspaceId: args.workspaceId,
       workItemId: args.packId,
-      ...(args.expectedDraftId !== undefined ? { expectedDraftId: args.expectedDraftId } : {}),
+      expectedDraftId: args.expectedDraftId,
     })) as Record<string, unknown>;
     const projection = (raw.kanbanProjection ?? {}) as Record<string, unknown>;
     return {

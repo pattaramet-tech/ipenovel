@@ -454,9 +454,7 @@ describe("plugin editorial slice (001D)", () => {
         workspaceId: w1.workspaceId,
         packId: packW1.packId,
       });
-      console.log("[001d-probe] first-call raw body:", JSON.stringify(rawFirst));
       const read = readTool(rawFirst);
-      console.log("[001d-probe] first-call raw body:", JSON.stringify(rawFirst));
       expect(read.isError).toBe(false);
       expect(read.result!.draftId).toBeGreaterThan(0);
       expect(read.result!.version).toBeGreaterThanOrEqual(1);
@@ -606,7 +604,6 @@ describe("plugin editorial slice (001D)", () => {
         },
         idempotencyKey: uniqueTestTag("idem"),
       }));
-      console.log("[r2-probe] stale edit read:", JSON.stringify(conflict).slice(0, 200));
       const staleRaw = await callTool(grantA.accessToken, "draft.edit", {
         workspaceId: w1.workspaceId, packId: packW1.packId,
         expectedDraftId: 999999, expectedDraftVersion: 1, expectedDraftSha256: "f".repeat(64),
@@ -616,7 +613,6 @@ describe("plugin editorial slice (001D)", () => {
         },
         idempotencyKey: uniqueTestTag("idem"),
       });
-      console.log("[r2-probe] stale raw:", JSON.stringify(staleRaw.body).slice(0, 500));
       expect(conflict.isError).toBe(true);
       expect(conflict.result!.code).toBe("DRAFT_CONFLICT");
     });
@@ -735,7 +731,6 @@ describe("plugin editorial slice (001D)", () => {
         },
         idempotencyKey: uniqueTestTag("idem"),
       });
-      console.log("[r2-probe] edit raw:", JSON.stringify(editRaw).slice(0, 400));
       const edit = readTool(editRaw);
       expect(edit.isError).toBe(false);
 
@@ -846,21 +841,31 @@ describe("plugin editorial slice (001D)", () => {
       expect(after.marker).toBe("NOT_FOUND");
     });
 
-    it("non-admin bound user passes tenant proof but inherits the Workspace admin gate (ADMIN_REQUIRED)", async () => {
-      // D owns W3 (in-tenant) but is NOT a platform admin - the Workspace
-      // services require platform admins, and the plugin inherits that gate.
-      const denied = await callTool(grantA.accessToken, "draft.get", {
-        workspaceId: w3.workspaceId, packId: packW3.packId,
-      });
-      // A cannot even pass tenant proof for W3 (foreign workspace).
-      const deniedRead = readTool(denied);
-      expect(deniedRead.marker).toBe("NOT_FOUND");
-      // D is in-tenant (member) but the Workspace service's ADMIN_REQUIRED
-      // gate surfaces as a denied tool call.
-      const result = readTool(await callTool(grantD.accessToken, "draft.get", {
+    it("non-admin VIEWER member: read PASS, mutation DENIED (EDIT_FORBIDDEN)", async () => {
+      // D is an in-tenant viewer member of W3: reads pass, mutations deny.
+      const read = readTool(await callTool(grantD.accessToken, "draft.get", {
         workspaceId: w3.workspaceId, packId: packW3.packId,
       }));
-      expect(result.errorCode).toContain("ADMIN_REQUIRED");
+      expect(read.isError).toBe(false);
+      expect(read.result!.packId).toBe(packW3.packId);
+      const tabs = read.result!.tabs as Array<Record<string, unknown>>;
+      const first = (tabs[0].paragraphs as Array<Record<string, unknown>>)[0];
+      const write = readTool(await callTool(grantD.accessToken, "draft.edit", {
+        workspaceId: w3.workspaceId, packId: packW3.packId,
+        expectedDraftId: read.result!.draftId as number,
+        expectedDraftVersion: read.result!.version as number,
+        expectedDraftSha256: read.result!.draftSha256 as string,
+        command: {
+          kind: "replace_paragraph",
+          paragraphKey: first.paragraphKey as string,
+          expectedParagraphFingerprint: first.paragraphFingerprint as string,
+          expectedText: first.text as string,
+          replacementText: "viewer-must-not-write",
+        },
+        idempotencyKey: uniqueTestTag("idem"),
+      }));
+      // Protocol-level denial (viewer below the plugin_edit grade).
+      expect(write.errorCode).toBe("EDIT_FORBIDDEN");
     });
   });
 
@@ -1000,3 +1005,267 @@ async function listRunIds(workItemId: number): Promise<number[]> {
     .where(eq(workspaceEditorialCheckerRuns.workItemId, workItemId));
   return rows.map(row => row.id).sort((x, y) => x - y);
 }
+
+describe("plugin tenant role matrix (001D-R2)", () => {
+  let userOwner: TestUserFixture; // non-admin, owner via ownerUserId, NO membership row
+  let userEditor: TestUserFixture; // non-admin editor member
+  let userReviewer: TestUserFixture; // non-admin reviewer member
+  let userViewer: TestUserFixture; // non-admin viewer member
+  let wRole: { workspaceId: number; name: string };
+  let rolePack: PackRef;
+  let ownerGrant: { accessToken: string; refreshToken: string };
+  let editorGrant: { accessToken: string; refreshToken: string };
+  let reviewerGrant: { accessToken: string; refreshToken: string };
+  let viewerGrant: { accessToken: string; refreshToken: string };
+  let roleClient: { clientId: string; clientSecret: string };
+  const adminOperator: TestUserFixture[] = [];
+
+  beforeAll(async () => {
+    const db = getTestDb();
+    userOwner = await createTestUser({ name: "Role Owner (non-admin)" });
+    userEditor = await createTestUser({ name: "Role Editor" });
+    userReviewer = await createTestUser({ name: "Role Reviewer" });
+    userViewer = await createTestUser({ name: "Role Viewer" });
+    createdUserIds.push(userOwner.id, userEditor.id, userReviewer.id, userViewer.id);
+
+    // Workspace created via DIRECT row insert so the owner has NO membership
+    // row - proves ownerUserId alone carries owner authority.
+    const workspaceId = extractInsertId(
+      await db.insert(workspaceWorkspaces).values({
+        name: `WR-${uniqueTestTag("ws")}`,
+        ownerUserId: userOwner.id,
+      })
+    );
+    createdWorkspaceIds.push(workspaceId);
+    wRole = { workspaceId, name: `WR-${uniqueTestTag("ws")}` };
+
+    const memberStatuses: Array<{ user: TestUserFixture; role: "editor" | "reviewer" | "viewer"; status: "active" }> = [
+      { user: userEditor, role: "editor", status: "active" },
+      { user: userReviewer, role: "reviewer", status: "active" },
+      { user: userViewer, role: "viewer", status: "active" },
+    ];
+    for (const member of memberStatuses) {
+      await db.insert(workspaceMembers).values({
+        workspaceId,
+        userId: member.user.id,
+        role: member.role,
+        status: member.status,
+      });
+    }
+
+    // Pack built through the workspace_route services by an ADMIN operator.
+    const operator = await createTestUser({ role: "admin", name: "Operator" });
+    adminOperator.push(operator);
+    createdUserIds.push(operator.id);
+    const novel = await createTestNovel();
+    createdNovelIds.push(novel.id);
+    await bindPublicationNovel({
+      actorUserId: operator.id,
+      workspaceId,
+      novelId: novel.id,
+    });
+    const bindingRows = await db
+      .select({ id: workspaceNovels.id })
+      .from(workspaceNovels)
+      .where(eq(workspaceNovels.novelId, novel.id));
+    const bindingId = bindingRows[0].id;
+    const creation = await createEditorialEpisodeWorkItem({
+      actorUserId: operator.id,
+      workspaceId,
+      workspaceNovelId: bindingId,
+      episodeNumber: "1",
+      episodeTitle: "role-matrix pack",
+      price: "45.00",
+      isFree: false,
+    });
+    const episodeCard = creation.board.columns
+      .flatMap(column => column.cards)
+      .find(card => card.workItemType === "NEW_EPISODE");
+    if (!episodeCard?.workItemId) throw new Error("role-matrix pack card missing");
+    const imported = await importEditorialSource({
+      actorUserId: operator.id,
+      workspaceId,
+      workItemId: episodeCard.workItemId,
+      payload: sourcePayload(["role matrix paragraph one", "role matrix paragraph two"]),
+    });
+    if (!imported.latestDraftId) throw new Error("role-matrix import produced no draft");
+    rolePack = { packId: episodeCard.workItemId, workspaceNovelId: bindingId, chapterIds: [] };
+
+    roleClient = await createTestPluginClient(ALL_SCOPES);
+    ownerGrant = await runConsentAndExchange(userOwner, roleClient, ALL_SCOPES);
+    editorGrant = await runConsentAndExchange(userEditor, roleClient, ALL_SCOPES);
+    reviewerGrant = await runConsentAndExchange(userReviewer, roleClient, ALL_SCOPES);
+    viewerGrant = await runConsentAndExchange(userViewer, roleClient, ALL_SCOPES);
+  });
+
+  it("NON-ADMIN owner (no membership row): read PASS, draft.edit PASS, checker.run PASS", async () => {
+    const rawRead = await callTool(ownerGrant.accessToken, "draft.get", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+    });
+    console.log("[matrix-probe] owner read:", rawRead.status, JSON.stringify(rawRead.body).slice(0, 300));
+    const read = readTool(rawRead);
+    expect(read.isError).toBe(false);
+    const tabs = read.result!.tabs as Array<Record<string, unknown>>;
+    const paragraphs = tabs[0].paragraphs as Array<Record<string, unknown>>;
+    const first = paragraphs[0];
+    const edited = readTool(await callTool(ownerGrant.accessToken, "draft.edit", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: read.result!.draftId as number,
+      expectedDraftVersion: read.result!.version as number,
+      expectedDraftSha256: read.result!.draftSha256 as string,
+      command: {
+        kind: "replace_paragraph",
+        paragraphKey: first.paragraphKey as string,
+        expectedParagraphFingerprint: first.paragraphFingerprint as string,
+        expectedText: first.text as string,
+        replacementText: "owner edit",
+      },
+      idempotencyKey: uniqueTestTag("idem"),
+    }));
+    expect(edited.isError).toBe(false);
+    expect(edited.result!.replayed).toBe(false);
+    const run = readTool(await callTool(ownerGrant.accessToken, "checker.run", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: edited.result!.draftId as number,
+    }));
+    expect(run.isError).toBe(false);
+    expect(run.result!.created).toBe(true);
+  });
+
+  it("EDITOR member: read PASS, draft.edit PASS, checker.run PASS", async () => {
+    const read = readTool(await callTool(editorGrant.accessToken, "draft.get", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+    }));
+    expect(read.isError).toBe(false);
+    const tabs = read.result!.tabs as Array<Record<string, unknown>>;
+    const paragraphs = tabs[0].paragraphs as Array<Record<string, unknown>>;
+    const last = paragraphs[paragraphs.length - 1];
+    const edited = readTool(await callTool(editorGrant.accessToken, "draft.edit", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: read.result!.draftId as number,
+      expectedDraftVersion: read.result!.version as number,
+      expectedDraftSha256: read.result!.draftSha256 as string,
+      command: {
+        kind: "replace_paragraph",
+        paragraphKey: last.paragraphKey as string,
+        expectedParagraphFingerprint: last.paragraphFingerprint as string,
+        expectedText: last.text as string,
+        replacementText: "editor edit",
+      },
+      idempotencyKey: uniqueTestTag("idem"),
+    }));
+    expect(edited.isError).toBe(false);
+    const run = readTool(await callTool(editorGrant.accessToken, "checker.run", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: edited.result!.draftId as number,
+    }));
+    expect(run.isError).toBe(false);
+  });
+
+  it("REVIEWER member: reads PASS, draft.edit DENIED, checker.run DENIED", async () => {
+    const read = readTool(await callTool(reviewerGrant.accessToken, "draft.get", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+    }));
+    expect(read.isError).toBe(false);
+    const edit = readTool(await callTool(reviewerGrant.accessToken, "draft.edit", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: rolePack.packId, expectedDraftVersion: 1, expectedDraftSha256: "f".repeat(64),
+      command: {
+        kind: "replace_paragraph",
+        paragraphKey: "e".repeat(64), expectedParagraphFingerprint: "d".repeat(64),
+        expectedText: "x", replacementText: "y",
+      },
+      idempotencyKey: uniqueTestTag("idem"),
+    }));
+    expect(edit.errorCode).toBe("EDIT_FORBIDDEN");
+    const runDenied = await callTool(reviewerGrant.accessToken, "checker.run", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: rolePack.packId,
+    });
+    expect((runDenied.body!.error as { data?: { reason?: string } }).data?.reason).toBe("EDIT_FORBIDDEN");
+  });
+
+  it("VIEWER member: reads PASS, draft.edit DENIED, checker.run DENIED", async () => {
+    const read = readTool(await callTool(viewerGrant.accessToken, "draft.get", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+    }));
+    expect(read.isError).toBe(false);
+    const editRawV = await callTool(viewerGrant.accessToken, "draft.edit", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: rolePack.packId, expectedDraftVersion: 1, expectedDraftSha256: "f".repeat(64),
+      command: {
+        kind: "replace_paragraph",
+        paragraphKey: "e".repeat(64), expectedParagraphFingerprint: "d".repeat(64),
+        expectedText: "x", replacementText: "y",
+      },
+      idempotencyKey: uniqueTestTag("idem"),
+    });
+    const edit = readTool(editRawV);
+    expect(edit.errorCode).toBe("EDIT_FORBIDDEN");
+    const runDenied = await callTool(viewerGrant.accessToken, "checker.run", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: rolePack.packId,
+    });
+    expect((runDenied.body!.error as { data?: { reason?: string } }).data?.reason).toBe("EDIT_FORBIDDEN");
+  });
+
+  it("PLATFORM ADMIN but NON-MEMBER: NOT_FOUND (no tenant bypass for admins)", async () => {
+    const operator = adminOperator[0];
+    const operatorToken = await runConsentAndExchange(operator, roleClient, ALL_SCOPES);
+    const probe = readTool(await callTool(operatorToken.accessToken, "draft.get", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+    }));
+    // The operator is a platform admin but NOT owner/member of WR -> NOT_FOUND.
+    expect(probe.marker).toBe("NOT_FOUND");
+  });
+
+  it("INVITED / SUSPENDED / REMOVED memberships: NOT_FOUND", async () => {
+    const db = getTestDb();
+    const extra = {
+      invited: await createTestUser({ name: "Invited M" }),
+      suspended: await createTestUser({ name: "Suspended M" }),
+      removed: await createTestUser({ name: "Removed M" }),
+    };
+    createdUserIds.push(extra.invited.id, extra.suspended.id, extra.removed.id);
+    for (const [status, user] of [
+      ["invited", extra.invited], ["suspended", extra.suspended], ["removed", extra.removed],
+    ] as const) {
+      await db.insert(workspaceMembers).values({
+        workspaceId: wRole.workspaceId, userId: user.id, role: "editor", status,
+      });
+    }
+    const grantInvited = await runConsentAndExchange(extra.invited, roleClient, ALL_SCOPES);
+    const grantSuspended = await runConsentAndExchange(extra.suspended, roleClient, ALL_SCOPES);
+    const grantRemoved = await runConsentAndExchange(extra.removed, roleClient, ALL_SCOPES);
+    for (const [label, grant] of [["invited", grantInvited], ["suspended", grantSuspended], ["removed", grantRemoved]] as const) {
+      const read = readTool(await callTool(grant.accessToken, "draft.get", {
+        workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      }));
+      expect(read.marker, label).toBe("NOT_FOUND");
+    }
+  });
+
+  it("membership DOWNGRADE editor->viewer takes effect on the next call", async () => {
+    const db = getTestDb();
+    const editorGrant2 = await runConsentAndExchange(userEditor, roleClient, ALL_SCOPES);
+    await db
+      .update(workspaceMembers)
+      .set({ role: "viewer" })
+      .where(eq(workspaceMembers.userId, userEditor.id));
+    const read = readTool(await callTool(editorGrant2.accessToken, "draft.get", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+    }));
+    expect(read.isError).toBe(false);
+    const edit = readTool(await callTool(editorGrant2.accessToken, "draft.edit", {
+      workspaceId: wRole.workspaceId, packId: rolePack.packId,
+      expectedDraftId: rolePack.packId, expectedDraftVersion: 1, expectedDraftSha256: "f".repeat(64),
+      command: {
+        kind: "replace_paragraph",
+        paragraphKey: "e".repeat(64), expectedParagraphFingerprint: "d".repeat(64),
+        expectedText: "x", replacementText: "y",
+      },
+      idempotencyKey: uniqueTestTag("idem"),
+    }));
+    expect(edit.errorCode).toBe("EDIT_FORBIDDEN");
+  });
+});

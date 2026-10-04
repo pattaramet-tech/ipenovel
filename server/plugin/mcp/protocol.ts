@@ -131,10 +131,22 @@ export function defaultEditorialToolDeps(): EditorialToolDeps {
   return {
     findVisibleWorkspace: findPluginVisibleWorkspace,
     findWorkspacePack: findPluginWorkspacePack,
-    getDraftReadModel: getEditorialDraftReadModel,
-    getCheckerReadModel: getEditorialForeignCheckerReadModel,
-    applyEdit: input => applyEditorialEditorEdit(input as Parameters<typeof applyEditorialEditorEdit>[0]),
-    runChecker: runEditorialForeignChecker,
+    // IPE-PLUGIN-001D-R2: the access policy is chosen HERE (server wiring) -
+    // never by client input. The service then resolves the caller's EFFECTIVE
+    // role from the database (owner via ownerUserId, else active
+    // workspaceMembers row) and enforces the policy grade.
+    getDraftReadModel: input =>
+      getEditorialDraftReadModel({ ...input, accessPolicy: "plugin_read" }),
+    getCheckerReadModel: input =>
+      getEditorialForeignCheckerReadModel({ ...input, accessPolicy: "plugin_read" }),
+    applyEdit: input =>
+      applyEditorialEditorEdit({
+        ...input,
+        accessPolicy: "plugin_edit",
+        command: input.command as Parameters<typeof applyEditorialEditorEdit>[0]["command"],
+      }),
+    runChecker: input =>
+      runEditorialForeignChecker({ ...input, accessPolicy: "plugin_checker_run" }),
   };
 }
 
