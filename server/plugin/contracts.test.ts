@@ -95,3 +95,54 @@ describe("jsonRpc builders", () => {
     });
   });
 });
+
+// IPE-PLUGIN-001D-Q2-R1: ChatGPT attaches an optional top-level _meta bag to
+// every tools/call - it must be accepted (and ignored for authorization),
+// while unknown fields and wrong-typed _meta still fail the strict envelope.
+describe("McpToolCallParamsSchema _meta compatibility (Q2-R1)", () => {
+  const base = { jsonrpc: "2.0", id: 1, method: "tools/call" };
+
+  function parseParams(params: unknown) {
+    return McpToolCallParamsSchema.safeParse(params);
+  }
+
+  it("PASS: name only", () => {
+    expect(parseParams({ name: "identity.whoami" }).success).toBe(true);
+  });
+
+  it("PASS: name + empty arguments", () => {
+    expect(parseParams({ name: "identity.whoami", arguments: {} }).success).toBe(true);
+  });
+
+  it("PASS: name + arguments + empty _meta", () => {
+    expect(
+      parseParams({ name: "identity.whoami", arguments: {}, _meta: {} }).success
+    ).toBe(true);
+  });
+
+  it("PASS: name + arguments + ChatGPT-style _meta object", () => {
+    expect(
+      parseParams({
+        name: "workspace.list",
+        arguments: {},
+        _meta: { chatgpt: { account_id: "acct_1" }, foo: { bar: true } },
+      }).success
+    ).toBe(true);
+  });
+
+  it("FAIL: _meta as string", () => {
+    expect(parseParams({ name: "identity.whoami", _meta: "x" }).success).toBe(false);
+  });
+
+  it("FAIL: unknown top-level field still rejected (strict)", () => {
+    expect(parseParams({ name: "identity.whoami", unknownField: true }).success).toBe(false);
+  });
+
+  it("FAIL: arguments as string (wrong type)", () => {
+    expect(parseParams({ name: "identity.whoami", arguments: "x" }).success).toBe(false);
+  });
+
+  it("FAIL: _meta as array (not a record)", () => {
+    expect(parseParams({ name: "identity.whoami", _meta: [] }).success).toBe(false);
+  });
+});
