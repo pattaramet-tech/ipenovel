@@ -63,6 +63,16 @@ async function touchExistingUser(
   if (opts.setLoginMethodGoogle) updateSet.loginMethod = "google";
 
   await tx.update(users).set(updateSet).where(eq(users.id, user.id));
+
+  // IPE-063R4 (P2-A): fallback-name propagation — when this account has no
+  // explicit pen name, the account name IS the Author byline, so a Google
+  // linking rename must sync every owned novel in the same transaction.
+  // The helper no-ops for explicit pen names / blank names / legacy
+  // NULL-owner novels and asserts the account-merge barrier (fail-closed:
+  // a blocked merge rolls the rename AND the propagation back together).
+  if (updateSet.name !== undefined) {
+    await db.propagateFallbackAuthorName(tx, user.id, updateSet.name as string);
+  }
 }
 
 /**

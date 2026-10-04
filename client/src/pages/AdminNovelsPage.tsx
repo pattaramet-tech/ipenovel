@@ -19,6 +19,19 @@ export default function AdminNovelsPage() {
   const [editingNovelId, setEditingNovelId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [publicationFilter, setPublicationFilter] = useState<"all" | "published" | "archived">("all");
+  // IPE-063R4 (P2-B): the create-form Author preview must show the
+  // authoritative DB-effective pen name (admin.authorProfile.get), not the
+  // session account name — the server stores the effective name on create.
+  const authorProfileQuery = trpc.admin.authorProfile.get.useQuery(undefined, {
+    enabled: !!user && user.role === "admin",
+    retry: 1,
+  });
+  const authorProfileReady = authorProfileQuery.isSuccess;
+  const createAuthorPreview = authorProfileQuery.isError
+    ? "Unable to load Author profile"
+    : authorProfileQuery.isLoading
+      ? "Loading Author profile…"
+      : (authorProfileQuery.data?.effectiveAuthorName ?? "Unable to load Author profile");
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -244,15 +257,19 @@ export default function AdminNovelsPage() {
                       value={
                         editingNovelId
                           ? (novels?.find((novel: any) => novel.id === editingNovelId)?.author || "Unassigned")
-                          : (user?.name || "")
+                          : createAuthorPreview
                       }
                       readOnly
                       disabled
+                      data-testid="novel-author-preview"
+                      aria-invalid={editingNovelId ? false : authorProfileQuery.isError}
                     />
                     <p className="mt-1 text-xs text-slate-500">
                       {editingNovelId
                         ? "Author ownership stays with the admin who created this novel."
-                        : "Assigned automatically from the admin account that creates this novel."}
+                        : authorProfileQuery.isError
+                          ? "Unable to load Author profile — novel creation is disabled until it loads."
+                          : "Assigned automatically from the effective Author name of the admin account that creates this novel."}
                     </p>
                   </div>
                   <div>
@@ -361,7 +378,14 @@ export default function AdminNovelsPage() {
               <div className="flex gap-2 pt-4 border-t">
                 <Button
                   onClick={editingNovelId ? handleSaveEdit : handleCreate}
-                  disabled={createMutation.isPending || updateMutation.isPending}
+                  disabled={
+                    createMutation.isPending ||
+                    updateMutation.isPending ||
+                    // IPE-063R4 (P2-B): creation writes the authoritative
+                    // effective Author name — block submission while the
+                    // profile is unavailable so the byline is never a guess.
+                    (!editingNovelId && !authorProfileReady)
+                  }
                   className="flex-1"
                 >
                   {editingNovelId ? "Save Changes" : "Create Novel"}

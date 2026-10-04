@@ -217,6 +217,32 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       updateSet.lastSignedIn = new Date();
     }
 
+    // IPE-063R4 (P2-A): when an EXISTING account's fallback name (users.name
+    // with users.authorName IS NULL) changes, sync novels.author in the same
+    // guarded transaction: account-merge barrier locks the user row, the
+    // rename is applied, and the byline propagation reads the locked state.
+    // Only a name CHANGE to a usable value triggers propagation; routine
+    // sign-ins (lastSignedIn-only) and brand-new accounts keep the original
+    // single-statement path.
+    const existing = await getUserByOpenId(user.openId);
+    const nextName = typeof updateSet.name === "string" ? updateSet.name : null;
+    const nameChanged =
+      existing != null &&
+      nextName !== null &&
+      nextName.trim() !== "" &&
+      nextName.trim() !== (existing.name ?? "").trim();
+
+    if (existing && nameChanged) {
+      await db.transaction(async (tx: any) => {
+        // Barrier first: locks the user row FOR UPDATE and fails closed on
+        // an active merge — no partial user/byline state either way.
+        await assertAccountMergeClassifiedMutationAllowed(existing.id, tx);
+        await tx.update(users).set(updateSet).where(eq(users.openId, user.openId));
+        await propagateFallbackAuthorName(tx, existing.id, nextName);
+      });
+      return;
+    }
+
     await db.insert(users).values(values).onDuplicateKeyUpdate({
       set: updateSet,
     });
@@ -2681,6 +2707,37 @@ export async function getUserAuthorNameState(
     .where(eq(users.id, userId))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * IPE-063R4 (P2-A): canonical fallback-name propagation. MUST be called
+ * inside the transaction that changed users.name, AFTER the rename was
+ * applied (this helper reads the locked row to decide). Semantics:
+ * - nextName null/blank → nothing to propagate (0).
+ * - target has an explicit pen name (users.authorName NOT NULL) → no-op —
+ *   the pen name always wins (rule B).
+ * - pen name NULL → the new usable account name becomes the byline for
+ *   every novel the target owns, under the account-merge barrier
+ *   (fail-closed: an active merge rolls back the caller's rename too).
+ * Legacy novels (authorUserId IS NULL) are excluded by the WHERE clause.
+ * Returns the number of byline rows synced.
+ */
+export async function propagateFallbackAuthorName(
+  tx: any,
+  targetUserId: number,
+  nextName: string | null | undefined
+): Promise<number> {
+  if (nextName == null) return 0;
+  const normalized = String(nextName).trim();
+  if (!normalized) return 0;
+  const state = await getUserAuthorNameState(targetUserId, tx);
+  if (!state || state.authorName != null) return 0;
+  await assertAccountMergeClassifiedMutationAllowed(targetUserId, tx);
+  const [header] = await tx
+    .update(novels)
+    .set({ author: normalized })
+    .where(eq(novels.authorUserId, targetUserId));
+  return (header as any)?.affectedRows ?? 0;
 }
 
 export async function resolveEffectiveAuthorNameWithDb(

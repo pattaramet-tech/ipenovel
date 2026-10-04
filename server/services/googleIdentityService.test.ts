@@ -37,6 +37,16 @@ function fakeDbWithFreshTransactions() {
     const updateCalls: Array<{ set: Record<string, unknown> }> = [];
     const tx = {
       ...marker,
+      // IPE-063R4: the fallback-name propagation helper probes the target's
+      // pen-name state on the tx — no rows means no propagation, which keeps
+      // these scenarios focused on linking/update behavior.
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+          }),
+        }),
+      }),
       update: () => ({
         set: (values: Record<string, unknown>) => {
           updateCalls.push({ set: values });
