@@ -228,6 +228,23 @@ function readTool(response: { body: Record<string, unknown> | null } | null): To
   };
 }
 
+
+/**
+ * Resolves the CURRENT latest-draft id of a pack via draft.get - callers
+ * pass it as checker.run's REQUIRED expectedDraftId (R2 contract).
+ */
+async function latestPackDraftId(
+  token: string,
+  workspaceId: number,
+  packId: number
+): Promise<number> {
+  const read = readTool(await callTool(token, "draft.get", { workspaceId, packId }));
+  if (read.result === null || read.result.draftId === null) {
+    throw new Error("latestPackDraftId: pack has no draft");
+  }
+  return read.result.draftId as number;
+}
+
 async function runConsentAndExchange(
   user: TestUserFixture,
   client: { clientId: string; clientSecret: string },
@@ -649,11 +666,13 @@ describe("plugin editorial slice (001D)", () => {
     it("first run creates; identical rerun reuses the SAME run (created=false, same runId)", async () => {
       const first = readTool(await callTool(grantA.accessToken, "checker.run", {
         workspaceId: w1.workspaceId, packId: packW1.packId,
+        expectedDraftId: (await latestPackDraftId(grantA.accessToken, w1.workspaceId, packW1.packId))!,
       }));
       expect(first.isError).toBe(false);
       expect(first.result!.created).toBe(true);
       const rerun = readTool(await callTool(grantA.accessToken, "checker.run", {
         workspaceId: w1.workspaceId, packId: packW1.packId,
+        expectedDraftId: (await latestPackDraftId(grantA.accessToken, w1.workspaceId, packW1.packId))!,
       }));
       expect(rerun.isError).toBe(false);
       expect(rerun.result!.created).toBe(false);
@@ -665,8 +684,8 @@ describe("plugin editorial slice (001D)", () => {
     it("concurrent checker.run against the same draft creates NO duplicate semantic run", async () => {
       const pack = packW2;
       const [r1, r2] = await Promise.all([
-        callTool(grantA.accessToken, "checker.run", { workspaceId: w2.workspaceId, packId: pack.packId }),
-        callTool(grantA.accessToken, "checker.run", { workspaceId: w2.workspaceId, packId: pack.packId }),
+        callTool(grantA.accessToken, "checker.run", { workspaceId: w2.workspaceId, packId: pack.packId, expectedDraftId: (await latestPackDraftId(grantA.accessToken, w2.workspaceId, pack.packId))! }),
+        callTool(grantA.accessToken, "checker.run", { workspaceId: w2.workspaceId, packId: pack.packId, expectedDraftId: (await latestPackDraftId(grantA.accessToken, w2.workspaceId, pack.packId))! }),
       ]);
       const o1 = readTool(r1);
       const o2 = readTool(r2);
@@ -842,6 +861,98 @@ describe("plugin editorial slice (001D)", () => {
         workspaceId: w3.workspaceId, packId: packW3.packId,
       }));
       expect(result.errorCode).toContain("ADMIN_REQUIRED");
+    });
+  });
+
+  describe("R2 contract repairs", () => {
+    it("checker.run WITHOUT expectedDraftId fails -32602 (required, not optional)", async () => {
+      const res = await callTool(grantA.accessToken, "checker.run", {
+        workspaceId: w1.workspaceId, packId: packW1.packId,
+      });
+      expect(res.status).toBe(200);
+      expect((res.body!.error as { code: number }).code).toBe(-32602);
+    });
+
+    it("tools/list draft.edit schema is the EXACT three-variant oneOf (replace_tab absent)", async () => {
+      const cookie = await sessionCookie(userA);
+      const verifier = generatePluginOpaqueToken();
+      const listingResponse = await fetch(
+        `${baseUrl}/api/plugin/mcp`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${grantA.accessToken}`,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }),
+        }
+      );
+      void cookie; void verifier;
+      expect(listingResponse.status).toBe(200);
+      const tools = ((await listingResponse.json()) as Record<string, unknown>).result as Record<string, unknown>;
+      void tools;
+      const listingBody = (await Promise.resolve((await fetch(`${baseUrl}/api/plugin/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${grantA.accessToken}` },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 8, method: "tools/list" }),
+      })).json())) as Record<string, unknown>;
+      const listingResult = listingBody.result as Record<string, unknown>;
+      const allTools = listingResult.tools as Array<Record<string, unknown>>;
+      const draftEdit = allTools.find(tool => tool.name === "draft.edit");
+      expect(draftEdit).toBeTruthy();
+      const schema = draftEdit!.inputSchema as Record<string, unknown>;
+
+      // Top level: exact required set + additionalProperties false
+      expect(schema.type).toBe("object");
+      expect(schema.additionalProperties).toBe(false);
+      expect(schema.required).toEqual([
+        "workspaceId", "packId", "expectedDraftId", "expectedDraftVersion", "expectedDraftSha256", "command", "idempotencyKey",
+      ]);
+      expect(Object.keys(schema.properties as Record<string, unknown>).sort()).toEqual(
+        ["command", "expectedDraftId", "expectedDraftSha256", "expectedDraftVersion", "idempotencyKey", "packId", "workspaceId"]
+      );
+
+      // command: exact oneOf with the three paragraph variants, replace_tab ABSENT
+      const command = schema.properties.command as Record<string, unknown>;
+      expect(command.type).toBe("object");
+      const variants = command.oneOf as Array<Record<string, unknown>>;
+      expect(variants).toHaveLength(3);
+      expect(variants.map(v => (v.properties as Record<string, unknown>).kind.const)).toEqual([
+        "replace_sentence", "replace_range", "replace_paragraph",
+      ]);
+      for (const variant of variants.slice(0, 2)) {
+        expect(variant.required).toEqual([
+          "kind", "paragraphKey", "expectedParagraphFingerprint", "expectedText", "replacementText", "startOffset", "endOffset",
+        ]);
+        expect(variant.additionalProperties).toBe(false);
+        expect((variant.properties as Record<string, unknown>).startOffset).toEqual({ type: "integer", minimum: 0 });
+        expect((variant.properties as Record<string, unknown>).endOffset).toEqual({ type: "integer", minimum: 0 });
+      }
+      const paragraphVariant = variants[2];
+      expect(paragraphVariant.required).toEqual(["kind", "paragraphKey", "expectedParagraphFingerprint", "expectedText", "replacementText"]);
+      expect(paragraphVariant.additionalProperties).toBe(false);
+      expect((paragraphVariant.properties as Record<string, unknown>).startOffset).toBeUndefined();
+      // replace_tab must NOT appear anywhere in the advertised schema.
+      expect(JSON.stringify(schema)).not.toContain("replace_tab");
+      expect(JSON.stringify(schema)).not.toContain("sourceTabId");
+    });
+
+    it("tools/list checker.run schema marks expectedDraftId REQUIRED", async () => {
+      const listingResponse = await fetch(`${baseUrl}/api/plugin/mcp`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${grantA.accessToken}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list" }),
+      });
+      const listingBody = (await listingResponse.json()) as Record<string, unknown>;
+      const allTools = (listingBody.result as Record<string, unknown>).tools as Array<Record<string, unknown>>;
+      const checkerRun = allTools.find(tool => tool.name === "checker.run");
+      expect(checkerRun).toBeTruthy();
+      const schema = checkerRun!.inputSchema as Record<string, unknown>;
+      expect(schema.required).toEqual(["workspaceId", "packId", "expectedDraftId"]);
+      expect((schema.properties as Record<string, unknown>).expectedDraftId).toEqual({ type: "integer", minimum: 1 });
     });
   });
 

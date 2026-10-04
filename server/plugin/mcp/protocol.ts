@@ -148,12 +148,22 @@ type ToolJsonSchema = {
   additionalProperties: false;
 };
 
+type EditorCommandJsonSchema = {
+  type: "object";
+  properties: Record<string, unknown>;
+  required: string[];
+  additionalProperties: false;
+  oneOf?: unknown[];
+};
+
+const TOOL_JSON_SCHEMA_TYPE = "object";
+
 function toolInputSchema(
   properties: ToolJsonSchema["properties"],
   required: string[] = Object.keys(properties)
 ): ToolJsonSchema {
   return {
-    type: "object",
+    type: TOOL_JSON_SCHEMA_TYPE,
     properties,
     required,
     additionalProperties: false,
@@ -162,13 +172,58 @@ function toolInputSchema(
 
 const WORKSPACE_ID_PROPERTY = { workspaceId: { type: "integer" as const, minimum: 1 } };
 
+/** The draft.edit command oneOf — mirrors DraftEditCommandSchema exactly:
+ *  replace_sentence / replace_range carry startOffset+endOffset,
+ *  replace_paragraph does not; replace_tab is structurally absent. */
+function draftEditCommandJsonSchema(): Record<string, unknown> {
+  const paragraphFields = {
+    paragraphKey: { type: "string" },
+    expectedParagraphFingerprint: { type: "string" },
+    expectedText: { type: "string" },
+    replacementText: { type: "string" },
+  };
+  return {
+    type: "object",
+    oneOf: [
+      {
+        type: "object",
+        properties: {
+          kind: { const: "replace_sentence" },
+          ...paragraphFields,
+          startOffset: { type: "integer", minimum: 0 },
+          endOffset: { type: "integer", minimum: 0 },
+        },
+        required: ["kind", ...Object.keys(paragraphFields), "startOffset", "endOffset"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: {
+          kind: { const: "replace_range" },
+          ...paragraphFields,
+          startOffset: { type: "integer", minimum: 0 },
+          endOffset: { type: "integer", minimum: 0 },
+        },
+        required: ["kind", ...Object.keys(paragraphFields), "startOffset", "endOffset"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: { kind: { const: "replace_paragraph" }, ...paragraphFields },
+        required: ["kind", ...Object.keys(paragraphFields)],
+        additionalProperties: false,
+      },
+    ],
+  };
+}
+
 /** tools/list is derived from the registry + enable allowlist - never hand-written. */
 export function buildPluginToolsList(): Array<{
   name: string;
   description: string;
-  inputSchema: ReturnType<typeof toolInputSchema>;
+  inputSchema: ToolJsonSchema | EditorCommandJsonSchema;
 }> {
-  const schemas: Record<PluginCapability, ToolJsonSchema> = {
+  const schemas: Record<PluginCapability, ToolJsonSchema | EditorCommandJsonSchema> = {
     "identity.whoami": toolInputSchema({}),
     "workspace.list": toolInputSchema({}),
     "workspace.get": toolInputSchema(WORKSPACE_ID_PROPERTY),
@@ -181,7 +236,7 @@ export function buildPluginToolsList(): Array<{
     "draft.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 } }),
     "checker.get": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 }, runId: { type: "integer", minimum: 1 } }, ["workspaceId", "packId"]),
     "draft.edit": {
-      type: "object",
+      type: TOOL_JSON_SCHEMA_TYPE,
       properties: {
         workspaceId: { type: "integer", minimum: 1 },
         packId: { type: "integer", minimum: 1 },
@@ -189,16 +244,12 @@ export function buildPluginToolsList(): Array<{
         expectedDraftVersion: { type: "integer", minimum: 1 },
         expectedDraftSha256: { type: "string" },
         idempotencyKey: { type: "string" },
-        command: {
-          type: "object",
-          description:
-            "replace_sentence | replace_range (with startOffset/endOffset) | replace_paragraph; each carries paragraphKey, expectedParagraphFingerprint, expectedText, replacementText",
-        },
+        command: draftEditCommandJsonSchema(),
       },
       required: ["workspaceId", "packId", "expectedDraftId", "expectedDraftVersion", "expectedDraftSha256", "command", "idempotencyKey"],
       additionalProperties: false,
     },
-    "checker.run": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 }, expectedDraftId: { type: "integer", minimum: 1 } }, ["workspaceId", "packId"]),
+    "checker.run": toolInputSchema({ ...WORKSPACE_ID_PROPERTY, packId: { type: "integer", minimum: 1 }, expectedDraftId: { type: "integer", minimum: 1 } }),
   };
   return PLUGIN_V1_ENABLED_CAPABILITIES.map(capability => ({
     name: capability,

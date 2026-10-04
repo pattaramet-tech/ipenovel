@@ -143,7 +143,7 @@ export const DraftEditArgsSchema = z
   .strict();
 
 export const CheckerRunArgsSchema = z
-  .object({ workspaceId: positiveInt, packId: positiveInt, expectedDraftId: positiveInt.optional() })
+  .object({ workspaceId: positiveInt, packId: positiveInt, expectedDraftId: positiveInt })
   .strict();
 
 export type DraftEditCommand = z.infer<typeof DraftEditCommandSchema>;
