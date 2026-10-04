@@ -869,6 +869,60 @@ describe("plugin editorial slice (001D)", () => {
     });
   });
 
+  describe("Q2-R1 ChatGPT _meta compatibility", () => {
+    // Raw params passthrough: callTool always builds params { name, arguments };
+    // this variant lets the test control the FULL params object (incl. the
+    // top-level _meta bag) exactly as ChatGPT sends it.
+    const callToolRawParams = (token: string, params: Record<string, unknown>) =>
+      fetch(`${baseUrl}/api/plugin/mcp`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params }),
+      }).then(
+        async response =>
+          ({
+            status: response.status,
+            body: (await response.json()) as Record<string, unknown>,
+          }) as { status: number; body: Record<string, unknown> }
+      );
+
+    it("tools/call with TOP-LEVEL _meta passes the envelope and reaches executeAuthorizedTool", async () => {
+      // ChatGPT attaches _meta to every tools/call; it must not trip the
+      // strict envelope (-32602) — the call proceeds to normal authorization.
+      const whoami = await callToolRawParams(grantA.accessToken, {
+        name: "identity.whoami",
+        _meta: {},
+      });
+      expect(whoami.status).toBe(200);
+      expect(whoami.body.error).toBeUndefined();
+
+      const list = await callToolRawParams(grantA.accessToken, {
+        name: "workspace.list",
+        arguments: {},
+        _meta: { chatgpt: { account_id: "acct_probe" }, foo: { bar: true } },
+      });
+      expect(list.status).toBe(200);
+      expect(list.body.error).toBeUndefined();
+      const workspaces = (list.body.result as Record<string, unknown>).structuredContent as Record<string, unknown>;
+      expect(Array.isArray(workspaces.workspaces)).toBe(true);
+    });
+
+    it("wrong-typed _meta / unknown field / wrong arguments still fail -32602", async () => {
+      for (const params of [
+        { name: "identity.whoami", _meta: "x" },
+        { name: "identity.whoami", unknownField: true },
+        { name: "identity.whoami", arguments: "x" },
+      ]) {
+        const res = await callToolRawParams(grantA.accessToken, params);
+        expect(res.status).toBe(200);
+        expect((res.body!.error as { code: number }).code).toBe(-32602);
+      }
+    });
+  });
+
   describe("R2 contract repairs", () => {
     it("checker.run WITHOUT expectedDraftId fails -32602 (required, not optional)", async () => {
       const res = await callTool(grantA.accessToken, "checker.run", {

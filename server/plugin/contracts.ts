@@ -21,11 +21,17 @@ export const JsonRpcRequestSchema = z
 
 export type JsonRpcRequest = z.infer<typeof JsonRpcRequestSchema>;
 
-/** MCP tools/call params (only shape the identity slice accepts). */
+/**
+ * MCP tools/call params. `_meta` is the MCP-standard OPTIONAL transport-level
+ * metadata bag that ChatGPT attaches to every tools/call — it is accepted and
+ * IGNORED for all authorization decisions: authority comes exclusively from
+ * the bearer principal (server-side DB resolution), never from `_meta`.
+ */
 export const McpToolCallParamsSchema = z
   .object({
     name: z.string().min(1).max(128),
     arguments: z.record(z.string(), z.unknown()).optional(),
+    _meta: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 
