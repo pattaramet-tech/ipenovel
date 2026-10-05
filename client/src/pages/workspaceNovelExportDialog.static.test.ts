@@ -83,7 +83,12 @@ describe("WorkspaceNovelExportDialog UI contract", () => {
     // The whole-scope ZIP stays fail-closed while the per-pack subset is the
     // advertised way out.
     expect(dialog).toContain('const wholeScopeOverLimit = Boolean(thaiOverLimit && scope === "whole");');
-    expect(dialog).toContain("wholeScopeOverLimit;");
+    expect(dialog).toContain("wholeScopeOverLimit ||");
+    // IPE-064R4B (P2): a whole-scope data defect (collision / malformed pack)
+    // is surfaced as a banner; per-pack subsets stay exportable around it.
+    expect(dialog).toContain("const thaiValidationError = thaiPreview.data?.validationError ?? null;");
+    expect(dialog).toContain('data-testid="export-validation-error-banner"');
+    expect(dialog).toContain('Boolean(mode === "thainovel" && thaiValidationError)');
     expect(dialog).toContain("เลือกโหมด \"เลือกบางตอน\"");
   });
 });

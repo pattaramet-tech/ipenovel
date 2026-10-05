@@ -144,6 +144,9 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   // still returns sourceEpisodes (per-pack subset is the way out), but the
   // whole-scope download stays disabled/fail-closed.
   const thaiOverLimit = thaiPreview.data?.overLimit ?? null;
+  // IPE-064R4B (P2): a data defect (collision / malformed pack) surfaced by
+  // the whole-novel request — per-pack subsets remain exportable.
+  const thaiValidationError = thaiPreview.data?.validationError ?? null;
   const wholeScopeOverLimit = Boolean(thaiOverLimit && scope === "whole");
   const downloadDisabled =
     !novelId ||
@@ -153,7 +156,8 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
     entryCount === 0 ||
     downloadPending ||
     (scope === "subset" && !subsetActive) ||
-    wholeScopeOverLimit;
+    wholeScopeOverLimit ||
+    Boolean(mode === "thainovel" && thaiValidationError);
 
   const handleDownload = () => {
     if (!novelId) return;
@@ -337,6 +341,13 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
               <p className="text-xs text-muted-foreground" data-testid="export-backup-explanation">
                 แพ็กสำรองประกอบด้วย manifest.csv และโฟลเดอร์ contents/*.txt ซึ่งนำกลับเข้าระบบผ่าน ZIP Import เดิมได้
               </p>
+            )}
+
+            {mode === "thainovel" && thaiValidationError && scope === "whole" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-validation-error-banner">
+                <p className="font-medium">ตรวจพบปัญหาข้อมูลในนิยายนี้ — ส่งออกแบบ "ทั้งเรื่อง" ไม่ได้</p>
+                <p className="text-xs">{thaiValidationError.message} — เลือกโหมด "เลือกบางตอน" แล้วติ๊กรายแพ็กที่ถูกต้องเพื่อส่งออกเป็นชุด</p>
+              </div>
             )}
 
             {mode === "thainovel" && thaiOverLimit && scope === "whole" && (

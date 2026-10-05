@@ -314,6 +314,7 @@ export interface ThaiNovelExportPreview {
    * closed for over-limit selections.
    */
   overLimit: { itemCount: number; maxItems: number } | null;
+  validationError: { code: string; message: string } | null;
   limits: {
     maxItems: number;
     maxPerItemBytes: number;
@@ -337,18 +338,29 @@ export async function buildThaiNovelExportPreview(
   const isWholeSelection = !selection.episodeIds || selection.episodeIds.length === 0;
   let entries: ThaiNovelExportEntry[];
   let overLimit: { itemCount: number; maxItems: number } | null = null;
+  let validationError: { code: string; message: string } | null = null;
   try {
+    // IPE-064R4B (P2): the full-set collision check runs here (not just in
+    // the ZIP) so the preview can SURFACE defects — and for a whole-novel
+    // request it must NOT hard-fail the response, or the subset selector
+    // (sourceEpisodes) never loads and the operator cannot export any
+    // per-pack subset around the defect.
+    assertNoCrossPackChapterCollisions(allPublishedItems, null);
     entries = buildThaiNovelExportEntries(pkg, options);
   } catch (error) {
     if (
       isWholeSelection &&
       error instanceof NovelExportError &&
-      error.code === "EXPORT_LIMIT_ITEMS"
+      (error.code === "EXPORT_LIMIT_ITEMS" || error.code === "EXPORT_INVALID_EPISODE_IDENTITY")
     ) {
-      overLimit = {
-        itemCount: Number(error.details?.itemCount ?? 0),
-        maxItems: Number(error.details?.maxItems ?? MAX_EXPORT_ITEMS),
-      };
+      overLimit =
+        error.code === "EXPORT_LIMIT_ITEMS"
+          ? {
+              itemCount: Number(error.details?.itemCount ?? 0),
+              maxItems: Number(error.details?.maxItems ?? MAX_EXPORT_ITEMS),
+            }
+          : null;
+      validationError = { code: error.code, message: error.message };
       entries = [];
     } else {
       throw error;
@@ -363,6 +375,7 @@ export async function buildThaiNovelExportPreview(
     entries: overLimit ? [] : buildThaiNovelPreviewRows(entries),
     skippedItems,
     overLimit,
+    validationError,
     limits: {
       maxItems: MAX_EXPORT_ITEMS,
       maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,

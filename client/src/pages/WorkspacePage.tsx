@@ -591,7 +591,15 @@ export default function WorkspacePage() {
         result.draft?.id &&
         result.isCurrent !== false
       ) {
-        void runEditorialForeignCheckerOnceForDraft(result.draft.id).catch(() => {});
+        void runEditorialForeignCheckerOnceForDraft(result.draft.id).catch(() => {
+        // IPE-064R4B (P2): on recheck FAILURE the caches must not keep
+        // presenting the pre-save draft as current — refresh the evidence
+        // surfaces so the UI flips to stale/error instead of silently
+        // targeting obsolete findings.
+        void editorialForeignChecker.refetch();
+        void editorialApproval.refetch();
+        void editorialBoard.refetch();
+      });
       }
     },
     onError: (error) => toast.error(error.message),
@@ -687,7 +695,15 @@ export default function WorkspacePage() {
         if (latestDraft?.id) {
           // IPE-064R4B (P2): nonce — the post-allow allow-list hash is not
           // visible to this closure yet; force a fresh run identity.
-          void runEditorialForeignCheckerOnceForDraft(latestDraft.id, String(Date.now())).catch(() => {});
+          void runEditorialForeignCheckerOnceForDraft(latestDraft.id, String(Date.now())).catch(() => {
+        // IPE-064R4B (P2): on recheck FAILURE the caches must not keep
+        // presenting the pre-save draft as current — refresh the evidence
+        // surfaces so the UI flips to stale/error instead of silently
+        // targeting obsolete findings.
+        void editorialForeignChecker.refetch();
+        void editorialApproval.refetch();
+        void editorialBoard.refetch();
+      });
         }
       }
     },
@@ -716,7 +732,15 @@ export default function WorkspacePage() {
         if (latestDraft?.id) {
           // IPE-064R4B (P2): nonce forces a fresh identity for the
           // post-unallow allow-list state.
-          void runEditorialForeignCheckerOnceForDraft(latestDraft.id, String(Date.now())).catch(() => {});
+          void runEditorialForeignCheckerOnceForDraft(latestDraft.id, String(Date.now())).catch(() => {
+        // IPE-064R4B (P2): on recheck FAILURE the caches must not keep
+        // presenting the pre-save draft as current — refresh the evidence
+        // surfaces so the UI flips to stale/error instead of silently
+        // targeting obsolete findings.
+        void editorialForeignChecker.refetch();
+        void editorialApproval.refetch();
+        void editorialBoard.refetch();
+      });
         }
       }
     },
