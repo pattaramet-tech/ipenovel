@@ -352,6 +352,7 @@ export async function buildThaiNovelExportPreview(
       error instanceof NovelExportError &&
       (error.code === "EXPORT_LIMIT_ITEMS" ||
         error.code === "EXPORT_INVALID_EPISODE_IDENTITY" ||
+        error.code === "EXPORT_INVALID_SALE_METADATA" ||
         error.code === "EXPORT_LIMIT_ENTRY_BYTES" ||
         error.code === "EXPORT_LIMIT_TOTAL_BYTES")
     ) {

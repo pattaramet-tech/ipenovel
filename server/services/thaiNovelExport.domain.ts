@@ -376,7 +376,10 @@ export function assertNoCrossPackChapterCollisions(
     const identity = parseExportEpisodeIdentity(item.episodeNumber);
     if (!identity) continue;
     if (identity.kind === "range") {
-      const content = String(item.content ?? "");
+      // IPE-064R4B review round 11 (P2): normalize BEFORE scanning — a UTF-8
+      // BOM (or stray invisible chars) before the first heading must not hide
+      // it from the collision evidence.
+      const content = normalizeExportText(String(item.content ?? ""));
       const headingRe = /^บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/gm;
       let match: RegExpExecArray | null;
       while ((match = headingRe.exec(content)) !== null) {
