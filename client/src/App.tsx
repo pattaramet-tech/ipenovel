@@ -37,6 +37,7 @@ import AdminSettingsPage from "@/pages/AdminSettingsPage";
 import AdminBulkUploadPage from "@/pages/AdminBulkUploadPage";
 import AdminNovelManagePage from "@/pages/AdminNovelManagePage";
 import AdminAnalyticsPage from "@/pages/AdminAnalyticsPage";
+import AdminAuthorAnalyticsPage from "@/pages/AdminAuthorAnalyticsPage";
 import AdminUsersPage from "@/pages/AdminUsersPage";
 import AdminNqaPage from "@/pages/AdminNqaPage";
 import NovelDetailPage from "@/pages/NovelDetailPage";
@@ -116,6 +117,7 @@ function Router() {
         <Route path="/admin/settings" component={AdminSettingsPage} />
         <Route path="/admin/bulk-upload" component={AdminBulkUploadPage} />
         <Route path="/admin/analytics" component={AdminAnalyticsPage} />
+        <Route path="/admin/author-analytics" component={AdminAuthorAnalyticsPage} />
         <Route path="/admin/users" component={AdminUsersPage} />
         <Route path="/admin/nqa" component={AdminNqaPage} />
         <Route path="/admin/sports-votes" component={AdminSportsVotesPage} />

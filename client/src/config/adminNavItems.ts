@@ -59,6 +59,11 @@ export const adminNavSections: NavSection[] = [
         icon: BarChart3,
       },
       {
+        label: "Author Analysis",
+        href: "/admin/author-analytics",
+        icon: BarChart3,
+      },
+      {
         label: "Users",
         href: "/admin/users",
         icon: Users,

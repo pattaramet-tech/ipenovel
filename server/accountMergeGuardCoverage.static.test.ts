@@ -87,6 +87,14 @@ const productionGuardEvidence: Record<string, string[]> = {
   dailyCheckinRewardGrants: ["assertAccountMergeClassifiedMutationAllowed(userId, tx)"],
   adminGiftEntitlements: ["assertAccountMergeClassifiedMutationAllowed(input.targetUserId, tx)"],
   adminGiftWalletAdjustments: ["assertAccountMergeClassifiedMutationAllowed(input.targetUserId, tx)"],
+  // IPE-063R1: novel authorship — creation binds the signed-in admin and the
+  // pen-name propagation is scoped to novels.authorUserId, so an account
+  // merge can never silently rewrite authorship attribution.
+  novels: [
+    "requireAdminAuthorIdentity(ctx.user.id)",
+    "createAuthorOwnedNovelWithDb(db, userId, data)",
+    ".where(eq(novels.authorUserId, userId))",
+  ],
   carts: ["withAccountMergeClassifiedMutationGuard(userId, undefined"],
   wishlists: ["withAccountMergeClassifiedMutationGuard(userId, undefined"],
   readingProgress: ["withAccountMergeClassifiedMutationGuard(data.userId, undefined"],

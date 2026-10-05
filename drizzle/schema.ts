@@ -29,6 +29,10 @@ export const users = mysqlTable(
     loginMethod: varchar("loginMethod", { length: 64 }),
     passwordHash: varchar("passwordHash", { length: 255 }),
     role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+    // IPE-063R1: pen name / author display name, kept separate from the
+    // account name. Nullable — legacy admins have no explicit author name
+    // and fall back to their account name.
+    authorName: varchar("authorName", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -182,6 +186,9 @@ export const novels = mysqlTable(
     slug: varchar("slug", { length: 500 }).notNull().unique(),
     description: text("description"),
     author: varchar("author", { length: 255 }),
+    // Stable admin-account ownership for Author analytics. Nullable preserves
+    // every legacy novel without guessing/backfilling ownership from display text.
+    authorUserId: int("authorUserId"),
     coverImageUrl: text("coverImageUrl"),
     // Publication status controls visibility on public pages
     publicationStatus: mysqlEnum("publicationStatus", ["published", "archived"]).default("published").notNull(),
@@ -195,6 +202,12 @@ export const novels = mysqlTable(
   (table) => ({
     createdAtIdx: index("novels_createdAt_idx").on(table.createdAt),
     titleIdx: index("novels_title_idx").on(table.title),
+    authorUserIdIdx: index("novels_authorUserId_idx").on(table.authorUserId),
+    authorUserFk: foreignKey({
+      name: "novels_authorUserId_users_id_fk",
+      columns: [table.authorUserId],
+      foreignColumns: [users.id],
+    }).onDelete("set null"),
     publicationStatusIdx: index("novels_publicationStatus_idx").on(table.publicationStatus),
     // Phase 3: every homepage ranking query (getNewNovels, getPopularNovels'
     // candidate pool, getFreeNovels, getFinishedNovels) filters

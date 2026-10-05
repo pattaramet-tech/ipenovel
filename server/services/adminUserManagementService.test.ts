@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as db from "../db";
 import { ENV } from "../_core/env";
 import {
@@ -74,6 +74,14 @@ function mockUserLocks(
 
 describe("updateAdminUserProfile", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  // IPE-063R4: default-mock the canonical fallback propagation so legacy
+  // name-only tests keep their exact fake-tx call shape (the helper owns
+  // the pen-name/fallback decision and is exercised by its own db-level
+  // tests in adminAuthorOwnership.test.ts).
+  beforeEach(() => {
+    vi.spyOn(db, "propagateFallbackAuthorName").mockResolvedValue(0);
+  });
 
   it("reason shorter than 5 chars -> BAD_REQUEST, database never touched", async () => {
     const dbSpy = vi.spyOn(db, "getDb");
@@ -486,6 +494,9 @@ describe("updateAdminUserProfile", () => {
       // i.e. never "actor first" as a fixed rule.
       vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
       vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+      // IPE-063R4: re-establish the fallback-propagation mock cleared by the
+      // mid-test restoreAllMocks (helper resolves 0 => no byline writes).
+      vi.spyOn(db, "propagateFallbackAuthorName").mockResolvedValue(0);
       const lockSpyB = vi.spyOn(db, "lockUserRowForUpdate").mockImplementation(async (id: number) =>
         id === 2 ? fakeUserRow({ id: 2, name: "Admin Two", role: "admin" }) : fakeUserRow({ id: 9, name: "Old" })
       );
@@ -1073,5 +1084,56 @@ describe("deleteAdminUserSafely", () => {
         forceDelete: true,
       })
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+
+
+describe("IPE-063R4 fallback-name propagation (admin.users.update path)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("propagates the fallback rename through the canonical helper on name change", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old Name" }) });
+    vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+    vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+    const propagateSpy = vi.spyOn(db, "propagateFallbackAuthorName").mockResolvedValue(3);
+
+    const result = await updateAdminUserProfile({
+      actorAdminId: 9,
+      userId: 1,
+      name: "New Byline Name",
+      reason: "account renamed at user request",
+    });
+
+    expect(result.name).toBe("New Byline Name");
+    expect(propagateSpy).toHaveBeenCalledTimes(1);
+    expect(propagateSpy.mock.calls[0][1]).toBe(1);
+    expect(propagateSpy.mock.calls[0][2]).toBe("New Byline Name");
+  });
+
+  it("does not propagate when the requested name equals the current name (no real change)", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Same Name" }) });
+    const propagateSpy = vi.spyOn(db, "propagateFallbackAuthorName");
+
+    await expect(
+      updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "Same Name", reason: "rename request" })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(propagateSpy).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a blocked account merge from the canonical propagation helper", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    mockUserLocks({ 1: fakeUserRow({ name: "Old Name" }) });
+    vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+    vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+    vi.spyOn(db, "propagateFallbackAuthorName").mockRejectedValue(new Error("Account merge in progress"));
+
+    await expect(
+      updateAdminUserProfile({ actorAdminId: 9, userId: 1, name: "New Name", reason: "rename request" })
+    ).rejects.toThrow("Account merge in progress");
   });
 });

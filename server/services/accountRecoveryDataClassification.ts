@@ -517,6 +517,7 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
   { table: "adminGiftWalletAdjustments", column: "targetUserId", category: "economic_hard_block", reason: "An admin wallet credit/clawback receipt is durable financial history tied to the target account and must participate in recovery safety." },
 
   // ---- user_owned_hard_block: Category B - cart/library/reading progress/check-ins ----
+  { table: "novels", column: "authorUserId", category: "user_owned_hard_block", reason: "Stable novel authorship ownership. A recovery source that still owns authored novels is not an empty account and must use the stronger merge/reconciliation path." },
   { table: "carts", column: "userId", category: "user_owned_hard_block", reason: "The user's shopping cart." },
   { table: "wishlists", column: "userId", category: "user_owned_hard_block", reason: "The user's wishlist/library." },
   { table: "readingProgress", column: "userId", category: "user_owned_hard_block", reason: "Per-episode reading position/progress." },

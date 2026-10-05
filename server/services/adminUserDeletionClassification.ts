@@ -108,6 +108,7 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "adminGiftWalletAdjustments", column: "targetUserId", category: "economic", reference: "Admin Gift Wallet Adjustments", reason: "A durable wallet credit/clawback receipt is financial history tied to this target account." },
 
   // ---- user_owned: cart/library/reading progress/check-ins ----
+  { table: "novels", column: "authorUserId", category: "user_owned", reference: "Novel Author Ownership", reason: "This account is the stable Author owner of one or more novels. Hard deletion must not silently erase authorship attribution; the database SET NULL action is defense-in-depth for out-of-band deletion, not permission to bypass this application safety check." },
   { table: "carts", column: "userId", category: "user_owned", reference: "Cart", reason: "The user's shopping cart." },
   { table: "wishlists", column: "userId", category: "user_owned", reference: "Wishlist", reason: "The user's wishlist/library." },
   { table: "readingProgress", column: "userId", category: "user_owned", reference: "Reading Progress", reason: "Per-episode reading position/progress." },

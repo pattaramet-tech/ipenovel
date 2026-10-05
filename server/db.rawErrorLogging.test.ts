@@ -52,6 +52,15 @@ describe("server/db.ts - raw database error logging", () => {
         "connection mysql://dbuser:hunter2@db.internal.example:3306/prod password=hunter2 token=abcdef1234567890"
     );
     dbModule.__setDbForTests({
+      // IPE-063R4: upsertUser probes the existing account first — no existing
+      // row means the legacy single-statement insert path runs (and fails).
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+          }),
+        }),
+      }),
       insert: () => ({
         values: () => ({
           onDuplicateKeyUpdate: () => {
