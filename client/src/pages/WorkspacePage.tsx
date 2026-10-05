@@ -1642,30 +1642,31 @@ export default function WorkspacePage() {
   const urlRestoreAppliedRef = useRef(false);
   useEffect(() => {
     if (urlRestoreAppliedRef.current) return;
-    if (!editorialNovelGroups.length) return;
     const params = new URLSearchParams(window.location.search);
     const storyParam = params.get("story");
     if (!storyParam) {
       urlRestoreAppliedRef.current = true;
       return;
     }
+    // IPE-064R4B (P2): resolve the workspace that owns the story BEFORE the
+    // story lookup — a bookmark targeting workspace B must not strand on an
+    // empty first workspace (editorialNovelGroups.length === 0 would
+    // otherwise make the switch branch unreachable).
+    const workspaceParam = Number(params.get("workspace"));
+    if (
+      Number.isInteger(workspaceParam) &&
+      workspaceParam > 0 &&
+      workspaceParam !== selectedWorkspaceId
+    ) {
+      setSelectedWorkspaceId(workspaceParam);
+      return;
+    }
+    if (!editorialNovelGroups.length) return;
     const group = editorialNovelGroups.find(
       (candidate: any) =>
         storyKeyFor(candidate.workspaceNovelId, candidate.novel?.id) === storyParam
     );
     if (!group) {
-      // IPE-064R4B (P2): the story may live in a DIFFERENT workspace — the
-      // writer stores which workspace the context belongs to, so switch to it
-      // and retry when its board arrives instead of consuming the restore.
-      const workspaceParam = Number(params.get("workspace"));
-      if (
-        Number.isInteger(workspaceParam) &&
-        workspaceParam > 0 &&
-        workspaceParam !== selectedWorkspaceId
-      ) {
-        setSelectedWorkspaceId(workspaceParam);
-        return;
-      }
       urlRestoreAppliedRef.current = true;
       return;
     }
@@ -1719,6 +1720,12 @@ export default function WorkspacePage() {
   // IPE-064R3 UX: jump target — the next needs-fix pack in episode order
   // (wrapping around), for the tree's cross-pack navigation button.
   const activeStoryPacks = activeStoryGroup ? activeStoryGroup.cards : [];
+  // IPE-064R4B (P1): pack ids belonging to the ACTIVE story — the bulk
+  // action-bar scope is intersected with this list so a selection parked in
+  // another story is never mutated from the wrong context.
+  const storySelectableWorkItemIds = activeStoryPacks
+    .map((card: any) => card.workItemId)
+    .filter((id: any) => Number.isInteger(id) && id > 0);
   const nextNeedsFixPackId = (() => {
     const needsFixIds = sortPacksByEpisode(activeStoryPacks)
       .filter(
@@ -1749,16 +1756,21 @@ export default function WorkspacePage() {
     bulkApproveEditorialDrafts.isPending ||
     bulkStageEditorialDrafts.isPending ||
     bulkRequestEditorialPublish.isPending;
-  const actionBarWorkItemIds = selectedEditorialWorkItemIds.length
-    ? selectedEditorialWorkItemIds
-    : selectedSourceWorkItemId
-      ? [selectedSourceWorkItemId]
-      : [];
-  const actionBarScopeLabel = selectedEditorialWorkItemIds.length
-    ? `เลือก ${selectedEditorialWorkItemIds.length} แพ็ก`
-    : selectedSourceWorkItemId
-      ? "แพ็กที่เปิดอยู่"
-      : "ยังไม่ได้เลือกแพ็ก";
+  // IPE-064R4B (P1): the bulk scope is intersected with the ACTIVE story's
+  // packs — a selection parked in another story must never be mutated by the
+  // action bar of the story currently on screen.
+  const actionBarWorkItemIds = (
+    selectedEditorialWorkItemIds.length
+      ? selectedEditorialWorkItemIds
+      : selectedSourceWorkItemId
+        ? [selectedSourceWorkItemId]
+        : []
+  ).filter((workItemId: number) => storySelectableWorkItemIds.includes(workItemId));
+  const actionBarScopeLabel = actionBarWorkItemIds.length
+    ? selectedEditorialWorkItemIds.length
+      ? `เลือก ${actionBarWorkItemIds.length} แพ็ก`
+      : "แพ็กที่เปิดอยู่"
+    : "ยังไม่ได้เลือกแพ็ก";
   const actionBarCards = editorialCards.filter((card: any) =>
     actionBarWorkItemIds.includes(card.workItemId)
   );

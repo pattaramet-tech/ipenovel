@@ -373,3 +373,22 @@ describe("IPE-064R4B cross-pack duplicate guard", () => {
     expect(rows).toHaveLength(100);
   });
 });
+
+describe("IPE-064R4B numeric chapter collision identity", () => {
+  it("treats zero-padded and unpadded headings of the same chapter as one chapter", () => {
+    const rangePack = makeItem({
+      episodeId: 1,
+      episodeNumber: "1",
+      content: `แพ็กตอน 1 - 1 001\n\nบทที่ 001 จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหา 001`,
+    });
+    const single = makeItem({
+      episodeId: 2,
+      episodeNumber: "1",
+      content: `บทที่ 1 จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหา 1`,
+    });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [rangePack, single] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+});

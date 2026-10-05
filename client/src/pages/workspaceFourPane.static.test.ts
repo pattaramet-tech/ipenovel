@@ -91,8 +91,10 @@ describe("IPE-064 — the 4-pane work area", () => {
     expect(actionBar).toContain("4. ยืนยัน");
     expect(actionBar).toContain("5. Stage");
     expect(actionBar).toContain("6. Publish");
-    // Scope: selected packs, or the open pack when nothing is selected.
-    expect(page).toContain("const actionBarWorkItemIds = selectedEditorialWorkItemIds.length");
+    // Scope: selected packs, or the open pack when nothing is selected —
+    // intersected with the ACTIVE story (IPE-064R4B P1: no cross-story bulk).
+    expect(page).toContain("const actionBarWorkItemIds = (");
+    expect(page).toContain("storySelectableWorkItemIds.includes(workItemId)");
     expect(page).toContain("<WorkspaceActionBar");
     // Bar is inside the center column, before the main editor card.
     const center = page.indexOf('className="min-w-0 space-y-3"');

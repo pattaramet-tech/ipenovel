@@ -301,10 +301,14 @@ export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNov
   // 191-240 pack also exists would expand the same chapter twice (duplicate
   // filenames, or duplicated renumbered content). Fail closed on any
   // cross-item chapter-number collision; within one item the sequence check
-  // already rejects duplicates.
+  // already rejects duplicates. Collision identity is the NUMERIC chapter
+  // number — raw heading strings like "001" and "1" are the same chapter.
   const seenByChapterNumber = new Map<string, NovelExportItem>();
   for (const chapter of chapters) {
-    const previous = seenByChapterNumber.get(chapter.sourceChapterNumber);
+    const collisionKey = /^\d+$/.test(chapter.sourceChapterNumber)
+      ? String(Number(chapter.sourceChapterNumber))
+      : chapter.sourceChapterNumber;
+    const previous = seenByChapterNumber.get(collisionKey);
     if (previous && previous.episodeId !== chapter.item.episodeId) {
       throw new NovelExportError(
         "EXPORT_INVALID_EPISODE_IDENTITY",
@@ -312,7 +316,7 @@ export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNov
         { sourceChapterNumber: chapter.sourceChapterNumber }
       );
     }
-    seenByChapterNumber.set(chapter.sourceChapterNumber, chapter.item);
+    seenByChapterNumber.set(collisionKey, chapter.item);
   }
 
   return chapters;
