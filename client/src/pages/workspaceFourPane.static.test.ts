@@ -135,3 +135,32 @@ describe("IPE-064 — the 4-pane work area", () => {
     expect(page).toContain("<WorkspaceReviewSummaryPanel");
   });
 });
+
+describe("IPE-064R3 — workspace context & navigation", () => {
+  const page = source("client/src/pages/WorkspacePage.tsx");
+  const packPanel = source("client/src/pages/WorkspacePackListPanel.tsx");
+
+  it("restores story/pack/chapter from the URL and keeps it in sync", () => {
+    expect(page).toContain('params.get("story")');
+    expect(page).toContain('params.get("chapter")');
+    expect(page).toContain("updateStoryUiState(states, storyParam");
+    expect(page).toContain('params.set("story", activeStoryKey)');
+    expect(page).toContain("window.history.replaceState");
+    // Restore consumes the params exactly once, before the writer starts.
+    expect(page).toContain("const urlRestoreAppliedRef = useRef(false);");
+    expect(page).toContain("if (!urlRestoreAppliedRef.current) return;");
+  });
+
+  it("offers a quick story switcher in the header (guarded by the dirty check)", () => {
+    expect(page).toContain('data-testid="workspace-story-switcher"');
+    expect(page).toContain("if (selectStory(event.target.value)) setStoryEntered(true);");
+  });
+
+  it("jumps to the next needs-fix pack and auto-expands the selected pack", () => {
+    expect(page).toContain('derivePackStatus(card.evidence) === "needs_fix"');
+    expect(page).toContain("onJumpToPack={(workItemId) => {");
+    expect(packPanel).toContain('data-testid="workspace-next-needs-fix-pack"');
+    expect(packPanel).toContain("selectedRowKey");
+    expect(packPanel).toContain("setExpandedPackIds((current) =>");
+  });
+});

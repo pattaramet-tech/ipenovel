@@ -14,9 +14,11 @@ import { WorkspaceReviewSummaryPanel } from "./WorkspaceReviewSummaryPanel";
 import { WorkspaceActionBar } from "./WorkspaceActionBar";
 import { WorkspaceFindingActions } from "./WorkspaceFindingActions";
 import {
+  derivePackStatus,
   editorDraftBelongsToSelectedPack,
   groupStoriesByNovel,
   resolveStoryUiState,
+  sortPacksByEpisode,
   storyKeyFor,
   storyOverallStatus,
   summarizeStoryPacks,
@@ -1626,7 +1628,84 @@ export default function WorkspacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStoryKey]);
 
+  // IPE-064R3 UX: the daily context (story/pack/chapter) lives in the URL —
+  // refresh, bookmark or a shared link restores the exact place. Restore
+  // runs once when the board first arrives; the story-switch machinery
+  // above then re-opens the seeded pack/chapter through storyUiStates.
+  const urlRestoreAppliedRef = useRef(false);
+  useEffect(() => {
+    if (urlRestoreAppliedRef.current) return;
+    if (!editorialNovelGroups.length) return;
+    urlRestoreAppliedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const storyParam = params.get("story");
+    if (!storyParam) return;
+    const group = editorialNovelGroups.find(
+      (candidate: any) =>
+        storyKeyFor(candidate.workspaceNovelId, candidate.novel?.id) === storyParam
+    );
+    if (!group) return;
+    const packParam = Number(params.get("pack"));
+    const chapterParam = params.get("chapter");
+    const packValid =
+      Number.isInteger(packParam) &&
+      packParam > 0 &&
+      group.cards.some((card: any) => card.workItemId === packParam);
+    setSelectedStoryKey(storyParam);
+    setStoryEntered(true);
+    if (packValid) setSelectedSourceWorkItemId(packParam);
+    setStoryUiStates((states) =>
+      updateStoryUiState(states, storyParam, {
+        packWorkItemId: packValid ? packParam : null,
+        chapterSourceTabId: chapterParam ?? null,
+        activeTab: "editor" as StoryPackTab,
+        issuesOnly: false,
+      })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorialNovelGroups.length]);
+
+  // Keep the URL in sync with the live context (replaceState — no history
+  // spam). Skipped until the one-time restore has consumed the params.
+  useEffect(() => {
+    if (!urlRestoreAppliedRef.current) return;
+    const params = new URLSearchParams();
+    if (storyEntered && activeStoryKey) {
+      params.set("story", activeStoryKey);
+      if (selectedSourceWorkItemId) params.set("pack", String(selectedSourceWorkItemId));
+      if (chapterEditorTarget?.sourceTabId) params.set("chapter", chapterEditorTarget.sourceTabId);
+    }
+    const queryString = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      queryString ? `/workspace?${queryString}` : "/workspace"
+    );
+  }, [
+    storyEntered,
+    activeStoryKey,
+    selectedSourceWorkItemId,
+    chapterEditorTarget?.sourceTabId,
+  ]);
+
+  // IPE-064R3 UX: jump target — the next needs-fix pack in episode order
+  // (wrapping around), for the tree's cross-pack navigation button.
   const activeStoryPacks = activeStoryGroup ? activeStoryGroup.cards : [];
+  const nextNeedsFixPackId = (() => {
+    const needsFixIds = sortPacksByEpisode(activeStoryPacks)
+      .filter(
+        (card: any) =>
+          card.workItemId != null &&
+          derivePackStatus(card.evidence) === "needs_fix"
+      )
+      .map((card: any) => card.workItemId as number);
+    if (!needsFixIds.length) return null;
+    const at =
+      selectedSourceWorkItemId != null
+        ? needsFixIds.indexOf(selectedSourceWorkItemId)
+        : -1;
+    return needsFixIds[(at + 1) % needsFixIds.length] ?? null;
+  })();
   // IPE-064R3: review summary renders from the light outline (unfiltered —
   // the tree applies its own tab filter; the summary always shows all).
   const reviewChapters = packOutlineRows.map(entry => entry.row);
@@ -1741,6 +1820,23 @@ export default function WorkspacePage() {
               {storyEntered ? activeStoryGroup?.novel?.title ?? "Editorial Board" : "Editorial Board"}
             </h1>
           </div>
+          {storyEntered && storyOverviewStories.length > 1 && (
+            <select
+              aria-label="สลับเรื่อง"
+              data-testid="workspace-story-switcher"
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+              value={activeStoryKey ?? ""}
+              onChange={(event) => {
+                if (selectStory(event.target.value)) setStoryEntered(true);
+              }}
+            >
+              {storyOverviewStories.map((story) => (
+                <option key={story.key} value={story.key}>
+                  {story.title}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <Link href="/novels" className="text-sm text-primary underline">Back to IpeNovel</Link>
       </header>
@@ -1847,6 +1943,10 @@ export default function WorkspacePage() {
                 bulkBusy={bulkBusy}
                 allSelected={allStoryPacksSelected}
                 onToggleAll={toggleAllStoryPacks}
+                nextNeedsFixPackId={nextNeedsFixPackId}
+                onJumpToPack={(workItemId) => {
+                  selectPackForActiveStory(workItemId);
+                }}
                 onSelectPack={selectPackForActiveStory}
                 onToggleBulk={toggleEditorialSelection}
                 onOpenEditor={(card) => {

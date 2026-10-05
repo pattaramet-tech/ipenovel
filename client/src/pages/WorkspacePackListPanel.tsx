@@ -2,7 +2,9 @@
 // multi-story work area). IPE-062R4D: expandable pack/chapter tree — each
 // pack row can expand to its chapter navigation rows (metadata only, never
 // an editing surface; the single active editor lives in the center).
-import { useMemo, useState } from "react";
+// IPE-064R3: the selected pack auto-expands and a "แพ็กที่ต้องแก้ถัดไป"
+// button jumps across packs in episode order.
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -72,6 +74,9 @@ interface WorkspacePackListPanelProps {
   /** IPE-064: master "เลือกทั้งหมด" checkbox over this story's packs. */
   allSelected?: boolean;
   onToggleAll?: () => void;
+  /** IPE-064R3: next needs-fix pack (episode order) for the jump button. */
+  nextNeedsFixPackId?: number | null;
+  onJumpToPack?: (workItemId: number) => void;
   onSelectPack: (workItemId: number) => void;
   onToggleBulk: (workItemId: number) => void;
   onOpenEditor: (card: any) => void;
@@ -97,6 +102,8 @@ export function WorkspacePackListPanel({
   bulkBusy,
   allSelected,
   onToggleAll,
+  nextNeedsFixPackId,
+  onJumpToPack,
   onSelectPack,
   onToggleBulk,
   onOpenEditor,
@@ -122,6 +129,20 @@ export function WorkspacePackListPanel({
     () => sortPacksByEpisode(filterPacksByQuery(packs, query)),
     [packs, query]
   );
+  // IPE-064R3: the selected pack auto-expands so jump navigation (and any
+  // pack switch) lands on its chapter rows immediately.
+  const selectedRowKey = useMemo(() => {
+    const selected = packs.find(
+      (card) => card.workItemId != null && card.workItemId === selectedWorkItemId
+    );
+    return selected ? String(selected.id ?? selected.workItemId ?? "pack") : null;
+  }, [packs, selectedWorkItemId]);
+  useEffect(() => {
+    if (!selectedRowKey) return;
+    setExpandedPackIds((current) =>
+      current.has(selectedRowKey) ? current : new Set(current).add(selectedRowKey)
+    );
+  }, [selectedRowKey]);
 
   return (
     <Card className="space-y-2 p-3" data-testid="workspace-pack-list-panel">
@@ -143,17 +164,31 @@ export function WorkspacePackListPanel({
         aria-label="ค้นหาแพ็กในเรื่องนี้"
         className="h-8 text-sm"
       />
-      <label className="flex items-center gap-2 text-xs font-medium" data-testid="workspace-pack-select-all-row">
-        <input
-          type="checkbox"
-          aria-label="เลือกทั้งหมด (ทุกแพ็กในเรื่องนี้)"
-          data-testid="workspace-pack-select-all"
-          checked={Boolean(allSelected)}
-          disabled={bulkBusy || !packs.length}
-          onChange={() => onToggleAll?.()}
-        />
-        เลือกทั้งหมด
-      </label>
+      <div className="flex items-center justify-between gap-2">
+        <label className="flex items-center gap-2 text-xs font-medium" data-testid="workspace-pack-select-all-row">
+          <input
+            type="checkbox"
+            aria-label="เลือกทั้งหมด (ทุกแพ็กในเรื่องนี้)"
+            data-testid="workspace-pack-select-all"
+            checked={Boolean(allSelected)}
+            disabled={bulkBusy || !packs.length}
+            onChange={() => onToggleAll?.()}
+          />
+          เลือกทั้งหมด
+        </label>
+        {onJumpToPack ? (
+          <button
+            type="button"
+            data-testid="workspace-next-needs-fix-pack"
+            className="rounded border px-2 py-1 text-xs font-medium text-orange-800 hover:bg-orange-50 disabled:opacity-50"
+            disabled={nextNeedsFixPackId == null}
+            title="ไปยังแพ็กที่ต้องแก้ถัดไป (เรียงตามเลขตอน)"
+            onClick={() => nextNeedsFixPackId != null && onJumpToPack(nextNeedsFixPackId)}
+          >
+            แพ็กที่ต้องแก้ถัดไป ›
+          </button>
+        ) : null}
+      </div>
       <div className="max-h-[28rem] space-y-1 overflow-auto pr-1" data-testid="workspace-pack-list">
         {visiblePacks.length ? (
           visiblePacks.map((card) => {
