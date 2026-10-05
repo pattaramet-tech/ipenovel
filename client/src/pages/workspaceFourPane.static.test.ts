@@ -16,7 +16,10 @@ describe("IPE-064 — intake separation", () => {
 
   it("registers the intake route and cross-links both pages", () => {
     expect(app).toContain('path={"/workspace/intake"}');
-    expect(page).toContain('href="/workspace/intake"');
+    // IPE-064R4B (P1): the intake link carries the selected workspace so the
+    // intake page cannot fall back to the wrong (first) workspace.
+    expect(page).toContain("href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : \"\"}`}");
+    expect(page).toContain('params.get("workspace")');
     expect(intake).toContain('href="/workspace"');
   });
 
@@ -134,6 +137,22 @@ describe("IPE-064 — the 4-pane work area", () => {
   it("pane 4 keeps the compact review summary as the counters strip", () => {
     expect(page).toContain("<WorkspaceReviewSummaryPanel");
   });
+
+  it("refreshes the outline read model after every draft revision (IPE-064R4B)", () => {
+    expect(page).toContain("editorialSourceDraftOutline.refetch()");
+    // The revision-changing flows: save rebind, tab exclude/restore, undo.
+    const saveBlock = page.slice(
+      page.indexOf("const [sourceDraftResult] = await Promise.all(["),
+      page.indexOf("]);", page.indexOf("const [sourceDraftResult] = await Promise.all(["))
+    );
+    expect(saveBlock).toContain("editorialSourceDraftOutline.refetch()");
+    const undoBlock = page.slice(
+      page.indexOf("const undoEditorialEdit = trpc.workspace.editorial.editorUndo.useMutation({"),
+      page.indexOf("const approveEditorialDraft = trpc.workspace.editorial.approveDraft.useMutation({")
+    );
+    expect(undoBlock).toContain("editorialSourceDraftOutline.refetch()");
+    expect(page).toContain("editorialSourceDraftOutline.refetch(),\n    ]);");
+  });
 });
 
 describe("IPE-064R3 — workspace context & navigation", () => {
@@ -143,6 +162,10 @@ describe("IPE-064R3 — workspace context & navigation", () => {
   it("restores story/pack/chapter from the URL and keeps it in sync", () => {
     expect(page).toContain('params.get("story")');
     expect(page).toContain('params.get("chapter")');
+    // IPE-064R4B (P2): the context belongs to a workspace — retry restore
+    // after switching to the workspace that owns the story.
+    expect(page).toContain('params.get("workspace")');
+    expect(page).toContain('params.set("workspace", String(selectedWorkspaceId ?? ""))');
     expect(page).toContain("updateStoryUiState(states, storyParam");
     expect(page).toContain('params.set("story", activeStoryKey)');
     expect(page).toContain("window.history.replaceState");

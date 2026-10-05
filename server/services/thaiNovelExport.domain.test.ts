@@ -337,3 +337,39 @@ describe("IPE-064R3 range-pack over-run", () => {
     );
   });
 });
+
+describe("IPE-064R4B cross-pack duplicate guard", () => {
+  it("rejects an overrun that overlaps the next pack instead of double-expanding", () => {
+    const overrun = makeItem({
+      episodeId: 1,
+      episodeNumber: "141 - 190",
+      content: makePackContent(141, 192),
+    });
+    const normal = makeItem({
+      episodeId: 2,
+      episodeNumber: "191 - 240",
+      content: makePackContent(191, 240),
+    });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [overrun, normal] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+
+  it("still accepts non-overlapping sequential packs", () => {
+    const first = makeItem({
+      episodeId: 1,
+      episodeNumber: "141 - 190",
+      content: makePackContent(141, 190),
+    });
+    const second = makeItem({
+      episodeId: 2,
+      episodeNumber: "191 - 240",
+      content: makePackContent(191, 240),
+    });
+    const rows = buildThaiNovelPreviewRows(
+      buildThaiNovelExportEntries(makePackage({ items: [first, second] }))
+    );
+    expect(rows).toHaveLength(100);
+  });
+});

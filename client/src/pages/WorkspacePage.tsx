@@ -520,6 +520,9 @@ export default function WorkspacePage() {
       const [sourceDraftResult] = await Promise.all([
         editorialSourceDraft.refetch(),
         editorialEditor.refetch(),
+        // IPE-064R4B (P2): the revision changed the tab set/edited flags —
+        // the outline read model must follow or the tree shows stale rows.
+        editorialSourceDraftOutline.refetch(),
       ]);
       if (savedChapterTarget) {
         const freshDraftData = sourceDraftResult.data as any;
@@ -583,6 +586,7 @@ export default function WorkspacePage() {
     await Promise.all([
       editorialSourceDraft.refetch(), editorialEditor.refetch(), editorialForeignChecker.refetch(),
       editorialApproval.refetch(), editorialBoard.refetch(),
+      editorialSourceDraftOutline.refetch(),
     ]);
   };
   const excludeEditorialTab = trpc.workspace.editorial.editorExcludeTab.useMutation({
@@ -603,6 +607,7 @@ export default function WorkspacePage() {
         editorialForeignChecker.refetch(),
         editorialApproval.refetch(),
         editorialBoard.refetch(),
+        editorialSourceDraftOutline.refetch(),
       ]);
       if (
         selectedWorkspaceId &&
@@ -1638,15 +1643,33 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (urlRestoreAppliedRef.current) return;
     if (!editorialNovelGroups.length) return;
-    urlRestoreAppliedRef.current = true;
     const params = new URLSearchParams(window.location.search);
     const storyParam = params.get("story");
-    if (!storyParam) return;
+    if (!storyParam) {
+      urlRestoreAppliedRef.current = true;
+      return;
+    }
     const group = editorialNovelGroups.find(
       (candidate: any) =>
         storyKeyFor(candidate.workspaceNovelId, candidate.novel?.id) === storyParam
     );
-    if (!group) return;
+    if (!group) {
+      // IPE-064R4B (P2): the story may live in a DIFFERENT workspace — the
+      // writer stores which workspace the context belongs to, so switch to it
+      // and retry when its board arrives instead of consuming the restore.
+      const workspaceParam = Number(params.get("workspace"));
+      if (
+        Number.isInteger(workspaceParam) &&
+        workspaceParam > 0 &&
+        workspaceParam !== selectedWorkspaceId
+      ) {
+        setSelectedWorkspaceId(workspaceParam);
+        return;
+      }
+      urlRestoreAppliedRef.current = true;
+      return;
+    }
+    urlRestoreAppliedRef.current = true;
     const packParam = Number(params.get("pack"));
     const chapterParam = params.get("chapter");
     const packValid =
@@ -1665,7 +1688,7 @@ export default function WorkspacePage() {
       })
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorialNovelGroups.length]);
+  }, [editorialNovelGroups.length, selectedWorkspaceId, editorialBoard.data]);
 
   // Keep the URL in sync with the live context (replaceState — no history
   // spam). Skipped until the one-time restore has consumed the params.
@@ -1673,6 +1696,9 @@ export default function WorkspacePage() {
     if (!urlRestoreAppliedRef.current) return;
     const params = new URLSearchParams();
     if (storyEntered && activeStoryKey) {
+      // IPE-064R4B (P1/P2): the workspace owns the story context — persist it
+      // so restoration can follow the story across workspaces.
+      params.set("workspace", String(selectedWorkspaceId ?? ""));
       params.set("story", activeStoryKey);
       if (selectedSourceWorkItemId) params.set("pack", String(selectedSourceWorkItemId));
       if (chapterEditorTarget?.sourceTabId) params.set("chapter", chapterEditorTarget.sourceTabId);
@@ -1850,7 +1876,7 @@ export default function WorkspacePage() {
           {(workspaces.data as any[] | undefined)?.map(({ workspace }: any) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
         </select>
         <Link
-          href="/workspace/intake"
+          href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}
           className="text-sm text-primary underline"
           data-testid="workspace-intake-link"
         >

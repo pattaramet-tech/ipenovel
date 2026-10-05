@@ -246,7 +246,13 @@ export default function WorkspaceIntakePage() {
 
   useEffect(() => {
     if (!selectedWorkspaceId && workspaces.data?.length) {
-      setSelectedWorkspaceId((workspaces.data as any[])[0].workspace.id);
+      // IPE-064R4B (P1): the editorial workspace links here with its own
+      // workspace id — honor it before falling back to the first workspace.
+      const requested = Number(new URLSearchParams(window.location.search).get("workspace"));
+      const rows = workspaces.data as any[];
+      const requestedValid =
+        Number.isInteger(requested) && rows.some(({ workspace }: any) => workspace.id === requested);
+      setSelectedWorkspaceId(requestedValid ? requested : rows[0].workspace.id);
     }
   }, [selectedWorkspaceId, workspaces.data]);
 

@@ -296,6 +296,25 @@ export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNov
     );
   }
 
+  // IPE-064R4B (P2): a sequential overrun must never silently overlap ANOTHER
+  // pack — e.g. declared 141-190 with headings through 192 while a normal
+  // 191-240 pack also exists would expand the same chapter twice (duplicate
+  // filenames, or duplicated renumbered content). Fail closed on any
+  // cross-item chapter-number collision; within one item the sequence check
+  // already rejects duplicates.
+  const seenByChapterNumber = new Map<string, NovelExportItem>();
+  for (const chapter of chapters) {
+    const previous = seenByChapterNumber.get(chapter.sourceChapterNumber);
+    if (previous && previous.episodeId !== chapter.item.episodeId) {
+      throw new NovelExportError(
+        "EXPORT_INVALID_EPISODE_IDENTITY",
+        `พบบทที่ ${chapter.sourceChapterNumber} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${chapter.item.episodeNumber})`,
+        { sourceChapterNumber: chapter.sourceChapterNumber }
+      );
+    }
+    seenByChapterNumber.set(chapter.sourceChapterNumber, chapter.item);
+  }
+
   return chapters;
 }
 
