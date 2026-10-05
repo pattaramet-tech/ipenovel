@@ -257,6 +257,10 @@ export default function WorkspaceIntakePage() {
         (candidate) =>
           Number.isInteger(candidate) && rows.some(({ workspace }: any) => workspace.id === candidate)
       );
+      // IPE-064R4B review round 10 (P2): the stash is ONE-SHOT callback
+      // state — consume it so an unrelated later visit to the bare intake
+      // route falls back to the normal workspace selection.
+      window.sessionStorage.removeItem("ipe064-intake-workspace");
       setSelectedWorkspaceId(pick !== undefined ? pick : rows[0].workspace.id);
     }
   }, [selectedWorkspaceId, workspaces.data]);

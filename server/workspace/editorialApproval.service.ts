@@ -497,7 +497,14 @@ function isAcceptedSourceNoteChapterTab(tab: {
     .map((paragraph) =>
       normalizeEditorialText(paragraph.text).replace(/\s+/g, " ").trim()
     )
-    .filter((text) => text && !/^[_\-=*#~•·.]{3,}$/.test(text));
+    .filter(
+      (text) =>
+        text &&
+        // IPE-064R4B review round 10 (P2): strip whitespace BEFORE the
+        // separator predicate — spaced separators like * * * must classify
+        // exactly like the structural classifier does.
+        !/^[_\-=*#~•·.]{3,}$/.test(text.replace(/\s+/g, ""))
+    );
   if (!meaningful.length) return false;
   return meaningful.every(
     (text) =>
