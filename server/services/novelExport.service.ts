@@ -327,15 +327,14 @@ export async function buildThaiNovelExportPreview(
   options?: ThaiNovelExportOptions
 ): Promise<ThaiNovelExportPreview> {
   const { pkg, skippedItems, publishedEpisodeSummaries, allPublishedItems } = await buildNovelExportPackage(selection);
-  // IPE-064R4B (P2): per-pack subsets must not silently double-export
-  // chapters that an overrunning pack shares with a following pack —
-  // validate the collision identity against EVERY published episode of the
-  // novel, not just the selected subset (download path stays fail-closed).
-  assertNoCrossPackChapterCollisions(
-    allPublishedItems,
-    selection.episodeIds && selection.episodeIds.length > 0 ? new Set(selection.episodeIds) : null
-  );
   const isWholeSelection = !selection.episodeIds || selection.episodeIds.length === 0;
+  // IPE-064R4B (P2): validation scope — whole-novel requests fail closed on
+  // ANY published defect (surfaced as flags so sourceEpisodes still loads);
+  // explicit subsets are validated against their own selected items only,
+  // so unrelated unselected defects never block a valid per-pack export.
+  const selectedItemIds = isWholeSelection
+    ? null
+    : new Set(selection.episodeIds ?? []); !selection.episodeIds || selection.episodeIds.length === 0;
   let entries: ThaiNovelExportEntry[];
   let overLimit: { itemCount: number; maxItems: number } | null = null;
   let validationError: { code: string; message: string } | null = null;
@@ -345,7 +344,7 @@ export async function buildThaiNovelExportPreview(
     // request it must NOT hard-fail the response, or the subset selector
     // (sourceEpisodes) never loads and the operator cannot export any
     // per-pack subset around the defect.
-    assertNoCrossPackChapterCollisions(allPublishedItems, null);
+    assertNoCrossPackChapterCollisions(allPublishedItems, selectedItemIds);
     entries = buildThaiNovelExportEntries(pkg, options);
   } catch (error) {
     if (

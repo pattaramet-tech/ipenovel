@@ -26,7 +26,8 @@ describe("IPE-064 master-detail layout contract", () => {
     // table was retired — the daily work area leads with the story picker.
     expect(page).not.toContain('data-testid="workspace-ops-advanced"');
     expect(page).not.toContain('data-testid="workspace-management-table"');
-    expect(page).toContain('href="/workspace/intake"');
+    // IPE-064R4B (P1): the intake link carries the selected workspace.
+    expect(page).toContain('href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}');
     expect(page).toContain("<WorkspacePackListPanel");
   });
 

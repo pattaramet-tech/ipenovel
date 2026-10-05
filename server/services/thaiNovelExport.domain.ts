@@ -366,7 +366,31 @@ export function assertNoCrossPackChapterCollisions(
       }
     }
   }
-  assertNoCrossItemChapterCollisions(chapters);
+  // IPE-064R4B review round 6 (P2): a collision wholly between two
+  // UNSELECTED packs is an unrelated data defect — it must not block
+  // exporting the selected subset. Throw only when the scope is whole
+  // (every pack is being exported) or at least one participant is selected.
+  const seenByChapterNumber = new Map<string, NovelExportItem>();
+  for (const chapter of chapters) {
+    const collisionKey = /^\d+$/.test(chapter.sourceChapterNumber)
+      ? String(Number(chapter.sourceChapterNumber))
+      : chapter.sourceChapterNumber;
+    const previous = seenByChapterNumber.get(collisionKey);
+    if (
+      previous &&
+      previous.episodeId !== chapter.item.episodeId &&
+      (selectedItemIds === null ||
+        selectedItemIds.has(previous.episodeId) ||
+        selectedItemIds.has(chapter.item.episodeId))
+    ) {
+      throw new NovelExportError(
+        "EXPORT_INVALID_EPISODE_IDENTITY",
+        `พบบทที่ ${chapter.sourceChapterNumber} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${chapter.item.episodeNumber})`,
+        { sourceChapterNumber: chapter.sourceChapterNumber }
+      );
+    }
+    seenByChapterNumber.set(collisionKey, chapter.item);
+  }
 }
 
 /**

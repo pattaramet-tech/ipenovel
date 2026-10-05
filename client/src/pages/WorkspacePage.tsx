@@ -2023,7 +2023,7 @@ export default function WorkspacePage() {
             {storyEntered && !activeStoryGroup ? (
               <Card className="p-4 text-sm text-muted-foreground">
                 เรื่องนี้ยังไม่มีแพ็ก — เพิ่มตอนผ่านหน้า{" "}
-                <Link href="/workspace/intake">ตั้งค่า / นำเข้า</Link> ก่อน
+                <Link href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}>ตั้งค่า / นำเข้า</Link> ก่อน
               </Card>
             ) : null}
             {storyEntered && activeStoryGroup ? (
