@@ -29,6 +29,10 @@ export const users = mysqlTable(
     loginMethod: varchar("loginMethod", { length: 64 }),
     passwordHash: varchar("passwordHash", { length: 255 }),
     role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+    // IPE-063R1: pen name / author display name, kept separate from the
+    // account name. Nullable — legacy admins have no explicit author name
+    // and fall back to their account name.
+    authorName: varchar("authorName", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -182,6 +186,9 @@ export const novels = mysqlTable(
     slug: varchar("slug", { length: 500 }).notNull().unique(),
     description: text("description"),
     author: varchar("author", { length: 255 }),
+    // Stable admin-account ownership for Author analytics. Nullable preserves
+    // every legacy novel without guessing/backfilling ownership from display text.
+    authorUserId: int("authorUserId"),
     coverImageUrl: text("coverImageUrl"),
     // Publication status controls visibility on public pages
     publicationStatus: mysqlEnum("publicationStatus", ["published", "archived"]).default("published").notNull(),
@@ -195,6 +202,12 @@ export const novels = mysqlTable(
   (table) => ({
     createdAtIdx: index("novels_createdAt_idx").on(table.createdAt),
     titleIdx: index("novels_title_idx").on(table.title),
+    authorUserIdIdx: index("novels_authorUserId_idx").on(table.authorUserId),
+    authorUserFk: foreignKey({
+      name: "novels_authorUserId_users_id_fk",
+      columns: [table.authorUserId],
+      foreignColumns: [users.id],
+    }).onDelete("set null"),
     publicationStatusIdx: index("novels_publicationStatus_idx").on(table.publicationStatus),
     // Phase 3: every homepage ranking query (getNewNovels, getPopularNovels'
     // candidate pool, getFreeNovels, getFinishedNovels) filters
@@ -3504,3 +3517,242 @@ export type WorkspaceMasterIntakeRow = typeof workspaceMasterIntakeRows.$inferSe
 export type WorkspaceReadOnlyBinding = typeof workspaceReadOnlyBindings.$inferSelect;
 export type WorkspaceMigrationRegistryEntry = typeof workspaceMigrationRegistry.$inferSelect;
 export type WorkspaceDocumentFingerprint = typeof workspaceDocumentFingerprints.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// IPE-PLUGIN-001B - OAuth 2.1 + MCP foundation (read-only identity slice).
+//
+// Isolated plugin namespace (server/plugin/): an OAuth 2.1 Authorization
+// Code + PKCE authorization server that binds external plugin clients
+// (e.g. ChatGPT/MCP connectors) to an existing ipenovel users.id, plus the
+// append-only audit trail for every plugin security decision. Deliberately
+// SEPARATE from both the sign-in OAuth tables (authIdentities - how a HUMAN
+// logs in) and the Workspace Google Docs connection tables
+// (workspaceGoogleConnections - which store encrypted Google refresh
+// tokens): plugin access/refresh tokens are random opaque credentials
+// stored ONLY as sha256 hashes (never recoverable, nothing to encrypt),
+// so no cipher/keyVersion machinery is needed here.
+// ---------------------------------------------------------------------------
+
+/** A registered confidential plugin client (e.g. a ChatGPT MCP connector). */
+export const pluginOAuthClients = mysqlTable(
+  "pluginOAuthClients",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    clientId: varchar("clientId", { length: 64 }).notNull(),
+    // sha256 hex of the client secret - the secret itself is shown once at
+    // registration time and never stored.
+    clientSecretHash: varchar("clientSecretHash", { length: 64 }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    // JSON array of exact redirect URIs - every authorize request must
+    // byte-match one entry (no prefix/wildcard matching, ever).
+    redirectUris: text("redirectUris").notNull(),
+    // Space-separated scope allowlist this client may ever request
+    // (intersection with the server-wide scope registry is enforced at
+    // authorize time).
+    allowedScopes: text("allowedScopes").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    clientIdUnique: uniqueIndex("poc_client_id_unique").on(table.clientId),
+  })
+);
+
+/** One in-progress authorize request (state-bound, single-use, ~10 min TTL). */
+export const pluginOAuthConsentAttempts = mysqlTable(
+  "pluginOAuthConsentAttempts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    // sha256 of the OAuth `state` value - the raw value only ever lives in
+    // the redirect URL and the consent form, never at rest.
+    stateHash: varchar("stateHash", { length: 64 }).notNull(),
+    // sha256 of the consent-form CSRF token (double-submitted via a
+    // path-scoped transient cookie on the POST).
+    csrfTokenHash: varchar("csrfTokenHash", { length: 64 }).notNull(),
+    clientId: varchar("clientId", { length: 64 }).notNull(),
+    redirectUri: varchar("redirectUri", { length: 500 }).notNull(),
+    scope: text("scope").notNull(),
+    codeChallenge: varchar("codeChallenge", { length: 128 }).notNull(),
+    // Only ever "S256" today - plain is rejected at validation time, this
+    // column just records what was bound so the code exchange can re-check.
+    codeChallengeMethod: varchar("codeChallengeMethod", { length: 16 }).notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    consumedAt: timestamp("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    stateHashUnique: uniqueIndex("poca_state_hash_unique").on(table.stateHash),
+    expiryIdx: index("poca_expiry_idx").on(table.expiresAt),
+    userFk: foreignKey({
+      name: "poca_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** The durable (user, client) consent record - revoking it kills its tokens. */
+export const pluginOAuthAuthorizations = mysqlTable(
+  "pluginOAuthAuthorizations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    clientId: varchar("clientId", { length: 64 }).notNull(),
+    // Space-separated union of scopes granted so far; a re-consent can add,
+    // never silently narrow (narrowing = explicit revoke + re-consent).
+    scope: text("scope").notNull(),
+    status: mysqlEnum("status", ["active", "revoked"]).default("active").notNull(),
+    revokedAt: timestamp("revokedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    lastUsedAt: timestamp("lastUsedAt"),
+  },
+  table => ({
+    userClientUnique: uniqueIndex("poa_user_client_unique").on(table.userId, table.clientId),
+    clientFk: foreignKey({
+      name: "poa_client_fk",
+      columns: [table.clientId],
+      foreignColumns: [pluginOAuthClients.clientId],
+    }).onDelete("cascade"),
+    userFk: foreignKey({
+      name: "poa_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** Single-use, ~10 min authorization codes - stored only as sha256 hashes. */
+export const pluginOAuthAuthorizationCodes = mysqlTable(
+  "pluginOAuthAuthorizationCodes",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    codeHash: varchar("codeHash", { length: 64 }).notNull(),
+    authorizationId: int("authorizationId").notNull(),
+    userId: int("userId").notNull(),
+    clientId: varchar("clientId", { length: 64 }).notNull(),
+    redirectUri: varchar("redirectUri", { length: 500 }).notNull(),
+    scope: text("scope").notNull(),
+    codeChallenge: varchar("codeChallenge", { length: 128 }).notNull(),
+    codeChallengeMethod: varchar("codeChallengeMethod", { length: 16 }).notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    // Single-use is enforced by a conditional UPDATE (consumedAt IS NULL)
+    // so two concurrent exchanges can never both win.
+    consumedAt: timestamp("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    codeHashUnique: uniqueIndex("poac_code_hash_unique").on(table.codeHash),
+    expiryIdx: index("poac_expiry_idx").on(table.expiresAt),
+    authorizationFk: foreignKey({
+      name: "poac_authorization_fk",
+      columns: [table.authorizationId],
+      foreignColumns: [pluginOAuthAuthorizations.id],
+    }).onDelete("cascade"),
+    userFk: foreignKey({
+      name: "poac_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** Opaque bearer access tokens - stored ONLY as sha256 hashes, never JWTs. */
+export const pluginAccessGrants = mysqlTable(
+  "pluginAccessGrants",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    tokenHash: varchar("tokenHash", { length: 64 }).notNull(),
+    authorizationId: int("authorizationId").notNull(),
+    userId: int("userId").notNull(),
+    clientId: varchar("clientId", { length: 64 }).notNull(),
+    scope: text("scope").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    revokedAt: timestamp("revokedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    tokenHashUnique: uniqueIndex("pat_token_hash_unique").on(table.tokenHash),
+    userExpiryIdx: index("pat_user_expiry_idx").on(table.userId, table.expiresAt),
+    expiryIdx: index("pat_expiry_idx").on(table.expiresAt),
+    authorizationFk: foreignKey({
+      name: "pat_authorization_fk",
+      columns: [table.authorizationId],
+      foreignColumns: [pluginOAuthAuthorizations.id],
+    }).onDelete("cascade"),
+    userFk: foreignKey({
+      name: "pat_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** Rotating refresh tokens - reuse of a rotated token revokes the whole grant. */
+export const pluginRefreshGrants = mysqlTable(
+  "pluginRefreshGrants",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    tokenHash: varchar("tokenHash", { length: 64 }).notNull(),
+    authorizationId: int("authorizationId").notNull(),
+    userId: int("userId").notNull(),
+    clientId: varchar("clientId", { length: 64 }).notNull(),
+    scope: text("scope").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    revokedAt: timestamp("revokedAt"),
+    rotatedAt: timestamp("rotatedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    tokenHashUnique: uniqueIndex("prt_token_hash_unique").on(table.tokenHash),
+    expiryIdx: index("prt_expiry_idx").on(table.expiresAt),
+    authorizationFk: foreignKey({
+      name: "prt_authorization_fk",
+      columns: [table.authorizationId],
+      foreignColumns: [pluginOAuthAuthorizations.id],
+    }).onDelete("cascade"),
+    userFk: foreignKey({
+      name: "prt_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** Append-only audit trail for every plugin security decision. */
+export const pluginAuditLogs = mysqlTable(
+  "pluginAuditLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    eventType: varchar("eventType", { length: 120 }).notNull(),
+    // Nullable: some events (an anonymous bearer rejection at the MCP edge)
+    // have no authenticated actor yet.
+    actorUserId: int("actorUserId"),
+    clientId: varchar("clientId", { length: 64 }),
+    correlationId: varchar("correlationId", { length: 255 }).notNull(),
+    // JSON string - bounded, secret-free fields only, same discipline as
+    // adminUserAuditLogs.safeMetadata.
+    safeMetadata: text("safeMetadata").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    correlationIdx: index("pal_correlation_idx").on(table.correlationId),
+    eventCreatedIdx: index("pal_event_created_idx").on(table.eventType, table.createdAt),
+    actorFk: foreignKey({
+      name: "pal_actor_fk",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }).onDelete("set null"),
+  })
+);
+
+export type PluginOAuthClient = typeof pluginOAuthClients.$inferSelect;
+export type InsertPluginOAuthClient = typeof pluginOAuthClients.$inferInsert;
+export type PluginOAuthConsentAttempt = typeof pluginOAuthConsentAttempts.$inferSelect;
+export type PluginOAuthAuthorization = typeof pluginOAuthAuthorizations.$inferSelect;
+export type PluginOAuthAuthorizationCode = typeof pluginOAuthAuthorizationCodes.$inferSelect;
+export type PluginAccessGrant = typeof pluginAccessGrants.$inferSelect;
+export type PluginRefreshGrant = typeof pluginRefreshGrants.$inferSelect;
+export type PluginAuditLog = typeof pluginAuditLogs.$inferSelect;

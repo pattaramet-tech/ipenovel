@@ -212,6 +212,42 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "user_owned_hard_block",
     reason: "Workspace connection state is user-scoped and must not be silently reassigned during recovery.",
   },
+  {
+    table: "pluginOAuthConsentAttempts",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin OAuth consent-attempt state is user-scoped and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginOAuthAuthorizations",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin OAuth grants are explicit user consent records and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginOAuthAuthorizationCodes",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin authorization codes are bound to the consenting user and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginAccessGrants",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin access tokens are bound to the consented user and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginRefreshGrants",
+    column: "userId",
+    category: "user_owned_hard_block",
+    reason: "Plugin refresh tokens are bound to the consented user and must not be silently reassigned during recovery.",
+  },
+  {
+    table: "pluginAuditLogs",
+    column: "actorUserId",
+    category: "deliberately_ignored",
+    reason: "Plugin audit actor provenance is append-only historical evidence, not mutable account-owned state.",
+  },
 
   {
     table: "workspaceEditorialWorkItems",
@@ -481,6 +517,7 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
   { table: "adminGiftWalletAdjustments", column: "targetUserId", category: "economic_hard_block", reason: "An admin wallet credit/clawback receipt is durable financial history tied to the target account and must participate in recovery safety." },
 
   // ---- user_owned_hard_block: Category B - cart/library/reading progress/check-ins ----
+  { table: "novels", column: "authorUserId", category: "user_owned_hard_block", reason: "Stable novel authorship ownership. A recovery source that still owns authored novels is not an empty account and must use the stronger merge/reconciliation path." },
   { table: "carts", column: "userId", category: "user_owned_hard_block", reason: "The user's shopping cart." },
   { table: "wishlists", column: "userId", category: "user_owned_hard_block", reason: "The user's wishlist/library." },
   { table: "readingProgress", column: "userId", category: "user_owned_hard_block", reason: "Per-episode reading position/progress." },

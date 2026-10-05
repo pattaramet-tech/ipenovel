@@ -108,6 +108,7 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "adminGiftWalletAdjustments", column: "targetUserId", category: "economic", reference: "Admin Gift Wallet Adjustments", reason: "A durable wallet credit/clawback receipt is financial history tied to this target account." },
 
   // ---- user_owned: cart/library/reading progress/check-ins ----
+  { table: "novels", column: "authorUserId", category: "user_owned", reference: "Novel Author Ownership", reason: "This account is the stable Author owner of one or more novels. Hard deletion must not silently erase authorship attribution; the database SET NULL action is defense-in-depth for out-of-band deletion, not permission to bypass this application safety check." },
   { table: "carts", column: "userId", category: "user_owned", reference: "Cart", reason: "The user's shopping cart." },
   { table: "wishlists", column: "userId", category: "user_owned", reference: "Wishlist", reason: "The user's wishlist/library." },
   { table: "readingProgress", column: "userId", category: "user_owned", reference: "Reading Progress", reason: "Per-episode reading position/progress." },
@@ -153,6 +154,12 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "workspaceMembers", column: "userId", category: "user_owned", reference: "Workspace Memberships", reason: "Workspace membership and role state belong to this user and block hard deletion." },
   { table: "workspaceGoogleConsentAttempts", column: "userId", category: "user_owned", reference: "Workspace Google Consent Attempts", reason: "Workspace consent lifecycle state is user-scoped and must not be orphaned by hard deletion." },
   { table: "workspaceGoogleConnections", column: "userId", category: "user_owned", reference: "Workspace Google Connections", reason: "Workspace Google connection state is user-scoped and must not be orphaned by hard deletion." },
+  { table: "pluginOAuthConsentAttempts", column: "userId", category: "user_owned", reference: "Plugin OAuth Consent Attempts", reason: "Plugin OAuth consent lifecycle state is user-scoped and must not be orphaned by hard deletion." },
+  { table: "pluginOAuthAuthorizations", column: "userId", category: "user_owned", reference: "Plugin OAuth Grants", reason: "Plugin OAuth grants are explicit consent records bound to the user and must not be orphaned by hard deletion." },
+  { table: "pluginOAuthAuthorizationCodes", column: "userId", category: "user_owned", reference: "Plugin OAuth Authorization Codes", reason: "Plugin authorization codes are bound to the consenting user and must not be orphaned by hard deletion." },
+  { table: "pluginAccessGrants", column: "userId", category: "user_owned", reference: "Plugin Access Tokens", reason: "Plugin access tokens are bound to the consented user and must not be orphaned by hard deletion." },
+  { table: "pluginRefreshGrants", column: "userId", category: "user_owned", reference: "Plugin Refresh Tokens", reason: "Plugin refresh tokens are bound to the consented user and must not be orphaned by hard deletion." },
+  { table: "pluginAuditLogs", column: "actorUserId", category: "audit_or_actor", reference: "Plugin Audit Actor References", reason: "The actor recorded on an append-only plugin audit row is durable provenance that must remain attributable." },
   { table: "workspaceEditorialWorkItems", column: "assigneeUserId", category: "user_owned", reference: "Workspace Editorial Assignments", reason: "The current editorial assignee is mutable user-owned operational state and blocks hard deletion until explicitly reassigned." },
   { table: "workspaceEditorialWorkItems", column: "createdByUserId", category: "audit_or_actor", reference: "Workspace Editorial Work Item Creator References", reason: "The creator of an editorial work item is durable provenance that must remain attributable." },
   { table: "workspaceEditorialWorkItemEvents", column: "actorUserId", category: "audit_or_actor", reference: "Workspace Editorial Assignment Event References", reason: "The actor recorded on an immutable assignment event is durable audit provenance." },

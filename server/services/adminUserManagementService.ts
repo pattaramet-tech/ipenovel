@@ -306,6 +306,19 @@ export async function updateAdminUserProfile(params: {
       throw new AdminUserManagementError("CONFLICT", "Update failed - the account may have changed concurrently");
     }
 
+    // IPE-063R4 (P2-A): canonical fallback-name propagation (shared with the
+    // OAuth/Google identity writers). When the target has NO pen name, the
+    // account name IS the effective Author byline — the helper re-checks the
+    // pen-name state on the locked row, asserts the account-merge barrier,
+    // and syncs novels.author for every owned novel inside THIS transaction
+    // (a blocked merge rolls the rename back too). Rule B: a target WITH an
+    // explicit pen name keeps it. Legacy novels (authorUserId IS NULL) are
+    // structurally excluded. A cleared account name cannot derive a byline,
+    // so propagation is skipped and the last known byline stays.
+    if (nameChanged) {
+      await db.propagateFallbackAuthorName(tx, params.userId, params.name);
+    }
+
     // Step 8: audit log(s) - one row per changed field type, matching the
     // adminUserAuditLogs.action enum. Never the old/new name, never the
     // email - only that the name field changed, and (for a role change)

@@ -285,6 +285,7 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
               />
               <div className="flex-1">
                 <h1 className="text-2xl font-bold text-slate-900">{novel.novel.title}</h1>
+                <p className="mt-1 text-sm text-slate-500">Author: {novel.novel.author || "Unassigned"}</p>
                 <p className="text-slate-600 mt-2">{novel.novel.description}</p>
                 <div className="flex gap-2 mt-4">
                   <Badge variant={novel.novel.publicationStatus === "published" ? "default" : "secondary"}>

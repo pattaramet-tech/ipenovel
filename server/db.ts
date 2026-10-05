@@ -80,6 +80,11 @@ import {
   adminUserAuditLogs,
   Novel,
   couponUsages as couponUsagesTable,
+  pluginAccessGrants,
+  pluginOAuthAuthorizationCodes,
+  pluginOAuthAuthorizations,
+  pluginOAuthConsentAttempts,
+  pluginRefreshGrants,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { pickRandom } from "./utils/random";
@@ -210,6 +215,58 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
     if (Object.keys(updateSet).length === 0) {
       updateSet.lastSignedIn = new Date();
+    }
+
+    // IPE-063R5 (P2): the rename/no-rename decision must be made on the
+    // AUTHORITATIVE users row UNDER LOCK, not from a pre-transaction read.
+    // Only a name-changing update for a potentially-existing account needs
+    // the serialized path; brand-new accounts and lastSignedIn-only
+    // sign-ins keep the original single-statement statement (no heavy
+    // mutation lock without a reason — preserves OAuth availability).
+    const hasUsableCandidateName =
+      typeof updateSet.name === "string" && updateSet.name.trim() !== "";
+
+    if (hasUsableCandidateName) {
+      return db.transaction(async (tx: any) => {
+        // IPE-063R7 (P2): Phase A — establish row existence WITHOUT mutating
+        // an existing user's Author-relevant fields. The duplicate clause is
+        // a true no-op (openId set to itself), so a lost first-login race can
+        // never write users.name before locked-state classification: the R6
+        // shape's INSERT ... ON DUPLICATE KEY UPDATE name=... on the
+        // snapshot-miss path could land on a row a concurrent first login had
+        // just created (possibly already owning novels) and change users.name
+        // with no locked decision, barrier, or byline propagation.
+        await tx.insert(users).values(values).onDuplicateKeyUpdate({
+          set: { openId: sql`openId` },
+        });
+
+        // Phase B — current locking read of the ACTUAL row, whether it was
+        // just inserted here or won the duplicate race. Resolving by openId
+        // (the users table's only unique key) also fails closed on any
+        // alternate unique-key collision: a no-op duplicate against some
+        // other account can never be silently adopted as this identity.
+        const lockedState = await lockUserAuthorStateByOpenIdForUpdate(user.openId, tx);
+        const lockedName = (lockedState.name ?? "").trim();
+        const candidateName = (updateSet.name as string).trim();
+        const nameChanged = candidateName !== lockedName;
+
+        // Phase C/D — classify from the locked current state only, then apply
+        // the metadata updateSet deliberately: the merge barrier precedes any
+        // Author-affecting rename (canonical USER → account-merge case →
+        // novel byline order), and the byline syncs inside the same
+        // transaction. A brand-new row already carries the candidate name
+        // from the insert, so nameChanged is false and no byline work runs;
+        // a duplicate-race row takes exactly the ordinary existing-user path.
+        if (nameChanged) {
+          await assertAccountMergeClassifiedMutationAllowed(lockedState.id, tx);
+        }
+
+        await tx.update(users).set(updateSet).where(eq(users.openId, user.openId));
+
+        if (nameChanged) {
+          await propagateFallbackAuthorName(tx, lockedState.id, candidateName);
+        }
+      });
     }
 
     await db.insert(users).values(values).onDuplicateKeyUpdate({
@@ -718,6 +775,7 @@ export async function getNovelEpisodeStats(novelId: number) {
 export async function createNovel(data: {
   title: string;
   author?: string;
+  authorUserId?: number | null;
   description?: string;
   coverImageUrl?: string;
   publicationStatus?: "published" | "archived";
@@ -733,6 +791,7 @@ export async function createNovel(data: {
   const result = await db.insert(novels).values({
     title: data.title,
     author: data.author || "",
+    authorUserId: data.authorUserId ?? null,
     description: data.description || "",
     coverImageUrl: data.coverImageUrl || "",
     slug,
@@ -766,6 +825,70 @@ export async function deleteNovel(novelId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(novels).where(eq(novels.id, novelId));
+}
+
+/**
+ * IPE-063R5 (P2): guarded delete for author-OWNED novels. `novels` is a
+ * classified guarded user-owned table, so a deletion must sit under the
+ * account-merge barrier of its ACTUAL owner (novels.authorUserId — never
+ * the acting admin's identity) with the owner state re-validated on the
+ * locked path before the row is removed.
+ *
+ * Ordering follows the canonical hierarchy: initial non-locking owner
+ * read → lock/guard the owner user row → re-read + re-validate the novel
+ * on the locked path → delete → commit. A NULL authorUserId (legacy
+ * unowned novel) keeps the original unguarded admin delete behavior and
+ * never guesses an owner from the free-text novels.author.
+ */
+export async function deleteNovelGuarded(
+  novelId: number
+): Promise<{ deleted: boolean }> {
+  const database = await getDb();
+  if (!database) throw new Error("Database not available");
+  return deleteNovelGuardedWithDb(database, novelId);
+}
+
+export async function deleteNovelGuardedWithDb(
+  database: any,
+  novelId: number
+): Promise<{ deleted: boolean }> {
+  // Initial non-locking owner read.
+  const [initial] = await database
+    .select({ authorUserId: novels.authorUserId })
+    .from(novels)
+    .where(eq(novels.id, novelId))
+    .limit(1);
+  if (!initial) {
+    return { deleted: false };
+  }
+
+  // Legacy NULL-owner novel: no Author account to guard — preserve the
+  // existing admin delete behavior without guessing an owner from text.
+  if (initial.authorUserId == null) {
+    await database.delete(novels).where(eq(novels.id, novelId));
+    return { deleted: true };
+  }
+
+  const ownerUserId = initial.authorUserId;
+  await database.transaction(async (tx: any) => {
+    // Guard + lock the OWNER user row (USER → NOVEL lock order).
+    await assertAccountMergeClassifiedMutationAllowed(ownerUserId, tx);
+
+    // Re-validate the novel on the locked path: it must still exist and
+    // still be owned by the SAME account — an unexpected owner change
+    // fails closed instead of deleting under a stale assumption.
+    const [current] = await tx
+      .select({ authorUserId: novels.authorUserId })
+      .from(novels)
+      .where(eq(novels.id, novelId))
+      .limit(1);
+    if (!current || current.authorUserId !== ownerUserId) {
+      throw new Error("Novel ownership changed during delete - failing closed");
+    }
+
+    await tx.delete(novels).where(eq(novels.id, novelId));
+  });
+  return { deleted: true };
 }
 
 // ============ EPISODE CRUD ============
@@ -2570,8 +2693,14 @@ export async function getOrderHistory(orderId: number) {
  * Generate a unique slug from a title
  * If slug conflicts with existing novel, append a unique suffix
  */
-export async function generateUniqueSlug(title: string, existingNovelId?: number): Promise<string> {
-  const db = await getDb();
+export async function generateUniqueSlug(
+  title: string,
+  existingNovelId?: number,
+  tx?: any
+): Promise<string> {
+  // IPE-063R3: tx-aware so guarded author-creation transactions resolve the
+  // slug and insert inside the SAME serialization boundary.
+  const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
 
   // Strip non-ASCII characters (e.g. Thai) and use timestamp fallback if empty
@@ -2605,21 +2734,395 @@ export async function generateUniqueSlug(title: string, existingNovelId?: number
   }
 }
 
+// ---------------------------------------------------------------------------
+// IPE-063R1 — Author profile (self-scoped pen name)
+// ---------------------------------------------------------------------------
+
+export interface EffectiveAuthorName {
+  userId: number;
+  accountName: string | null;
+  authorName: string | null;
+  effectiveAuthorName: string;
+}
+
+function normalizeAuthorNamePart(value: string | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Authoritative author identity, read from the DB — never from the session
+ * (the session account name can be stale after an authorName change).
+ * authorName wins; fallback is the account name; if neither is usable the
+ * caller must fail with BAD_REQUEST.
+ */
+export async function resolveEffectiveAuthorName(
+  userId: number
+): Promise<EffectiveAuthorName | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const [user] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      authorName: users.authorName,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user) return null;
+  const authorName = normalizeAuthorNamePart(user.authorName);
+  const accountName = normalizeAuthorNamePart(user.name);
+  const effectiveAuthorName = authorName ?? accountName;
+  if (!effectiveAuthorName) return null;
+  return { userId: user.id, accountName: user.name ?? null, authorName: user.authorName ?? null, effectiveAuthorName };
+}
+
+/**
+ * IPE-063R3: tx-aware variant — MUST be used inside the guarded transaction
+ * that also inserts the novel, so the author identity read is serialized
+ * against concurrent authorProfile.update renames (the account-merge guard
+ * locks the user row before this read).
+ */
+/** IPE-063R3 (P2): the target's pen-name state for fallback rename decisions. */
+export async function getUserAuthorNameState(
+  userId: number,
+  tx?: any
+): Promise<{ authorName: string | null } | null> {
+  const database = tx ?? (await getDb());
+  if (!database) return null;
+  const [row] = await database
+    .select({ authorName: users.authorName })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * IPE-063R6: the canonical LOCKED author-state read — the single source of
+ * truth for every byline decision (has the account name changed? is a pen
+ * name set?). SELECT ... FOR UPDATE is a CURRENT read in MySQL/MariaDB: it
+ * always returns the latest committed row version while acquiring the row
+ * lock. A plain SELECT must never feed these decisions, even when it runs on
+ * the same transaction after a lock was acquired — under REPEATABLE READ it
+ * is served from the snapshot fixed by the transaction's FIRST consistent
+ * read, which can predate a concurrent rename/pen-name change. Same lock
+ * hierarchy as lockUserRowForUpdate; every caller already holds this row's
+ * lock, so re-acquiring it inside the same transaction is free.
+ */
+export async function lockUserAuthorStateForUpdate(
+  userId: number,
+  tx: any
+): Promise<{ id: number; name: string | null; authorName: string | null }> {
+  const rows = unwrapAccountMergeMysqlRows(
+    await tx.execute(sql`SELECT id, name, authorName FROM users WHERE id = ${userId} FOR UPDATE`)
+  );
+  if (rows.length !== 1) {
+    throw new Error(`User ${userId} not found while acquiring locked author state`);
+  }
+  const row = rows[0];
+  return {
+    id: Number(row.id),
+    name: row.name ?? null,
+    authorName: row.authorName ?? null,
+  };
+}
+
+/**
+ * IPE-063R7: openId-keyed variant of {@link lockUserAuthorStateForUpdate}
+ * for the duplicate first-login upsert race — after a no-op
+ * INSERT ... ON DUPLICATE KEY UPDATE, the row that actually exists (freshly
+ * inserted here, or created by a concurrently-committing first login) is
+ * locked and read CURRENT by the identity key itself. Fails closed when no
+ * row resolves, which also covers an alternate unique-key collision: a no-op
+ * duplicate against some other account is never adopted as this identity.
+ * Same lock hierarchy — this IS the USER-row lock acquisition.
+ */
+export async function lockUserAuthorStateByOpenIdForUpdate(
+  openId: string,
+  tx: any
+): Promise<{ id: number; name: string | null; authorName: string | null }> {
+  const rows = unwrapAccountMergeMysqlRows(
+    await tx.execute(sql`SELECT id, name, authorName FROM users WHERE openId = ${openId} FOR UPDATE`)
+  );
+  if (rows.length !== 1) {
+    throw new Error("User row not found while acquiring locked author state by openId");
+  }
+  const row = rows[0];
+  return {
+    id: Number(row.id),
+    name: row.name ?? null,
+    authorName: row.authorName ?? null,
+  };
+}
+
+/**
+ * IPE-063R4 (P2-A): canonical fallback-name propagation. MUST be called
+ * inside the transaction that changed users.name, AFTER the rename was
+ * applied (this helper reads the locked row to decide). Semantics:
+ * - nextName null/blank → nothing to propagate (0).
+ * - target has an explicit pen name (users.authorName NOT NULL) → no-op —
+ *   the pen name always wins (rule B).
+ * - pen name NULL → the new usable account name becomes the byline for
+ *   every novel the target owns, under the account-merge barrier
+ *   (fail-closed: an active merge rolls back the caller's rename too).
+ * Legacy novels (authorUserId IS NULL) are excluded by the WHERE clause.
+ * Returns the number of byline rows synced.
+ *
+ * IPE-063R6 (P2-A/P2-B): the pen-name decision comes from a CURRENT
+ * (locking) read via lockUserAuthorStateForUpdate — never from the calling
+ * transaction's REPEATABLE READ snapshot, so a pen name committed by a
+ * concurrent authorProfile.update after the caller's snapshot was fixed is
+ * still honored here. The caller's users-row lock is already held, so the
+ * re-acquisition inside the same transaction is free.
+ */
+export async function propagateFallbackAuthorName(
+  tx: any,
+  targetUserId: number,
+  nextName: string | null | undefined
+): Promise<number> {
+  if (nextName == null) return 0;
+  const normalized = String(nextName).trim();
+  if (!normalized) return 0;
+  const lockedState = await lockUserAuthorStateForUpdate(targetUserId, tx);
+  if (lockedState.authorName != null) return 0;
+  await assertAccountMergeClassifiedMutationAllowed(targetUserId, tx);
+  const [header] = await tx
+    .update(novels)
+    .set({ author: normalized })
+    .where(eq(novels.authorUserId, targetUserId));
+  return (header as any)?.affectedRows ?? 0;
+}
+
+export async function resolveEffectiveAuthorNameWithDb(
+  db: any,
+  userId: number
+): Promise<EffectiveAuthorName | null> {
+  const [user] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      authorName: users.authorName,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user) return null;
+  const authorName = normalizeAuthorNamePart(user.authorName);
+  const accountName = normalizeAuthorNamePart(user.name);
+  const effectiveAuthorName = authorName ?? accountName;
+  if (!effectiveAuthorName) return null;
+  return { userId: user.id, accountName: user.name ?? null, authorName: user.authorName ?? null, effectiveAuthorName };
+}
+
+/**
+ * IPE-063R3 (P1+P2): author-owned novel creation under the canonical
+ * Account Merge barrier, fully serialized with authorProfile.update:
+ *
+ *   lock target user row (merge barrier, FOR UPDATE)
+ *   → resolve effectiveAuthorName from the locked authoritative row
+ *   → generate slug + insert the novel (same transaction)
+ *   → commit
+ *
+ * A concurrent rename either commits before the lock is taken (create sees
+ * the new name) or waits for create to commit and then propagates the rename
+ * onto the newly created novel — a stale byline can never be committed.
+ */
+export async function createAuthorOwnedNovel(
+  userId: number,
+  data: {
+    title: string;
+    description?: string;
+    coverImageUrl?: string;
+    publicationStatus?: "published" | "archived";
+    storyStatus?: "ongoing" | "finished";
+  }
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return createAuthorOwnedNovelWithDb(db, userId, data);
+}
+
+export async function createAuthorOwnedNovelWithDb(
+  db: any,
+  userId: number,
+  data: {
+    title: string;
+    description?: string;
+    coverImageUrl?: string;
+    publicationStatus?: "published" | "archived";
+    storyStatus?: "ongoing" | "finished";
+  }
+) {
+  // IPE-063R5 (P1): `db` here is the top-level POOLED client, NOT a
+  // transaction executor. Passing it as the guard's second argument made
+  // the FOR UPDATE read run on a pooled connection outside the transaction
+  // that performs the insert, so the rollback guarantee was false. The
+  // transaction is now opened EXPLICITLY here and the real tx is handed to
+  // the guard, giving ONE transaction around: users-row lock → merge-state
+  // inspection → Author identity resolution → novel insert → commit.
+  return db.transaction(async (tx: any) => {
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+    const profile = await resolveEffectiveAuthorNameWithDb(tx, userId);
+    if (!profile) {
+      throw Object.assign(
+        new Error("กรุณาตั้งชื่อบัญชีแอดมินหรือชื่อ Author ก่อนสร้างนิยาย"),
+        { statusCode: 400 }
+      );
+    }
+    const slug = await generateUniqueSlug(data.title, undefined, tx);
+    const result = await tx.insert(novels).values({
+      title: data.title,
+      author: profile.effectiveAuthorName,
+      authorUserId: userId,
+      description: data.description || "",
+      coverImageUrl: data.coverImageUrl || "",
+      slug,
+      publicationStatus: data.publicationStatus || "published",
+      storyStatus: data.storyStatus || "ongoing",
+    });
+    let insertedId: number | undefined;
+    if (typeof result === "object" && result !== null) {
+      insertedId = (result as any).insertId;
+      if (!insertedId && Array.isArray(result) && result[0]) {
+        insertedId = (result[0] as any).insertId;
+      }
+      if (!insertedId && (result as any).meta) {
+        insertedId = (result as any).meta.insertId;
+      }
+    }
+    if (!insertedId) {
+      throw new Error("Failed to extract inserted novel ID from database result");
+    }
+    return {
+      id: insertedId,
+      author: profile.effectiveAuthorName,
+      authorUserId: userId,
+    } as any;
+  });
+}
+
+/**
+ * IPE-063R1: set the admin's pen name and propagate it to every novel the
+ * account owns (novels.authorUserId = userId) inside ONE transaction so the
+ * public/SEO display name always matches the profile. Clearing authorName
+ * resolves to the account name and novels sync to that fallback. Legacy
+ * novels with authorUserId IS NULL are never touched.
+ */
+export async function updateAuthorProfile(
+  userId: number,
+  rawAuthorName: string | null
+): Promise<{
+  userId: number;
+  accountName: string | null;
+  authorName: string | null;
+  effectiveAuthorName: string;
+  updatedNovels: number;
+}> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return updateAuthorProfileWithDb(db, userId, rawAuthorName);
+}
+
+export async function updateAuthorProfileWithDb(
+  db: any,
+  userId: number,
+  rawAuthorName: string | null
+): Promise<{
+  userId: number;
+  accountName: string | null;
+  authorName: string | null;
+  effectiveAuthorName: string;
+  updatedNovels: number;
+}> {
+  const authorName =
+    rawAuthorName == null ? null : normalizeAuthorNamePart(rawAuthorName);
+
+  const { updatedNovels, accountName } = await db.transaction(async (tx: any) => {
+    // IPE-063R3 (P1): the byline propagation is an ownership write — it must
+    // sit under the canonical Account Merge barrier. The assert locks the
+    // user row FOR UPDATE first, which also serializes this rename against
+    // author-owned novel creation (the create path takes the same lock).
+    await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+    const [user] = await tx
+      .select({ id: users.id, name: users.name })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!user) {
+      throw Object.assign(new Error("User not found"), { statusCode: 404 });
+    }
+    const txAccountName = normalizeAuthorNamePart(user.name);
+    const effective = authorName ?? txAccountName;
+    if (!effective) {
+      throw Object.assign(
+        new Error("กรุณาตั้งชื่อบัญชีแอดมินก่อนใช้เป็นชื่อ Author"),
+        { statusCode: 400 }
+      );
+    }
+    await tx
+      .update(users)
+      .set({ authorName, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    // Drizzle MySQL returns [ResultSetHeader, undefined] — affectedRows
+    // counts the novels whose display author was synced to the new name.
+    const [updateHeader] = await tx
+      .update(novels)
+      .set({ author: effective })
+      .where(eq(novels.authorUserId, userId));
+    return {
+      updatedNovels: (updateHeader as any)?.affectedRows ?? 0,
+      accountName: txAccountName,
+    };
+  });
+
+  const effectiveAuthorName = authorName ?? accountName ?? "";
+  return {
+    userId,
+    accountName: accountName ?? null,
+    authorName,
+    effectiveAuthorName,
+    updatedNovels,
+  };
+}
+
 /**
  * Bulk create novels from CSV data
  * Validates and returns errors for invalid rows
  */
 export async function bulkCreateNovels(
-  rows: Array<{ title: string }>
+  rows: Array<{ title: string }>,
+  authorIdentity?: { userId: number; displayName?: string }
 ): Promise<{
   success: Array<{ rowIndex: number; novelId: number; title: string }>;
   errors: Array<{ rowIndex: number; error: string }>;
 }> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  return bulkCreateNovelsWithDb(db, rows, authorIdentity);
+}
 
+/**
+ * IPE-063R3: per-row guarded creation. Each row runs inside its OWN short
+ * account-merge-barriered transaction that locks the Author user row and
+ * resolves the authoritative effective name at insert time — the per-row
+ * partial-success contract is unchanged and no effective name is cached
+ * across rows, so an authorProfile.update racing the batch can never leave
+ * a stale byline on later rows (earlier rows are caught by the rename
+ * propagation, which covers every novel the account owns).
+ */
+export async function bulkCreateNovelsWithDb(
+  db: any,
+  rows: Array<{ title: string }>,
+  authorIdentity?: { userId: number }
+): Promise<{
+  success: Array<{ rowIndex: number; novelId: number; title: string }>;
+  errors: Array<{ rowIndex: number; error: string }>;
+}> {
   const success: Array<{ rowIndex: number; novelId: number; title: string }> = [];
   const errors: Array<{ rowIndex: number; error: string }> = [];
+  const authorUserId = authorIdentity?.userId;
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -2631,17 +3134,39 @@ export async function bulkCreateNovels(
     }
 
     try {
-      const slug = await generateUniqueSlug(row.title);
-      const result = await db.insert(novels).values({
-        title: row.title.trim(),
-        author: "",
-        description: "",
-        coverImageUrl: "",
-        slug,
-        status: "ongoing",
-      });
-
-      const novelId = (result as any).insertId;
+      if (!authorUserId) {
+        throw new Error("Author identity is required");
+      }
+      // P1 barrier + P2 serialization: resolve the authoritative name under
+      // the same short transaction that inserts the row. IPE-063R5 (P1):
+      // tx = undefined lets the canonical guard open its OWN short
+      // transaction per row (never the top-level pooled client), preserving
+      // the per-row partial-success contract.
+      const novelId = await withAccountMergeClassifiedMutationGuard(
+        authorUserId,
+        undefined,
+        async (tx: any) => {
+          const profile = await resolveEffectiveAuthorNameWithDb(tx, authorUserId);
+          if (!profile) {
+            throw new Error("Author identity is required");
+          }
+          const slug = await generateUniqueSlug(row.title.trim(), undefined, tx);
+          const result = await tx.insert(novels).values({
+            title: row.title.trim(),
+            author: profile.effectiveAuthorName,
+            authorUserId,
+            description: "",
+            coverImageUrl: "",
+            slug,
+            status: "ongoing",
+          });
+          const createdId = (result as any).insertId;
+          if (!Number.isInteger(createdId) || createdId <= 0) {
+            throw new Error("Failed to extract inserted novel ID from database result");
+          }
+          return createdId as number;
+        }
+      );
       success.push({ rowIndex: i, novelId, title: row.title });
     } catch (error) {
       errors.push({ rowIndex: i, error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}` });
@@ -3852,6 +4377,157 @@ export async function getDashboardAnalytics(period: DashboardPeriod = "all", mon
     walletTopups: statusCounts(topupRows as any),
     slips: { orderPayments: orderPaymentSlips, walletTopups: walletTopupSlips, total: orderPaymentSlips + walletTopupSlips },
     monthlySlips: Array.from(monthly.values()).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 12),
+  };
+}
+
+export async function getAuthorAnalytics(
+  authorUserId: number,
+  period: DashboardPeriod = "month",
+  month?: string
+) {
+  const db = await getDb();
+  if (!db) {
+    return {
+      period,
+      month: month ?? null,
+      totalNovels: 0,
+      totalRevenue: 0,
+      totalPurchases: 0,
+      currentWishlistCount: 0,
+      salesChannels: {
+        orderRevenue: 0,
+        walletRevenue: 0,
+        orderPurchases: 0,
+        walletPurchases: 0,
+      },
+      novels: [],
+    };
+  }
+
+  const ownedNovels = await db
+    .select({
+      novelId: novels.id,
+      title: novels.title,
+      author: novels.author,
+      coverImageUrl: novels.coverImageUrl,
+      publicationStatus: novels.publicationStatus,
+      storyStatus: novels.storyStatus,
+      createdAt: novels.createdAt,
+    })
+    .from(novels)
+    .where(eq(novels.authorUserId, authorUserId))
+    .orderBy(desc(novels.createdAt), desc(novels.id));
+
+  if (ownedNovels.length === 0) {
+    return {
+      period,
+      month: month ?? null,
+      totalNovels: 0,
+      totalRevenue: 0,
+      totalPurchases: 0,
+      currentWishlistCount: 0,
+      salesChannels: {
+        orderRevenue: 0,
+        walletRevenue: 0,
+        orderPurchases: 0,
+        walletPurchases: 0,
+      },
+      novels: [],
+    };
+  }
+
+  const novelIds = ownedNovels.map((novel) => novel.novelId);
+  const range = resolveDashboardRange(period, month);
+  const orderDateWhere = dashboardDateWhere(orders.createdAt, range);
+  const walletDateWhere = dashboardDateWhere(episodePurchases.purchasedAt, range);
+
+  const [orderRows, walletRows, wishlistRows] = await Promise.all([
+    db
+      .select({
+        novelId: orderItems.novelId,
+        // IPE-063R7: order-level discounts (coupon/points) live on the order
+        // header while orderItems.finalPrice stays gross — allocate each
+        // order's paid total proportionally across its lines so per-author
+        // revenue reconciles with orders.totalAmount (P2, exact-head review
+        // a42c647). Zero-subtotal (fully free) orders contribute 0.
+        revenue: sql<string>`CAST(COALESCE(SUM(${orderItems.finalPrice} * CASE WHEN COALESCE(${orders.subtotal}, 0) > 0 THEN ${orders.totalAmount} / ${orders.subtotal} ELSE 0 END), 0) AS DECIMAL(12,2))`,
+        purchases: count(),
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .innerJoin(payments, eq(orders.id, payments.orderId))
+      .where(and(
+        inArray(orderItems.novelId, novelIds),
+        eq(orders.status, "approved"),
+        eq(orders.paymentStatus, "approved"),
+        eq(payments.status, "approved"),
+        orderDateWhere
+      ))
+      .groupBy(orderItems.novelId),
+    db
+      .select({
+        novelId: episodePurchases.novelId,
+        revenue: sql<string>`CAST(COALESCE(SUM(${episodePurchases.pricePaid}), 0) AS DECIMAL(12,2))`,
+        purchases: count(),
+      })
+      .from(episodePurchases)
+      .where(and(inArray(episodePurchases.novelId, novelIds), walletDateWhere))
+      .groupBy(episodePurchases.novelId),
+    db
+      .select({ novelId: wishlists.novelId, count: count() })
+      .from(wishlists)
+      .where(inArray(wishlists.novelId, novelIds))
+      .groupBy(wishlists.novelId),
+  ]);
+
+  const orderByNovel = new Map(orderRows.map((row) => [row.novelId, {
+    revenue: Number(row.revenue) || 0,
+    purchases: Number(row.purchases) || 0,
+  }]));
+  const walletByNovel = new Map(walletRows.map((row) => [row.novelId, {
+    revenue: Number(row.revenue) || 0,
+    purchases: Number(row.purchases) || 0,
+  }]));
+  const wishlistByNovel = new Map(wishlistRows.map((row) => [row.novelId, Number(row.count) || 0]));
+
+  let orderRevenue = 0;
+  let walletRevenue = 0;
+  let orderPurchases = 0;
+  let walletPurchases = 0;
+  let currentWishlistCount = 0;
+
+  const novelMetrics = ownedNovels.map((novel) => {
+    const order = orderByNovel.get(novel.novelId) ?? { revenue: 0, purchases: 0 };
+    const wallet = walletByNovel.get(novel.novelId) ?? { revenue: 0, purchases: 0 };
+    const wishlistCount = wishlistByNovel.get(novel.novelId) ?? 0;
+    orderRevenue += order.revenue;
+    walletRevenue += wallet.revenue;
+    orderPurchases += order.purchases;
+    walletPurchases += wallet.purchases;
+    currentWishlistCount += wishlistCount;
+    return {
+      ...novel,
+      revenue: order.revenue + wallet.revenue,
+      purchases: order.purchases + wallet.purchases,
+      currentWishlistCount: wishlistCount,
+      salesChannels: {
+        orderRevenue: order.revenue,
+        walletRevenue: wallet.revenue,
+        orderPurchases: order.purchases,
+        walletPurchases: wallet.purchases,
+      },
+    };
+  });
+
+  return {
+    period,
+    month: month ?? null,
+    totalNovels: ownedNovels.length,
+    totalRevenue: orderRevenue + walletRevenue,
+    totalPurchases: orderPurchases + walletPurchases,
+    currentWishlistCount,
+    salesChannels: { orderRevenue, walletRevenue, orderPurchases, walletPurchases },
+    novels: novelMetrics,
   };
 }
 
@@ -7222,6 +7898,7 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   table: string;
   check: (userId: number, db: any) => Promise<number>;
 }> = [
+  { table: "novels", check: async (userId, db) => (await db.select({ id: novels.id }).from(novels).where(eq(novels.authorUserId, userId)).limit(1)).length },
   { table: "carts", check: async (userId, db) => (await db.select({ id: carts.id }).from(carts).where(eq(carts.userId, userId)).limit(1)).length },
   { table: "wishlists", check: async (userId, db) => (await db.select({ id: wishlists.id }).from(wishlists).where(eq(wishlists.userId, userId)).limit(1)).length },
   { table: "readingProgress", check: async (userId, db) => (await db.select({ id: readingProgress.id }).from(readingProgress).where(eq(readingProgress.userId, userId)).limit(1)).length },
@@ -7231,6 +7908,14 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   { table: "workspaceGoogleConsentAttempts", check: async (userId, db) => (await db.select({ id: workspaceGoogleConsentAttempts.id }).from(workspaceGoogleConsentAttempts).where(eq(workspaceGoogleConsentAttempts.userId, userId)).limit(1)).length },
   { table: "workspaceGoogleConnections", check: async (userId, db) => (await db.select({ id: workspaceGoogleConnections.id }).from(workspaceGoogleConnections).where(eq(workspaceGoogleConnections.userId, userId)).limit(1)).length },
   { table: "workspaceEditorialWorkItems", check: async (userId, db) => (await db.select({ id: workspaceEditorialWorkItems.id }).from(workspaceEditorialWorkItems).where(eq(workspaceEditorialWorkItems.assigneeUserId, userId)).limit(1)).length },
+  // IPE-PLUGIN-001B - plugin OAuth state is user-owned (see
+  // accountRecoveryDataClassification.ts; entries mirrored here so the
+  // no-drift cross-check stays exact).
+  { table: "pluginOAuthConsentAttempts", check: async (userId, db) => (await db.select({ id: pluginOAuthConsentAttempts.id }).from(pluginOAuthConsentAttempts).where(eq(pluginOAuthConsentAttempts.userId, userId)).limit(1)).length },
+  { table: "pluginOAuthAuthorizations", check: async (userId, db) => (await db.select({ id: pluginOAuthAuthorizations.id }).from(pluginOAuthAuthorizations).where(eq(pluginOAuthAuthorizations.userId, userId)).limit(1)).length },
+  { table: "pluginOAuthAuthorizationCodes", check: async (userId, db) => (await db.select({ id: pluginOAuthAuthorizationCodes.id }).from(pluginOAuthAuthorizationCodes).where(eq(pluginOAuthAuthorizationCodes.userId, userId)).limit(1)).length },
+  { table: "pluginAccessGrants", check: async (userId, db) => (await db.select({ id: pluginAccessGrants.id }).from(pluginAccessGrants).where(eq(pluginAccessGrants.userId, userId)).limit(1)).length },
+  { table: "pluginRefreshGrants", check: async (userId, db) => (await db.select({ id: pluginRefreshGrants.id }).from(pluginRefreshGrants).where(eq(pluginRefreshGrants.userId, userId)).limit(1)).length },
 ];
 
 /** Category B ("User-owned data") from the recovery-safety spec - cart,
@@ -7527,6 +8212,15 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
 
   // ---- user_owned (direct) ----
   {
+    // IPE-063R1: novel authorship (admin-as-Author) — mirrors the
+    // user_owned_hard_block recovery classification and the IPE-007
+    // UNSUPPORTED merge partition.
+    table: "novels",
+    category: "user_owned",
+    userIdColumnName: "authorUserId",
+    countFor: plainUserIdCount(novels, novels.authorUserId),
+  },
+  {
     table: "carts",
     category: "user_owned",
     userIdColumnName: "userId",
@@ -7583,6 +8277,40 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     category: "user_owned",
     userIdColumnName: "assigneeUserId",
     countFor: plainUserIdCount(workspaceEditorialWorkItems, workspaceEditorialWorkItems.assigneeUserId),
+  },
+
+  // IPE-PLUGIN-001B - plugin OAuth state is user-owned; derived from the
+  // recovery classification like every other entry (see
+  // accountMergeInventory.ts, which mirrors this list's derivation).
+  {
+    table: "pluginOAuthConsentAttempts",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginOAuthConsentAttempts, pluginOAuthConsentAttempts.userId),
+  },
+  {
+    table: "pluginOAuthAuthorizations",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginOAuthAuthorizations, pluginOAuthAuthorizations.userId),
+  },
+  {
+    table: "pluginOAuthAuthorizationCodes",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginOAuthAuthorizationCodes, pluginOAuthAuthorizationCodes.userId),
+  },
+  {
+    table: "pluginAccessGrants",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginAccessGrants, pluginAccessGrants.userId),
+  },
+  {
+    table: "pluginRefreshGrants",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(pluginRefreshGrants, pluginRefreshGrants.userId),
   },
 
   // ---- indirect (no direct userId column - counted via a join to the

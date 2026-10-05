@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { novels as novelsSchema } from "../../drizzle/schema";
 import * as db from "../db";
 import {
   connectGoogleIdentityToUser,
@@ -37,10 +38,46 @@ function fakeDbWithFreshTransactions() {
     const updateCalls: Array<{ set: Record<string, unknown> }> = [];
     const tx = {
       ...marker,
+      // IPE-063R6: touchExistingUser derives its byline decision from the
+      // locked author-state read (SELECT ... FOR UPDATE via tx.execute) and
+      // asserts the account-merge barrier for a real rename; the fallback
+      // propagation re-runs both. This queue serves exactly that canonical
+      // sequence with a pen-name-free locked row and a passing barrier —
+      // plain reads keep returning no rows via the select stub below.
+      execute: (() => {
+        const lockedRow = () => [{ id: 55, name: null, authorName: null }];
+        const queue: any[][] = [
+          lockedRow(),
+          [{ id: 55 }],
+          [],
+          [],
+          lockedRow(),
+          [{ id: 55 }],
+          [],
+          [],
+        ];
+        return async () => {
+          const next = queue.shift();
+          if (!next) throw new Error("unexpected extra users-row execute call");
+          return next;
+        };
+      })(),
+      // IPE-063R4: the fallback-name propagation helper probes the target's
+      // pen-name state on the tx — no rows means no propagation, which keeps
+      // these scenarios focused on linking/update behavior.
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+          }),
+        }),
+      }),
       update: () => ({
         set: (values: Record<string, unknown>) => {
           updateCalls.push({ set: values });
-          return { where: async () => undefined };
+          // Drizzle resolves to [ResultSetHeader, undefined]; the header
+          // array element is what propagateFallbackAuthorName destructures.
+          return { where: async () => [{ affectedRows: 0 }] };
         },
       }),
     };
@@ -205,6 +242,120 @@ describe.each([
       expect(set).not.toHaveProperty("openId");
     }
     expect(setCalls.some((s) => s.loginMethod === "google")).toBe(true);
+  });
+});
+
+describe("IPE-063R6 touchExistingUser locked-state byline decision (P2-B)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // IPE-063R6 fake: plain reads (the R5-era unlocked probe pattern) see the
+  // stale snapshot (unlockedProbeAuthorName), while the locking reads
+  // (SELECT ... FOR UPDATE) see the authoritative CURRENT row. The execute
+  // queue is scripted in canonical order: locked author-state read →
+  // barrier (users lock → merge cases → donor compensations) → propagate
+  // (locked read → barrier again). An unexpected extra execute fails.
+  function makeAttemptFake(opts: {
+    unlockedProbeAuthorName: string | null;
+    lockedName: string | null;
+    lockedAuthorName: string | null;
+  }) {
+    const userSets: any[] = [];
+    const novelSets: any[] = [];
+    const selectQueue: any[][] = [[{ authorName: opts.unlockedProbeAuthorName }]];
+    const lockedStateRow = () => [
+      { id: 55, name: opts.lockedName, authorName: opts.lockedAuthorName },
+    ];
+    const executeQueue: any[][] = [
+      lockedStateRow(),
+      [{ id: 55 }],
+      [],
+      [],
+      lockedStateRow(),
+      [{ id: 55 }],
+      [],
+      [],
+    ];
+    const tx: any = {
+      execute: async () => {
+        const next = executeQueue.shift();
+        if (!next) throw new Error("unexpected extra users-row execute call");
+        return next;
+      },
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => selectQueue.shift() ?? [],
+          }),
+        }),
+      }),
+      update: (table: unknown) => ({
+        set: (values: Record<string, unknown>) => {
+          if (table === novelsSchema) novelSets.push(values);
+          else userSets.push(values);
+          return { where: async () => [{ affectedRows: 1 }] };
+        },
+      }),
+    };
+    const database: any = { transaction: async (cb: any) => cb(tx) };
+    return { database, userSets, novelSets };
+  }
+
+  function stubLinkPath(existingUser: any) {
+    vi.spyOn(db, "getAuthIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "findUsersByNormalizedEmail").mockResolvedValue([existingUser]);
+    vi.spyOn(db, "linkGoogleIdentity").mockResolvedValue(undefined);
+    vi.spyOn(db, "getUserById").mockResolvedValue({ ...existingUser, loginMethod: "google" });
+  }
+
+  const ATTEMPT_INPUT = {
+    sub: "google-sub-123",
+    email: "user@example.com",
+    normalizedEmail: "user@example.com",
+    name: "B",
+  };
+
+  // CASE B: an authorProfile.update clears the pen name (and propagates the
+  // then-current fallback "A") AFTER this attempt's unlocked probe ran but
+  // BEFORE it acquires the lock. The locked read must see authorName=NULL,
+  // so the rename to "B" propagates novels.author="B" — never name=B with
+  // novels.author=A.
+  it("CASE B. pen name cleared concurrently after the probe - the locked state decides to propagate", async () => {
+    const { database, userSets, novelSets } = makeAttemptFake({
+      unlockedProbeAuthorName: "Pen",
+      lockedName: "A",
+      lockedAuthorName: null,
+    });
+    const existingUser = { id: 55, openId: "manus-openid-abc", name: "A", email: "user@example.com", loginMethod: "email" } as any;
+    stubLinkPath(existingUser);
+
+    const result = await resolveGoogleIdentityAttempt(database, ATTEMPT_INPUT);
+
+    expect(result.outcome).toBe("linked_by_email");
+    expect(userSets.some((s) => s.name === "B")).toBe(true);
+    expect(novelSets).toHaveLength(1);
+    expect(novelSets[0].author).toBe("B");
+  });
+
+  // CASE C: this attempt locks FIRST and the locked row still holds the
+  // explicit pen name. users.name updates, novels.author keeps the pen
+  // name; a later authorProfile.update clear then propagates the NEW name.
+  // Both legal orderings (B: clear-then-link, C: link-then-clear) converge.
+  it("CASE C. explicit pen name on the LOCKED row - account name updates, the byline keeps the pen name", async () => {
+    const { database, userSets, novelSets } = makeAttemptFake({
+      unlockedProbeAuthorName: "Pen",
+      lockedName: "A",
+      lockedAuthorName: "Pen",
+    });
+    const existingUser = { id: 55, openId: "manus-openid-abc", name: "A", email: "user@example.com", loginMethod: "email" } as any;
+    stubLinkPath(existingUser);
+
+    const result = await resolveGoogleIdentityAttempt(database, ATTEMPT_INPUT);
+
+    expect(result.outcome).toBe("linked_by_email");
+    expect(userSets.some((s) => s.name === "B")).toBe(true);
+    expect(novelSets).toHaveLength(0);
   });
 });
 

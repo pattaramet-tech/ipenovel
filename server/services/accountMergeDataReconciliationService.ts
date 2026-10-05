@@ -52,6 +52,24 @@ export const IPE007_UNSUPPORTED_DIRECT_TABLES = [
   "workspaceEditorialWorkItems",
   "adminGiftEntitlements",
   "adminGiftWalletAdjustments",
+  // IPE-063R1 - novel authorship is attribution of creative work to a
+  // specific admin-as-Author. Re-parenting novels.authorUserId onto a merge
+  // target would silently rewrite the public Author byline, so a source
+  // account that still owns novels refuses the merge
+  // (UNSUPPORTED_OWNERSHIP_DOMAIN), exactly like the workspace ownership
+  // tables above. ON DELETE SET NULL keeps the novels (and their author
+  // text) alive if an account is ever hard-deleted out-of-band.
+  "novels",
+  // IPE-PLUGIN-001B - plugin OAuth grants are explicit consent decisions by a
+  // specific human account; re-parenting them onto a merge target would
+  // fabricate consent the target never gave, so a source holding any of
+  // these refuses the merge (UNSUPPORTED_OWNERSHIP_DOMAIN), exactly like the
+  // workspace consent/connection tables above.
+  "pluginOAuthConsentAttempts",
+  "pluginOAuthAuthorizations",
+  "pluginOAuthAuthorizationCodes",
+  "pluginAccessGrants",
+  "pluginRefreshGrants",
 ] as const;
 
 export const IPE007_HANDLED_INDIRECT_TABLES = ["cartItems"] as const;

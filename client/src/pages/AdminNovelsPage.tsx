@@ -19,6 +19,19 @@ export default function AdminNovelsPage() {
   const [editingNovelId, setEditingNovelId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [publicationFilter, setPublicationFilter] = useState<"all" | "published" | "archived">("all");
+  // IPE-063R4 (P2-B): the create-form Author preview must show the
+  // authoritative DB-effective pen name (admin.authorProfile.get), not the
+  // session account name — the server stores the effective name on create.
+  const authorProfileQuery = trpc.admin.authorProfile.get.useQuery(undefined, {
+    enabled: !!user && user.role === "admin",
+    retry: 1,
+  });
+  const authorProfileReady = authorProfileQuery.isSuccess;
+  const createAuthorPreview = authorProfileQuery.isError
+    ? "Unable to load Author profile"
+    : authorProfileQuery.isLoading
+      ? "Loading Author profile…"
+      : (authorProfileQuery.data?.effectiveAuthorName ?? "Unable to load Author profile");
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -150,7 +163,10 @@ export default function AdminNovelsPage() {
   }
 
   const filteredNovels = novels?.filter((n: any) => {
-    const matchesSearch = n.title.toLowerCase().includes(searchTerm.toLowerCase());
+    const normalizedSearch = searchTerm.toLowerCase();
+    const matchesSearch =
+      n.title.toLowerCase().includes(normalizedSearch) ||
+      (n.author || "").toLowerCase().includes(normalizedSearch);
     const matchesStatus = 
       publicationFilter === "all" ||
       (publicationFilter === "published" && n.publicationStatus === "published") ||
@@ -234,6 +250,27 @@ export default function AdminNovelsPage() {
                       onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                       placeholder="Enter novel title"
                     />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Author</label>
+                    <Input
+                      value={
+                        editingNovelId
+                          ? (novels?.find((novel: any) => novel.id === editingNovelId)?.author || "Unassigned")
+                          : createAuthorPreview
+                      }
+                      readOnly
+                      disabled
+                      data-testid="novel-author-preview"
+                      aria-invalid={editingNovelId ? false : authorProfileQuery.isError}
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      {editingNovelId
+                        ? "Author ownership stays with the admin who created this novel."
+                        : authorProfileQuery.isError
+                          ? "Unable to load Author profile — novel creation is disabled until it loads."
+                          : "Assigned automatically from the effective Author name of the admin account that creates this novel."}
+                    </p>
                   </div>
                   <div>
                     <label className="text-sm font-semibold text-slate-700 block mb-2">Publication Status</label>
@@ -341,7 +378,14 @@ export default function AdminNovelsPage() {
               <div className="flex gap-2 pt-4 border-t">
                 <Button
                   onClick={editingNovelId ? handleSaveEdit : handleCreate}
-                  disabled={createMutation.isPending || updateMutation.isPending}
+                  disabled={
+                    createMutation.isPending ||
+                    updateMutation.isPending ||
+                    // IPE-063R4 (P2-B): creation writes the authoritative
+                    // effective Author name — block submission while the
+                    // profile is unavailable so the byline is never a guess.
+                    (!editingNovelId && !authorProfileReady)
+                  }
                   className="flex-1"
                 >
                   {editingNovelId ? "Save Changes" : "Create Novel"}
@@ -391,7 +435,7 @@ export default function AdminNovelsPage() {
         {/* Search Bar */}
         <div className="flex gap-4">
           <Input
-            placeholder="Search by title..."
+            placeholder="Search by title or author..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="max-w-md"
@@ -418,6 +462,7 @@ export default function AdminNovelsPage() {
               <thead className="bg-slate-100 border-b border-slate-200">
                 <tr>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Title</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Author</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Status</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Story</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Actions</th>
@@ -437,6 +482,9 @@ export default function AdminNovelsPage() {
                         )}
                         <span className="font-medium text-slate-900">{novel.title}</span>
                       </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-sm text-slate-700">{novel.author || "Unassigned"}</span>
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${
