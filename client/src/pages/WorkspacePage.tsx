@@ -537,6 +537,11 @@ export default function WorkspacePage() {
         // IPE-064R4B (P2): the revision changed the tab set/edited flags —
         // the outline read model must follow or the tree shows stale rows.
         editorialSourceDraftOutline.refetch(),
+        // IPE-064R4B review round 12 (P2): refresh the checker read model
+        // IMMEDIATELY so editorialCheckerRunStale flips true while the
+        // background rerun is in flight — otherwise the finding actions
+        // target the previous draft's evidence until the recheck lands.
+        editorialForeignChecker.refetch(),
       ]);
       if (savedChapterTarget) {
         const freshDraftData = sourceDraftResult.data as any;
@@ -1759,10 +1764,12 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (!urlRestoreAppliedRef.current) return;
     const params = new URLSearchParams();
+    // IPE-064R4B review round 12 (P2): the workspace parameter survives even
+    // in story-picker mode — refresh/bookmark of the picker must not fall
+    // back to the first workspace.
+    if (selectedWorkspaceId) params.set("workspace", String(selectedWorkspaceId));
     if (storyEntered && activeStoryKey) {
-      // IPE-064R4B (P1/P2): the workspace owns the story context — persist it
-      // so restoration can follow the story across workspaces.
-      params.set("workspace", String(selectedWorkspaceId ?? ""));
+      params.set("story", activeStoryKey);
       params.set("story", activeStoryKey);
       if (selectedSourceWorkItemId) params.set("pack", String(selectedSourceWorkItemId));
       if (chapterEditorTarget?.sourceTabId) params.set("chapter", chapterEditorTarget.sourceTabId);
@@ -2030,7 +2037,7 @@ export default function WorkspacePage() {
                 }}
               />
             ) : null}
-            {storyEntered && !activeStoryGroup ? (
+            {storyEntered && activeStoryPacks.length === 0 ? (
               <Card className="p-4 text-sm text-muted-foreground">
                 เรื่องนี้ยังไม่มีแพ็ก — เพิ่มตอนผ่านหน้า{" "}
                 <Link href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}>ตั้งค่า / นำเข้า</Link> ก่อน

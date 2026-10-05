@@ -169,7 +169,7 @@ describe("IPE-064R3 — workspace context & navigation", () => {
     // IPE-064R4B (P2): the context belongs to a workspace — retry restore
     // after switching to the workspace that owns the story.
     expect(page).toContain('params.get("workspace")');
-    expect(page).toContain('params.set("workspace", String(selectedWorkspaceId ?? ""))');
+    expect(page).toContain('if (selectedWorkspaceId) params.set("workspace", String(selectedWorkspaceId))');
     expect(page).toContain("updateStoryUiState(states, storyParam");
     expect(page).toContain('params.set("story", activeStoryKey)');
     expect(page).toContain("window.history.replaceState");
