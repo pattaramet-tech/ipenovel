@@ -418,43 +418,63 @@ describe("IPE-063R3 guarded author-owned creation (P1 + P2 serialization)", () =
   });
 });
 
-describe("IPE-063R5 upsertUser decision-under-lock (P2)", () => {
+describe("IPE-063R6 upsertUser locked-state decision (P2-A)", () => {
   afterEach(() => {
     db.__setDbForTests(null);
   });
 
-    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+  // IPE-063R6 fake: the plain SELECT (the snapshot read) returns the
+  // PRE-LOCK row (snapshotName), while every locking read
+  // (SELECT ... FOR UPDATE) returns the authoritative CURRENT row
+  // (lockedName/lockedAuthorName) — the exact snapshot-vs-current
+  // distinction the R6 contract is built on. The execute queue is scripted
+  // in canonical order: locked author-state read → barrier (users lock →
+  // merge cases → donor compensations) → propagate (locked read → barrier
+  // again). An unexpected extra execute fails the test.
   function upsertFakeDb(opts: {
+    snapshotName: string | null;
     lockedName: string | null;
     lockedAuthorName: string | null;
     activeMergeCase?: { id: number; status: string };
   }) {
-    // Canonical assert pattern per barrier invocation: users-row lock,
-    // then merge-case inspection, then donor-compensation inspection.
-    let executeCall = 0;
-    const selectQueue: any[][] = [
-      [{ id: 7, name: opts.lockedName, authorName: opts.lockedAuthorName }],
-      [{ authorName: opts.lockedAuthorName }],
-    ];
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const userSets: any[] = [];
     const novelSets: any[] = [];
+    const selects: any[][] = [
+      [{ id: 7, name: opts.snapshotName, authorName: opts.lockedAuthorName }],
+    ];
+    const barrierCaseRows = () => (opts.activeMergeCase ? [opts.activeMergeCase] : []);
+    const lockedStateRow = () => [
+      { id: 7, name: opts.lockedName, authorName: opts.lockedAuthorName },
+    ];
+    const executeQueue: any[][] = [
+      lockedStateRow(),
+      [{ id: 7 }],
+      barrierCaseRows(),
+      [],
+      lockedStateRow(),
+      [{ id: 7 }],
+      barrierCaseRows(),
+      [],
+    ];
+    let executeCalls = 0;
     const tx: any = {
       execute: async () => {
-        const isUsersLock = executeCall % 3 === 0;
-        executeCall += 1;
-        if (isUsersLock) return { 0: [{ id: 7 }] };
-        return { 0: opts.activeMergeCase ? [opts.activeMergeCase] : [] };
+        const next = executeQueue.shift();
+        if (!next) throw new Error("unexpected extra users-row execute call");
+        executeCalls += 1;
+        return next;
       },
       insert: () => ({
         values: async (vals: Record<string, unknown>) => {
-          inserted.push({ table: 'users', values: vals });
+          inserted.push({ table: "users", values: vals });
           return { insertId: 555 };
         },
       }),
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: async () => selectQueue.shift() ?? [],
+            limit: async () => selects.shift() ?? [],
           }),
         }),
       }),
@@ -464,9 +484,6 @@ describe("IPE-063R5 upsertUser decision-under-lock (P2)", () => {
           else userSets.push(values);
           return { where: async () => [{ affectedRows: 1 }] };
         },
-      }),
-      insert: () => ({
-        values: async () => ({ insertId: 777 }),
       }),
     };
     const dbHandle: any = {
@@ -482,11 +499,11 @@ describe("IPE-063R5 upsertUser decision-under-lock (P2)", () => {
         }),
       }),
     };
-    return { dbHandle, userSets, novelSets };
+    return { dbHandle, userSets, novelSets, inserted, executeCalls: () => executeCalls };
   }
 
   it("C. fallback name genuinely changes - user row and byline change atomically", async () => {
-    const { dbHandle, userSets, novelSets } = upsertFakeDb({ lockedName: "Old", lockedAuthorName: null });
+    const { dbHandle, userSets, novelSets } = upsertFakeDb({ snapshotName: "Old", lockedName: "Old", lockedAuthorName: null });
     db.__setDbForTests(dbHandle);
 
     await db.upsertUser({ openId: "oauth-7", name: "New", email: "a@b.test", lastSignedIn: new Date() });
@@ -497,27 +514,32 @@ describe("IPE-063R5 upsertUser decision-under-lock (P2)", () => {
     expect(novelSets[0].author).toBe("New");
   });
 
-  it("B. same locked current name - no byline write", async () => {
-    const { dbHandle, userSets, novelSets } = upsertFakeDb({ lockedName: "Same", lockedAuthorName: null });
+  it("B. same LOCKED current name - no byline write and no barrier work at all", async () => {
+    const { dbHandle, userSets, novelSets, executeCalls } = upsertFakeDb({ snapshotName: "Same", lockedName: "Same", lockedAuthorName: null });
     db.__setDbForTests(dbHandle);
 
     await db.upsertUser({ openId: "oauth-7", name: "Same", email: "a@b.test", lastSignedIn: new Date() });
 
     expect(userSets).toHaveLength(1);
     expect(novelSets).toHaveLength(0);
+    // Only the locking author-state read ran — an unchanged name performs no
+    // merge-case locking and no pen-name re-probe (routine availability).
+    expect(executeCalls()).toBe(1);
   });
 
   it("A. no name update - routine sign-in keeps the single-statement availability path", async () => {
-    const { dbHandle, novelSets } = upsertFakeDb({ lockedName: "Old", lockedAuthorName: null });
+    const { dbHandle, novelSets, executeCalls } = upsertFakeDb({ snapshotName: "Old", lockedName: "Old", lockedAuthorName: null });
     db.__setDbForTests(dbHandle);
 
     await db.upsertUser({ openId: "oauth-7", lastSignedIn: new Date() });
 
     expect(novelSets).toHaveLength(0);
+    expect(executeCalls()).toBe(0);
   });
 
   it("E. merge-blocked account - the whole rename/propagation fails closed", async () => {
     const { dbHandle, userSets, novelSets } = upsertFakeDb({
+      snapshotName: "Old",
       lockedName: "Old",
       lockedAuthorName: null,
       activeMergeCase: { id: 3, status: "in_progress" },
@@ -531,14 +553,32 @@ describe("IPE-063R5 upsertUser decision-under-lock (P2)", () => {
     expect(novelSets).toHaveLength(0);
   });
 
-  it("F. explicit pen name - users.name may change but the byline stays the pen name", async () => {
-    const { dbHandle, userSets, novelSets } = upsertFakeDb({ lockedName: "Old", lockedAuthorName: "Pen" });
+  it("F. explicit pen name on the LOCKED row - users.name may change but the byline stays the pen name", async () => {
+    const { dbHandle, userSets, novelSets } = upsertFakeDb({ snapshotName: "Old", lockedName: "Old", lockedAuthorName: "Pen" });
     db.__setDbForTests(dbHandle);
 
     await db.upsertUser({ openId: "oauth-7", name: "New", email: "a@b.test", lastSignedIn: new Date() });
 
     expect(userSets).toHaveLength(1);
+    expect(userSets[0].name).toBe("New");
     expect(novelSets).toHaveLength(0);
+  });
+
+  // IPE-063R6 concurrency matrix CASE A: a concurrent rename commits between
+  // the snapshot read and the lock. The pre-lock snapshot still shows
+  // name "A" (equal to the OAuth candidate) but the LOCKED row shows "B" —
+  // the decision must come from the locked state, so the OAuth rename to
+  // "A" still propagates novels.author="A" instead of silently skipping
+  // (which would leave users.name=A with novels.author=B).
+  it("CASE A. concurrent rename visible only under lock - the stale snapshot name cannot decide", async () => {
+    const { dbHandle, userSets, novelSets } = upsertFakeDb({ snapshotName: "A", lockedName: "B", lockedAuthorName: null });
+    db.__setDbForTests(dbHandle);
+
+    await db.upsertUser({ openId: "oauth-7", name: "A", email: "a@b.test", lastSignedIn: new Date() });
+
+    expect(userSets[0].name).toBe("A");
+    expect(novelSets).toHaveLength(1);
+    expect(novelSets[0].author).toBe("A");
   });
 });
 

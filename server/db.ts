@@ -228,13 +228,13 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
     if (hasUsableCandidateName) {
       return db.transaction(async (tx: any) => {
-        // 1. Resolve the existing account through THIS transaction.
+        // 1. Resolve the existing account through THIS transaction. Only the
+        // id may come from this plain read — under REPEATABLE READ it fixes
+        // the transaction's snapshot, so name/authorName MUST NOT be derived
+        // from it (IPE-063R6 P2-A); the decision state comes exclusively
+        // from the locking read below.
         const [existing] = await tx
-          .select({
-            id: users.id,
-            name: users.name,
-            authorName: users.authorName,
-          })
+          .select({ id: users.id })
           .from(users)
           .where(eq(users.openId, user.openId))
           .limit(1);
@@ -248,22 +248,31 @@ export async function upsertUser(user: InsertUser): Promise<void> {
           return;
         }
 
-        // 3. Lock the authoritative users row (FOR UPDATE) before making
-        // the change/no-change decision, then re-derive the decision from
-        // the LOCKED row — a concurrent rename cannot produce a stale
-        // decision.
-        await assertAccountMergeClassifiedMutationAllowed(existing.id, tx);
-
-        // 4. Decision from the locked row.
-        const lockedName = (existing.name ?? "").trim();
+        // 3. IPE-063R6 (P2-A): acquire the users-row lock AND the current
+        // name/authorName from ONE locking read. A plain SELECT is not safe
+        // here even on this same transaction: it is served from the snapshot
+        // fixed by the read above, so a rename committed by a concurrent
+        // transaction after that snapshot would be invisible and a stale
+        // comparison could wrongly decide "name unchanged" and skip byline
+        // propagation (users.name=A while novels.author=B).
+        const lockedState = await lockUserAuthorStateForUpdate(existing.id, tx);
+        const lockedName = (lockedState.name ?? "").trim();
         const candidateName = (updateSet.name as string).trim();
         const nameChanged = candidateName !== lockedName;
+
+        // 4. The account-merge barrier is only required for a REAL rename;
+        // an unchanged name keeps the sign-in light (no merge-case locking,
+        // no propagation) — preserves routine OAuth availability.
+        if (nameChanged) {
+          await assertAccountMergeClassifiedMutationAllowed(existing.id, tx);
+        }
 
         // 5. Apply the identity update on the same tx.
         await tx.update(users).set(updateSet).where(eq(users.openId, user.openId));
 
-        // 6. Fallback byline propagation — only when the pen name is NULL
-        // (explicit pen name wins) and the name genuinely changed.
+        // 6. Fallback byline propagation — only when the name genuinely
+        // changed; propagateFallbackAuthorName re-derives the pen-name
+        // decision from its OWN locked current read.
         if (nameChanged) {
           await propagateFallbackAuthorName(tx, existing.id, candidateName);
         }
@@ -2801,6 +2810,36 @@ export async function getUserAuthorNameState(
 }
 
 /**
+ * IPE-063R6: the canonical LOCKED author-state read — the single source of
+ * truth for every byline decision (has the account name changed? is a pen
+ * name set?). SELECT ... FOR UPDATE is a CURRENT read in MySQL/MariaDB: it
+ * always returns the latest committed row version while acquiring the row
+ * lock. A plain SELECT must never feed these decisions, even when it runs on
+ * the same transaction after a lock was acquired — under REPEATABLE READ it
+ * is served from the snapshot fixed by the transaction's FIRST consistent
+ * read, which can predate a concurrent rename/pen-name change. Same lock
+ * hierarchy as lockUserRowForUpdate; every caller already holds this row's
+ * lock, so re-acquiring it inside the same transaction is free.
+ */
+export async function lockUserAuthorStateForUpdate(
+  userId: number,
+  tx: any
+): Promise<{ id: number; name: string | null; authorName: string | null }> {
+  const rows = unwrapAccountMergeMysqlRows(
+    await tx.execute(sql`SELECT id, name, authorName FROM users WHERE id = ${userId} FOR UPDATE`)
+  );
+  if (rows.length !== 1) {
+    throw new Error(`User ${userId} not found while acquiring locked author state`);
+  }
+  const row = rows[0];
+  return {
+    id: Number(row.id),
+    name: row.name ?? null,
+    authorName: row.authorName ?? null,
+  };
+}
+
+/**
  * IPE-063R4 (P2-A): canonical fallback-name propagation. MUST be called
  * inside the transaction that changed users.name, AFTER the rename was
  * applied (this helper reads the locked row to decide). Semantics:
@@ -2812,6 +2851,13 @@ export async function getUserAuthorNameState(
  *   (fail-closed: an active merge rolls back the caller's rename too).
  * Legacy novels (authorUserId IS NULL) are excluded by the WHERE clause.
  * Returns the number of byline rows synced.
+ *
+ * IPE-063R6 (P2-A/P2-B): the pen-name decision comes from a CURRENT
+ * (locking) read via lockUserAuthorStateForUpdate — never from the calling
+ * transaction's REPEATABLE READ snapshot, so a pen name committed by a
+ * concurrent authorProfile.update after the caller's snapshot was fixed is
+ * still honored here. The caller's users-row lock is already held, so the
+ * re-acquisition inside the same transaction is free.
  */
 export async function propagateFallbackAuthorName(
   tx: any,
@@ -2821,8 +2867,8 @@ export async function propagateFallbackAuthorName(
   if (nextName == null) return 0;
   const normalized = String(nextName).trim();
   if (!normalized) return 0;
-  const state = await getUserAuthorNameState(targetUserId, tx);
-  if (!state || state.authorName != null) return 0;
+  const lockedState = await lockUserAuthorStateForUpdate(targetUserId, tx);
+  if (lockedState.authorName != null) return 0;
   await assertAccountMergeClassifiedMutationAllowed(targetUserId, tx);
   const [header] = await tx
     .update(novels)

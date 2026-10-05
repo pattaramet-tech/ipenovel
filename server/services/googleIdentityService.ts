@@ -62,21 +62,33 @@ async function touchExistingUser(
   if (name) updateSet.name = name;
   if (opts.setLoginMethodGoogle) updateSet.loginMethod = "google";
 
-  // IPE-063R5: canonical ordering — probe the pen-name state and assert the
-  // account-merge barrier BEFORE the users write, so a blocked merge rolls
-  // back before any rename happened (lock/guard → update → propagate).
-  let fallbackGuarded = false;
+  // IPE-063R6 (P2-B): for EVERY name update the users row is locked and
+  // inspected through ONE locking current read BEFORE any byline decision.
+  // The R5 shape decided from an UNLOCKED pen-name probe, which raced with a
+  // concurrent authorProfile.update: the probe could see an explicit pen
+  // name that was cleared (fallback propagated) right after it, so this
+  // rename would skip guard + propagation entirely. Now: lock first, derive
+  // nameChanged AND the pen-name state from the locked row only (a plain
+  // read would be served from this transaction's REPEATABLE READ snapshot).
+  // Canonical lock order USER → account-merge case is preserved; the barrier
+  // runs only for a real rename, so an unchanged-name link stays light.
+  let propagateByline = false;
   if (updateSet.name !== undefined) {
-    const state = await db.getUserAuthorNameState(user.id, tx);
-    if (state && state.authorName == null) {
+    const lockedState = await db.lockUserAuthorStateForUpdate(user.id, tx);
+    const candidateName = (updateSet.name as string).trim();
+    const nameChanged = candidateName !== (lockedState.name ?? "").trim();
+    if (nameChanged) {
       await db.assertAccountMergeClassifiedMutationAllowed(user.id, tx);
-      fallbackGuarded = true;
+      // Explicit pen name on the LOCKED row wins: users.name may change but
+      // novels.author keeps the pen name. Only a fallback-mode account
+      // (authorName NULL on the locked row) propagates atomically below.
+      propagateByline = lockedState.authorName == null;
     }
   }
 
   await tx.update(users).set(updateSet).where(eq(users.id, user.id));
 
-  if (fallbackGuarded) {
+  if (propagateByline) {
     await db.propagateFallbackAuthorName(tx, user.id, updateSet.name as string);
   }
 }

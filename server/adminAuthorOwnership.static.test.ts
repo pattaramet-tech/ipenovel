@@ -91,7 +91,9 @@ describe("IPE-063R4 canonical fallback propagation helper", () => {
     expect(helper).toContain("export async function propagateFallbackAuthorName(");
     expect(helper).toContain("if (nextName == null) return 0;");
     // Rule B: explicit pen name wins — no account-name overwrite.
-    expect(helper).toContain("if (!state || state.authorName != null) return 0;");
+    // IPE-063R6: the pen-name decision comes from a LOCKED current read.
+    expect(helper).toContain("const lockedState = await lockUserAuthorStateForUpdate(targetUserId, tx);");
+    expect(helper).toContain("if (lockedState.authorName != null) return 0;");
     // Fail-closed barrier before any byline write.
     expect(helper).toContain("await assertAccountMergeClassifiedMutationAllowed(targetUserId, tx);");
     expect(helper).toContain(".where(eq(novels.authorUserId, targetUserId))");
@@ -110,5 +112,60 @@ describe("IPE-063R4 canonical fallback propagation helper", () => {
     );
     expect(upsert).toContain("assertAccountMergeClassifiedMutationAllowed(existing.id, tx)");
     expect(upsert).toContain("propagateFallbackAuthorName(tx, existing.id, candidateName)");
+  });
+});
+
+describe("IPE-063R6 locked author-state contract (current reads only)", () => {
+  const dbSourceR6 = source("server/db.ts");
+  const google = source("server/services/googleIdentityService.ts");
+
+  it("the canonical locking read selects the full author state FOR UPDATE (a current read)", () => {
+    expect(dbSourceR6).toContain("export async function lockUserAuthorStateForUpdate(");
+    expect(dbSourceR6).toContain(
+      "SELECT id, name, authorName FROM users WHERE id = ${userId} FOR UPDATE"
+    );
+  });
+
+  it("upsertUser derives the rename decision ONLY from the locked read - the pre-lock snapshot select cannot see name/authorName", () => {
+    const upsert = dbSourceR6.slice(
+      dbSourceR6.indexOf("export async function upsertUser("),
+      dbSourceR6.indexOf("export async function getUserByOpenId(")
+    );
+    expect(upsert).toContain("lockUserAuthorStateForUpdate(existing.id, tx)");
+    // No snapshot source of truth for the decision state: the only plain
+    // select resolves the account id, never name/authorName.
+    expect(upsert).not.toContain("name: users.name");
+    expect(upsert).not.toContain("authorName: users.authorName");
+    // The decision happens AFTER the lock and only a real rename pays for
+    // the barrier/propagation.
+    expect(upsert).toContain("const nameChanged = candidateName !== lockedName;");
+    expect(upsert.indexOf("lockUserAuthorStateForUpdate(existing.id, tx)")).toBeLessThan(
+      upsert.indexOf("const nameChanged = candidateName !== lockedName;")
+    );
+    expect(upsert).toContain("if (nameChanged) {");
+  });
+
+  it("propagateFallbackAuthorName re-derives the pen-name decision from a locked read, never from the caller's snapshot", () => {
+    const helper = dbSourceR6.slice(
+      dbSourceR6.indexOf("export async function propagateFallbackAuthorName("),
+      dbSourceR6.indexOf("export async function updateAuthorProfileWithDb(")
+    );
+    expect(helper).toContain("lockUserAuthorStateForUpdate(targetUserId, tx)");
+    expect(helper).not.toContain("getUserAuthorNameState");
+    expect(helper).toContain("if (lockedState.authorName != null) return 0;");
+  });
+
+  it("touchExistingUser locks the user row BEFORE any byline decision", () => {
+    const touch = google.slice(
+      google.indexOf("async function touchExistingUser("),
+      google.indexOf("export async function resolveGoogleIdentityAttempt(")
+    );
+    expect(touch).toContain("db.lockUserAuthorStateForUpdate(user.id, tx)");
+    expect(touch).not.toContain("getUserAuthorNameState");
+    expect(touch.indexOf("db.lockUserAuthorStateForUpdate(user.id, tx)")).toBeLessThan(
+      touch.indexOf("await tx.update(users)")
+    );
+    // The pen-name decision comes from the LOCKED state only.
+    expect(touch).toContain("propagateByline = lockedState.authorName == null;");
   });
 });
