@@ -24,6 +24,7 @@ import {
 import {
   EDITORIAL_STRUCTURAL_CHECK_VERSION,
   evaluateEditorialStructuralAnomalies,
+  isAcceptedSourceNoteChapterTab,
   isExactAcceptedSourceNote,
   type EditorialStructuralTabInput,
 } from "./editorialStructuralAnomaly.domain";
@@ -643,12 +644,11 @@ function applySingleTransform(input: {
   const beforeSha = editorialDraftSha256(next);
   for (const tab of next.tabs) {
     if (!hasNarrativeEvidence(tab)) continue;
-    // IPE-060B: a tab identified by the exact canonical source note is an
-    // intentional non-narrative tab — never receive an ending marker.
-    if (
-      isExactAcceptedSourceNote(tab.title) ||
-      isExactAcceptedSourceNote(tab.chapterTitle ?? "")
-    ) {
+    // IPE-060B/IPE-064R4B round 17: a tab is an intentional source-note
+    // chapter only when its identity is the exact canonical note AND its
+    // content is genuinely note-only — canonical metadata over narrative
+    // content is an ordinary chapter and receives the standard marker.
+    if (isAcceptedSourceNoteChapterTab(tab)) {
       continue;
     }
     const hadMarker = tab.paragraphs.some(paragraph =>

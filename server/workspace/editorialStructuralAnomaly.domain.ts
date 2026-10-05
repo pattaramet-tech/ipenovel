@@ -103,6 +103,37 @@ export function isExactAcceptedSourceNote(value: string) {
   return normalizeForShape(value) === EXACT_ACCEPTED_SOURCE_NOTE_TEXT;
 }
 
+/**
+ * IPE-064R4B review round 17: a tab is an intentional source-note chapter
+ * only when its identity is the exact canonical note (title or
+ * chapterTitle) AND every meaningful row is genuinely note content — a
+ * note row, a note-chapter heading (บทที่ NN หมายเหตุจากต้นฉบับ), or an
+ * end marker. Canonical metadata over narrative content is an ordinary
+ * narrative chapter and stays billable/marker-bearing.
+ */
+export function isAcceptedSourceNoteChapterTab(tab: {
+  title?: string | null;
+  chapterTitle?: string | null;
+  paragraphs?: ReadonlyArray<{ text: string }>;
+}): boolean {
+  if (
+    !isExactAcceptedSourceNote(tab.title ?? '') &&
+    !isExactAcceptedSourceNote(tab.chapterTitle ?? '')
+  ) {
+    return false;
+  }
+  const meaningful = (tab.paragraphs ?? [])
+    .map(paragraph => normalizeForShape(paragraph.text))
+    .filter(text => text && !isSeparator(text));
+  if (!meaningful.length) return false;
+  return meaningful.every(
+    text =>
+      isExactAcceptedSourceNote(text) ||
+      isSourceNoteChapterHeadingText(text) ||
+      isEndMarker(text),
+  );
+}
+
 function parseIntegerChapterNumber(value: string | null | undefined) {
   const match = String(value ?? "").match(/^0*(\d+)$/);
   if (!match) return null;
