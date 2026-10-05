@@ -401,7 +401,12 @@ export function assertNoCrossPackChapterCollisions(
   }
   // Evidence numbers inside ANOTHER pack's declared interval (a headingless
   // or malformed neighbour still fences its declared territory).
+  // IPE-064R4B review round 16 (P2): interval containment applies only to
+  // INTEGER chapter evidence — strict range expansion produces only integer
+  // chapters, so a decimal single (e.g. 1.5) is a distinct logical chapter,
+  // not an occupant of the range.
   for (const [number, holders] of evidenceEntries) {
+    if (!Number.isInteger(number)) continue;
     for (const range of declared) {
       if (holders.some((holder) => holder.item.episodeId === range.item.episodeId)) {
         continue;

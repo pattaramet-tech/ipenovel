@@ -333,10 +333,10 @@ export function cleanupEnding(
     // content is an ordinary narrative chapter (the structural classifier
     // treats it as narrative too) and keeps its end marker.
     const sourceNoteChapter =
-      paragraphs
+      kept
         .slice(0, 3)
         .some(paragraph => isSourceNoteChapterHeadingText(paragraph.text)) &&
-      paragraphs.every(paragraph => {
+      kept.every(paragraph => {
         const text = normalizeEditorialText(String(paragraph.text ?? ""))
           .replace(/\s+/g, " ")
           .trim();
