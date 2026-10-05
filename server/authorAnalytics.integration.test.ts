@@ -45,6 +45,9 @@ describe("IPE-063 Author Analysis integration", () => {
   let authorAId = 0;
   let authorBId = 0;
   let buyerId = 0;
+  // IPE-064/063: hoisted to describe scope — test 2 asserts B-owned novels
+  // are untouched by the rename propagation.
+  let novelBId = 0;
   const novelIds: number[] = [];
   const episodeIds: number[] = [];
   const orderIds: number[] = [];
@@ -134,12 +137,19 @@ describe("IPE-063 Author Analysis integration", () => {
     return id;
   }
 
-  async function createApprovedOrderSale(novelId: number, episodeId: number, amount: string, suffix: string) {
+  async function createApprovedOrderSale(
+    novelId: number,
+    episodeId: number,
+    amount: string,
+    suffix: string,
+    amounts?: { subtotal: string; discountAmount: string; totalAmount: string }
+  ) {
     const orderResult = await db.insert(orders).values({
       orderNumber: `IPE063-${suffix}-${tag}`,
       userId: buyerId,
-      subtotal: amount,
-      totalAmount: amount,
+      subtotal: amounts?.subtotal ?? amount,
+      discountAmount: amounts?.discountAmount ?? "0.00",
+      totalAmount: amounts?.totalAmount ?? amount,
       status: "approved",
       paymentStatus: "approved",
     });
@@ -167,7 +177,9 @@ describe("IPE-063 Author Analysis integration", () => {
 
   it("isolates each admin Author and combines approved-order plus wallet-direct sales", async () => {
     const novelA = await createOwnedNovel(authorAId, "Author A", "A");
-    const novelB = await createOwnedNovel(authorBId, "Author B", "B");
+    // IPE-063R7: describe-scope so the pen-name propagation test below can
+    // assert B-owned novels are untouched (P2, exact-head review a42c647).
+    novelBId = await createOwnedNovel(authorBId, "Author B", "B");
     const legacyResult = await db.insert(novels).values({
       title: `IPE063 Legacy ${tag}`,
       slug: `ipe063-legacy-${tag}`,
@@ -181,10 +193,19 @@ describe("IPE-063 Author Analysis integration", () => {
 
     const aOrderEpisode = await createEpisode(novelA, "a-order");
     const aWalletEpisode = await createEpisode(novelA, "a-wallet");
-    const bOrderEpisode = await createEpisode(novelB, "b-order");
+    const bOrderEpisode = await createEpisode(novelBId, "b-order");
 
     await createApprovedOrderSale(novelA, aOrderEpisode, "120.00", "AORDER");
-    await createApprovedOrderSale(novelB, bOrderEpisode, "999.00", "BORDER");
+    await createApprovedOrderSale(novelBId, bOrderEpisode, "999.00", "BORDER");
+    // IPE-063R7 regression: an order-level coupon discount lives on the
+    // header (subtotal 200 → paid 150) while the line stays gross — the
+    // author's revenue must include only the allocated 150, not 200.
+    const bDiscountedEpisode = await createEpisode(novelBId, "b-discount");
+    await createApprovedOrderSale(novelBId, bDiscountedEpisode, "200.00", "BDISC", {
+      subtotal: "200.00",
+      discountAmount: "50.00",
+      totalAmount: "150.00",
+    });
 
     const walletResult = await db.insert(episodePurchases).values({
       userId: buyerId,
@@ -196,7 +217,7 @@ describe("IPE-063 Author Analysis integration", () => {
 
     const wishlistA = await db.insert(wishlists).values({ userId: buyerId, novelId: novelA });
     wishlistIds.push(insertId(wishlistA));
-    const wishlistB = await db.insert(wishlists).values({ userId: buyerId, novelId: novelB });
+    const wishlistB = await db.insert(wishlists).values({ userId: buyerId, novelId: novelBId });
     wishlistIds.push(insertId(wishlistB));
 
     const callerA = appRouter.createCaller(adminContext(authorAId, "Author A"));
@@ -221,16 +242,18 @@ describe("IPE-063 Author Analysis integration", () => {
       purchases: 2,
       currentWishlistCount: 1,
     });
-    expect(resultA.novels.some((row) => row.novelId === novelB)).toBe(false);
+    expect(resultA.novels.some((row) => row.novelId === novelBId)).toBe(false);
     expect(resultA.novels.some((row) => row.novelId === legacyNovelId)).toBe(false);
 
     const callerB = appRouter.createCaller(adminContext(authorBId, "Author B"));
     const resultB = await callerB.admin.authorAnalytics.summary({ period: "all" });
     expect(resultB.totalNovels).toBe(1);
-    expect(resultB.totalRevenue).toBe(999);
-    expect(resultB.totalPurchases).toBe(1);
+    // 999 gross order + 150 allocated from the discounted 200/150 order —
+    // WITHOUT the proportional allocation this would be 1149 + 50 = 1199.
+    expect(resultB.totalRevenue).toBe(1149);
+    expect(resultB.totalPurchases).toBe(2);
     expect(resultB.currentWishlistCount).toBe(1);
-    expect(resultB.novels[0]?.novelId).toBe(novelB);
+    expect(resultB.novels[0]?.novelId).toBe(novelBId);
   });
 
   it("IPE-063R1 propagates the pen name to owned novels only and falls back on clear", async () => {
@@ -268,7 +291,7 @@ describe("IPE-063 Author Analysis integration", () => {
     for (const row of ownedRows) expect(row.author).toBe("Renamed Pen Name");
 
     // B-owned and legacy novels are untouched.
-    const [novelBRow] = await db.select().from(novels).where(eq(novels.id, novelB));
+    const [novelBRow] = await db.select().from(novels).where(eq(novels.id, novelBId));
     expect(novelBRow.authorUserId).toBe(authorBId);
     expect(novelBRow.author).toBe("Author B");
     const [legacyRow] = await db.select().from(novels).where(eq(novels.id, legacyId));

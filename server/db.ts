@@ -4445,7 +4445,12 @@ export async function getAuthorAnalytics(
     db
       .select({
         novelId: orderItems.novelId,
-        revenue: sql<string>`CAST(COALESCE(SUM(${orderItems.finalPrice}), 0) AS DECIMAL(12,2))`,
+        // IPE-063R7: order-level discounts (coupon/points) live on the order
+        // header while orderItems.finalPrice stays gross — allocate each
+        // order's paid total proportionally across its lines so per-author
+        // revenue reconciles with orders.totalAmount (P2, exact-head review
+        // a42c647). Zero-subtotal (fully free) orders contribute 0.
+        revenue: sql<string>`CAST(COALESCE(SUM(${orderItems.finalPrice} * CASE WHEN COALESCE(${orders.subtotal}, 0) > 0 THEN ${orders.totalAmount} / ${orders.subtotal} ELSE 0 END), 0) AS DECIMAL(12,2))`,
         purchases: count(),
       })
       .from(orderItems)
