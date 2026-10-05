@@ -49,6 +49,7 @@ import {
   evaluateEditorialCheckerState,
 } from "./editorialForeignChecker.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import { isExactAcceptedSourceNote } from "./editorialStructuralAnomaly.domain";
 
 export class WorkspaceEditorialApprovalError extends Error {
   constructor(
@@ -444,6 +445,29 @@ function confirmedSourceNoteTabIds(qc: Awaited<ReturnType<typeof currentQcEviden
     .map((anomaly: any) => String(anomaly.sourceTabId));
 }
 
+/**
+ * IPE-063R7/IPE-064R3 reconciliation: under the exact-marker source-note
+ * semantics, a chapter whose heading is the EXACT canonical note is accepted
+ * by the shape layer without ever becoming an anomaly — so there is nothing
+ * to confirm. Non-billable pricing therefore unions the legacy
+ * confirmed_source_note dispositions (near-miss spellings keep their manual
+ * confirm path) with tabs detected by the same exact-match rule.
+ */
+function resolveNonBillableSourceNoteTabIds(
+  qc: Awaited<ReturnType<typeof currentQcEvidence>>,
+  tabs: ReadonlyArray<{ sourceTabId: string; title?: string | null; chapterTitle?: string | null }>
+): string[] {
+  const confirmed = confirmedSourceNoteTabIds(qc);
+  const detected = tabs
+    .filter(
+      (tab) =>
+        isExactAcceptedSourceNote(tab.chapterTitle ?? "") ||
+        isExactAcceptedSourceNote(tab.title ?? "")
+    )
+    .map((tab) => String(tab.sourceTabId));
+  return Array.from(new Set([...confirmed, ...detected]));
+}
+
 function resolveEditorialEpisodePackSale(
   plan: EditorialEpisodeDraftBatchPlan,
   sale?: {
@@ -767,7 +791,7 @@ export async function getEditorialApprovalReadModel(input: {
     workItemType: context.workItem.workItemType,
     episodeNumber: context.workItem.episodeNumber,
     episodeTitle: context.workItem.episodeTitle,
-    confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc),
+    confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs),
     tabs,
   });
   const stages = await stagesForApproval(
@@ -1076,7 +1100,7 @@ export async function stageEditorialEpisodeDraft(input: {
       workItemType: context.workItem.workItemType,
       episodeNumber: context.workItem.episodeNumber,
       episodeTitle: context.workItem.episodeTitle,
-      confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc),
+      confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs),
       tabs,
     });
     if (!batchPlan.ready) {

@@ -109,7 +109,14 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     const service = source("server/workspace/editorialApproval.service.ts");
     const provider = source("server/workspace/ipenovelPublish.provider.ts");
     expect(service).toContain("sourceTabId: anomaly.sourceTabId ?? null");
-    expect(service).toContain("confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc)");
+    // IPE-063R7: read/stage wire the union helper — legacy confirmed
+    // dispositions PLUS exact-marker detection (no manual confirm needed
+    // for the exact canonical note heading).
+    expect(service).toContain(
+      "confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs)"
+    );
+    expect(service).toContain("resolveNonBillableSourceNoteTabIds");
+    expect(service).toContain("isExactAcceptedSourceNote(tab.chapterTitle ?? \"\")");
     expect(provider).toContain("workspaceEditorialStructuralConfirmations");
     expect(provider).toContain("confirmedSourceNoteTabIds: confirmedSourceNotes");
   });
