@@ -15,6 +15,7 @@ import {
   NovelExportPackage,
 } from "./novelExport.domain";
 import {
+  assertNoCrossPackChapterCollisions,
   buildThaiNovelExportEntries,
   buildThaiNovelExportZip,
   buildThaiNovelPreviewRows,
@@ -389,6 +390,58 @@ describe("IPE-064R4B numeric chapter collision identity", () => {
     expectExportError(
       () => buildThaiNovelExportEntries(makePackage({ items: [rangePack, single] })),
       "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+});
+
+describe("IPE-064R4B review rounds 13-15 collision refinements", () => {
+  const NOTE_FIXTURE = (start: number, end: number) => {
+    const chapters = Array.from({ length: end - start + 1 }, (_, index) => {
+      const chapter = start + index;
+      return `บทที่ ${chapter} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหา ${chapter}`;
+    });
+    return `แพ็กตอน ${start} - ${end} 001\n\n${chapters.join("\n\n")}`;
+  };
+
+  it("round 13: an unrelated malformed unselected pack does not block a valid subset", () => {
+    // The unselected 1-50 pack is malformed (49 headings for 50 declared).
+    // It must not block exporting the valid 51-100 subset.
+    const malformed = makeItem({
+      episodeId: 1,
+      episodeNumber: "1 - 50",
+      content: NOTE_FIXTURE(1, 49),
+    });
+    const valid = makeItem({
+      episodeId: 2,
+      episodeNumber: "51 - 100",
+      content: makePackContent(51, 100),
+    });
+    assertNoCrossPackChapterCollisions(
+      [malformed, valid],
+      new Set([2]),
+    );
+  });
+
+  it("round 13: collisions wholly between two unselected packs do not block a valid subset", () => {
+    const overlappingA = makeItem({
+      episodeId: 1,
+      episodeNumber: "1 - 50",
+      content: makePackContent(1, 50),
+    });
+    const overlappingB = makeItem({
+      episodeId: 2,
+      episodeNumber: "40 - 80",
+      content: makePackContent(40, 80),
+    });
+    const valid = makeItem({
+      episodeId: 3,
+      episodeNumber: "500 - 520",
+      content: makePackContent(500, 520),
+    });
+    // Both colliding packs are unselected — the valid subset still exports.
+    assertNoCrossPackChapterCollisions(
+      [overlappingA, overlappingB, valid],
+      new Set([3]),
     );
   });
 });

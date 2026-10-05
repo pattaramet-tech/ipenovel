@@ -328,9 +328,26 @@ export function cleanupEnding(
     // IPE-064R3: a source-note chapter (e.g. "บทที่ 45 หมายเหตุจากต้นฉบับ"
     // as the first line) is an intentional non-narrative chapter — it must
     // NOT receive a generated "จบตอน" ending marker.
-    const sourceNoteChapter = paragraphs
-      .slice(0, 3)
-      .some(paragraph => isSourceNoteChapterHeadingText(paragraph.text));
+    // IPE-064R4B review round 15 (P2): the suppression requires the tab to
+    // be GENUINELY note-only — the canonical heading followed by narrative
+    // content is an ordinary narrative chapter (the structural classifier
+    // treats it as narrative too) and keeps its end marker.
+    const sourceNoteChapter =
+      paragraphs
+        .slice(0, 3)
+        .some(paragraph => isSourceNoteChapterHeadingText(paragraph.text)) &&
+      paragraphs.every(paragraph => {
+        const text = normalizeEditorialText(String(paragraph.text ?? ""))
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!text) return true;
+        if (/^[_\-=*#~•·.]{3,}$/.test(text.replace(/\s+/g, ""))) return true;
+        return (
+          text === EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE ||
+          isSourceNoteChapterHeadingText(text) ||
+          /^จบตอน[.!…]*$/i.test(text)
+        );
+      });
     if (!sourceNoteChapter) {
       const generatedFingerprint = paragraphFingerprint("จบตอน");
       withoutDuplicateMarkers.push({

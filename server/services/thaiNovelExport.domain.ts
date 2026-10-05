@@ -343,59 +343,78 @@ export function assertNoCrossPackChapterCollisions(
   items: NovelExportItem[],
   selectedItemIds: ReadonlySet<number> | null
 ): void {
-  // IPE-064R4B review round 9 (P2): collision evidence uses LENIENT
-  // extraction — a malformed range pack still OCCUPIES the chapter numbers
-  // its line-anchored headings declare (expansion failures must not hide
-  // them from the cross-pack check), and a single episode occupies its
-  // DECLARED identity number even without a heading line. Strict
-  // count/sequence validation of selected items stays in the entries build,
-  // fail-closed. Unparseable legacy identities are skipped.
-  const seenByChapterNumber = new Map<string, NovelExportItem>();
-  const collide = (
-    key: string,
-    item: NovelExportItem,
-    sourceChapterNumber: string
-  ) => {
-    const previous = seenByChapterNumber.get(key);
-    if (
-      previous &&
-      previous.episodeId !== item.episodeId &&
-      (selectedItemIds === null ||
-        selectedItemIds.has(previous.episodeId) ||
-        selectedItemIds.has(item.episodeId))
-    ) {
-      throw new NovelExportError(
-        "EXPORT_INVALID_EPISODE_IDENTITY",
-        `พบบทที่ ${sourceChapterNumber} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${item.episodeNumber})`,
-        { sourceChapterNumber }
-      );
-    }
-    seenByChapterNumber.set(key, item);
-  };
+  // IPE-064R4B review rounds 9-15: collision evidence via LENIENT extraction
+  // — every line-anchored บทที่ N heading of a range pack occupies its
+  // number even when the pack fails strict count/sequence validation, and a
+  // single episode occupies its DECLARED identity number even without a
+  // heading line. Every parseable range ALSO occupies its full declared
+  // interval, so headingless/malformed packs still fence their territory
+  // (round 13/15). Scope rule: whole-novel (selectedItemIds === null) fails
+  // closed on ANY overlap; explicit subsets fail closed only when the
+  // overlap involves a selected pack — unrelated unselected defects are
+  // skipped. Unparseable legacy identities are skipped: they cannot be
+  // numerically validated, and the selected-item path still fail-closes on
+  // them.
+  const declared: Array<{ item: NovelExportItem; start: number; end: number }> = [];
+  const holdersByNumber = new Map<
+    number,
+    Array<{ item: NovelExportItem; sourceChapterNumber: string }>
+  >();
   for (const item of sortExportItemsCanonical(items)) {
     const identity = parseExportEpisodeIdentity(item.episodeNumber);
     if (!identity) continue;
     if (identity.kind === "range") {
-      // IPE-064R4B review round 11 (P2): normalize BEFORE scanning — a UTF-8
-      // BOM (or stray invisible chars) before the first heading must not hide
-      // it from the collision evidence.
+      declared.push({ item, start: Number(identity.start), end: Number(identity.end) });
       const content = normalizeExportText(String(item.content ?? ""));
       const headingRe = /^บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/gm;
       let match: RegExpExecArray | null;
       while ((match = headingRe.exec(content)) !== null) {
-        collide(String(Number(match[1])), item, match[1]);
-      }
-      // IPE-064R4B review round 13 (P2): a malformed/headingless range pack
-      // still DECLARES identity.start..end — seed those numbers so an
-      // overrunning selected pack collides with it even when the malformed
-      // content has no headings for the overlap zone. Capped at
-      // MAX_EXPORT_ITEMS past start to bound pathological declared ranges.
-      const seedEnd = Math.min(identity.end, identity.start + MAX_EXPORT_ITEMS);
-      for (let n = identity.start; n <= seedEnd; n += 1) {
-        collide(String(n), item, String(n));
+        const number = Number(match[1]);
+        const holders = holdersByNumber.get(number);
+        if (holders) holders.push({ item, sourceChapterNumber: match[1] });
+        else holdersByNumber.set(number, [{ item, sourceChapterNumber: match[1] }]);
       }
     } else {
-      collide(String(Number(identity.start)), item, String(identity.start));
+      declared.push({ item, start: Number(identity.start), end: Number(identity.start) });
+      const number = Number(identity.start);
+      const holders = holdersByNumber.get(number);
+      if (holders) holders.push({ item, sourceChapterNumber: String(identity.start) });
+      else holdersByNumber.set(number, [{ item, sourceChapterNumber: String(identity.start) }]);
+    }
+  }
+  const isBlocked = (participant: number) =>
+    selectedItemIds === null || selectedItemIds.has(participant);
+  // Cross-item evidence duplicates at the same normalized number.
+  const evidenceEntries = Array.from(holdersByNumber.entries());
+  for (const [, holders] of evidenceEntries) {
+    if (holders.length < 2) continue;
+    if (holders.some((holder) => isBlocked(holder.item.episodeId))) {
+      const sample = holders[0];
+      throw new NovelExportError(
+        "EXPORT_INVALID_EPISODE_IDENTITY",
+        `พบบทที่ ${sample.sourceChapterNumber} ซ้ำข้ามแพ็ก (${holders
+          .map((holder) => holder.item.episodeNumber)
+          .join(" และ ")})`,
+        { sourceChapterNumber: sample.sourceChapterNumber }
+      );
+    }
+  }
+  // Evidence numbers inside ANOTHER pack's declared interval (a headingless
+  // or malformed neighbour still fences its declared territory).
+  for (const [number, holders] of evidenceEntries) {
+    for (const range of declared) {
+      if (holders.some((holder) => holder.item.episodeId === range.item.episodeId)) {
+        continue;
+      }
+      if (number < range.start || number > range.end) continue;
+      if (isBlocked(range.item.episodeId) || holders.some((holder) => isBlocked(holder.item.episodeId))) {
+        const sample = holders[0];
+        throw new NovelExportError(
+          "EXPORT_INVALID_EPISODE_IDENTITY",
+          `พบบทที่ ${sample.sourceChapterNumber} ซ้ำข้ามแพ็กที่ประกาศช่วง ${range.start}-${range.end} (${range.item.episodeNumber})`,
+          { sourceChapterNumber: sample.sourceChapterNumber }
+        );
+      }
     }
   }
 }
