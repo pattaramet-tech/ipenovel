@@ -1705,12 +1705,17 @@ export default function WorkspacePage() {
     // story lookup — a bookmark targeting workspace B must not strand on an
     // empty first workspace (editorialNovelGroups.length === 0 would
     // otherwise make the switch branch unreachable).
+    // IPE-064R4B review round 7 (P2): a stale/mistyped workspace id must be
+    // validated against the loaded workspace list — otherwise the page
+    // switches to a nonexistent workspace and strands empty.
     const workspaceParam = Number(params.get("workspace"));
-    if (
+    const workspaceParamValid =
       Number.isInteger(workspaceParam) &&
       workspaceParam > 0 &&
-      workspaceParam !== selectedWorkspaceId
-    ) {
+      (workspaces.data as any[] | undefined)?.some(
+        ({ workspace }: any) => workspace.id === workspaceParam
+      );
+    if (workspaceParamValid && workspaceParam !== selectedWorkspaceId) {
       setSelectedWorkspaceId(workspaceParam);
       return;
     }
@@ -1742,7 +1747,7 @@ export default function WorkspacePage() {
       })
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorialNovelGroups.length, selectedWorkspaceId, editorialBoard.data]);
+  }, [editorialNovelGroups.length, selectedWorkspaceId, editorialBoard.data, workspaces.data]);
 
   // Keep the URL in sync with the live context (replaceState — no history
   // spam). Skipped until the one-time restore has consumed the params.
