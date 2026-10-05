@@ -109,13 +109,14 @@ describe("WorkspacePage export integration contract", () => {
     expect(wiringBlock).not.toMatch(/saveDraft|runChecker|confirmChapter|stageChapter|publishChapter|\.mutate\(/);
   });
 
-  it("derives the novel list from every active workspace novel, not the read-only bindings join (IPE-064R3)", () => {
-    // The exporter reads published episodes by novelId — it never needs the
-    // read-only binding, whose join silently dropped legacy/re-bound novels.
-    expect(page).toContain("workspaceExportNovels");
-    expect(page).toContain("(detail.data as any)?.novels");
-    expect(page).toContain('(workspaceNovel?.status ?? "active") === "active"');
+  it("derives the novel list from the full system catalog, not workspace bindings (IPE-064R3)", () => {
+    // The exporter reads published episodes by novelId behind an admin gate —
+    // the list must cover the ENTIRE catalog (same source as the intake
+    // selector), never scoped to workspace bindings.
+    expect(page).toContain("availablePublicationNovels.useQuery");
+    expect(page).toContain("exportNovelOptions");
     expect(page).not.toContain("workspaceBoundNovels");
+    expect(page).not.toContain("workspaceExportNovels");
     expect(page).not.toContain("bindings.list.useQuery");
   });
 });

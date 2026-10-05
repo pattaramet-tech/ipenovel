@@ -257,14 +257,15 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
-  // IPE-064R3: export covers EVERY active novel bound to the workspace.
-  // The old source (read-only bindings join) silently dropped novels whose
-  // workspace row lacked a synthetic binding (legacy/re-bound rows), so the
-  // export list was shorter than the workspace's own novel list — while the
-  // exporter itself only reads published episodes by novelId.
-  const workspaceExportNovels = ((((detail.data as any)?.novels ?? []) as any[]))
-    .filter(({ workspaceNovel }: any) => (workspaceNovel?.status ?? "active") === "active")
-    .map(({ novel }: any) => ({ novelId: novel.id as number, novelTitle: String(novel.title ?? "") }));
+  // IPE-064R3: export covers the ENTIRE novel catalog (same list as the
+  // intake selector / /novels) — the exporter reads published episodes by
+  // novelId behind an admin gate, so no workspace binding is required.
+  const exportNovelCatalog = trpc.workspace.bindings.availablePublicationNovels.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0 },
+    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
+  );
+  const exportNovelOptions = ((exportNovelCatalog.data as any[] | undefined) ?? [])
+    .map((novel: any) => ({ novelId: novel.id as number, novelTitle: String(novel.title ?? "") }));
   const editorialBoard = trpc.workspace.editorial.board.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
     {
@@ -1861,7 +1862,7 @@ export default function WorkspacePage() {
             variant="outline"
             size="sm"
             data-testid="workspace-novel-export-trigger"
-            disabled={!workspaceExportNovels.length}
+            disabled={!exportNovelOptions.length}
             onClick={() => setExportDialogOpen(true)}
           >
             ส่งออก
@@ -1872,7 +1873,7 @@ export default function WorkspacePage() {
       <WorkspaceNovelExportDialog
         open={exportDialogOpen}
         onOpenChange={setExportDialogOpen}
-        novels={workspaceExportNovels}
+        novels={exportNovelOptions}
       />
 
       <section className="space-y-6">
