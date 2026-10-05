@@ -418,31 +418,33 @@ describe("IPE-063R3 guarded author-owned creation (P1 + P2 serialization)", () =
   });
 });
 
-describe("IPE-063R6 upsertUser locked-state decision (P2-A)", () => {
+describe("IPE-063R7 upsertUser duplicate-safe usable-name path (P2)", () => {
   afterEach(() => {
     db.__setDbForTests(null);
   });
 
-  // IPE-063R6 fake: the plain SELECT (the snapshot read) returns the
-  // PRE-LOCK row (snapshotName), while every locking read
-  // (SELECT ... FOR UPDATE) returns the authoritative CURRENT row
-  // (lockedName/lockedAuthorName) — the exact snapshot-vs-current
-  // distinction the R6 contract is built on. The execute queue is scripted
-  // in canonical order: locked author-state read → barrier (users lock →
-  // merge cases → donor compensations) → propagate (locked read → barrier
-  // again). An unexpected extra execute fails the test.
+  // IPE-063R7 fake: plain reads ALWAYS see no row (the snapshot-miss world of
+  // the duplicate first-login race — T2's row is only discovered at the
+  // duplicate key), while the locking reads (SELECT ... FOR UPDATE) return
+  // the authoritative CURRENT row. The usable-name path therefore has no
+  // snapshot decision input at all: duplicate detection (recorded with its
+  // exact duplicate clause) → locked current read → barrier → deliberate
+  // metadata update → propagation. The execute queue is scripted in canonical
+  // order: locked author-state read → barrier (users lock → merge cases →
+  // donor compensations) → propagate (locked read → barrier again). An
+  // unexpected extra execute fails the test.
   function upsertFakeDb(opts: {
-    snapshotName: string | null;
     lockedName: string | null;
     lockedAuthorName: string | null;
     activeMergeCase?: { id: number; status: string };
   }) {
-    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const inserts: Array<{
+      table: unknown;
+      vals: Record<string, unknown>;
+      duplicateSet: Record<string, unknown>;
+    }> = [];
     const userSets: any[] = [];
     const novelSets: any[] = [];
-    const selects: any[][] = [
-      [{ id: 7, name: opts.snapshotName, authorName: opts.lockedAuthorName }],
-    ];
     const barrierCaseRows = () => (opts.activeMergeCase ? [opts.activeMergeCase] : []);
     const lockedStateRow = () => [
       { id: 7, name: opts.lockedName, authorName: opts.lockedAuthorName },
@@ -465,16 +467,18 @@ describe("IPE-063R6 upsertUser locked-state decision (P2-A)", () => {
         executeCalls += 1;
         return next;
       },
-      insert: () => ({
-        values: async (vals: Record<string, unknown>) => {
-          inserted.push({ table: "users", values: vals });
-          return { insertId: 555 };
-        },
+      insert: (table: unknown) => ({
+        values: (vals: Record<string, unknown>) => ({
+          onDuplicateKeyUpdate: async (o: { set: Record<string, unknown> }) => {
+            inserts.push({ table, vals, duplicateSet: o.set });
+            return { insertId: 555 };
+          },
+        }),
       }),
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: async () => selects.shift() ?? [],
+            limit: async () => [],
           }),
         }),
       }),
@@ -488,58 +492,49 @@ describe("IPE-063R6 upsertUser locked-state decision (P2-A)", () => {
     };
     const dbHandle: any = {
       transaction: async (cb: any) => cb(tx),
-      select: () => tx.select(),
-      insert: (table: unknown) => ({
-        values: (vals: Record<string, unknown>) => ({
-          onDuplicateKeyUpdate: async (o: { set: Record<string, unknown> }) => {
-            tx.insert(table).values(vals);
-            void o;
-            return { insertId: 555 };
-          },
-        }),
-      }),
+      insert: (table: unknown) => tx.insert(table),
     };
-    return { dbHandle, userSets, novelSets, inserted, executeCalls: () => executeCalls };
+    return { dbHandle, userSets, novelSets, inserts, executeCalls: () => executeCalls };
   }
 
-  it("C. fallback name genuinely changes - user row and byline change atomically", async () => {
-    const { dbHandle, userSets, novelSets } = upsertFakeDb({ snapshotName: "Old", lockedName: "Old", lockedAuthorName: null });
+  // IPE-063R7 concurrency matrix CASE R7-A: T2 already created openId=X with
+  // name "B" (and owns a novel with byline "B", pen name NULL); T1's snapshot
+  // missed the row and only learns of it at the duplicate key. The duplicate
+  // branch itself must not write the name — the locked current row must
+  // classify the rename and propagate, so the race converges to
+  // users.name=A / novels.author=A (never novels.author=B).
+  it("CASE R7-A. duplicate first-login race - the candidate name applies through the locked path with propagation", async () => {
+    const { dbHandle, userSets, novelSets, inserts } = upsertFakeDb({ lockedName: "B", lockedAuthorName: null });
     db.__setDbForTests(dbHandle);
 
-    await db.upsertUser({ openId: "oauth-7", name: "New", email: "a@b.test", lastSignedIn: new Date() });
+    await db.upsertUser({ openId: "oauth-7", name: "A", email: "a@b.test", lastSignedIn: new Date() });
 
+    // The collision detector itself never carries Author-relevant fields.
+    expect(Object.keys(inserts[0]?.duplicateSet ?? {})).toEqual(["openId"]);
+    // The metadata updateSet is applied deliberately after row acquisition.
     expect(userSets).toHaveLength(1);
-    expect(userSets[0].name).toBe("New");
+    expect(userSets[0].name).toBe("A");
+    expect(userSets[0].email).toBe("a@b.test");
+    expect(userSets[0].lastSignedIn).toBeInstanceOf(Date);
     expect(novelSets).toHaveLength(1);
-    expect(novelSets[0].author).toBe("New");
+    expect(novelSets[0].author).toBe("A");
   });
 
-  it("B. same LOCKED current name - no byline write and no barrier work at all", async () => {
-    const { dbHandle, userSets, novelSets, executeCalls } = upsertFakeDb({ snapshotName: "Same", lockedName: "Same", lockedAuthorName: null });
+  it("CASE R7-B. duplicate race onto an explicit pen-name account - name updates, the byline keeps the pen name", async () => {
+    const { dbHandle, userSets, novelSets, executeCalls } = upsertFakeDb({ lockedName: "B", lockedAuthorName: "Pen" });
     db.__setDbForTests(dbHandle);
 
-    await db.upsertUser({ openId: "oauth-7", name: "Same", email: "a@b.test", lastSignedIn: new Date() });
+    await db.upsertUser({ openId: "oauth-7", name: "A", email: "a@b.test", lastSignedIn: new Date() });
 
     expect(userSets).toHaveLength(1);
+    expect(userSets[0].name).toBe("A");
     expect(novelSets).toHaveLength(0);
-    // Only the locking author-state read ran — an unchanged name performs no
-    // merge-case locking and no pen-name re-probe (routine availability).
-    expect(executeCalls()).toBe(1);
+    // locked read + barrier (users/cases/donor) + propagate's locked read.
+    expect(executeCalls()).toBe(5);
   });
 
-  it("A. no name update - routine sign-in keeps the single-statement availability path", async () => {
-    const { dbHandle, novelSets, executeCalls } = upsertFakeDb({ snapshotName: "Old", lockedName: "Old", lockedAuthorName: null });
-    db.__setDbForTests(dbHandle);
-
-    await db.upsertUser({ openId: "oauth-7", lastSignedIn: new Date() });
-
-    expect(novelSets).toHaveLength(0);
-    expect(executeCalls()).toBe(0);
-  });
-
-  it("E. merge-blocked account - the whole rename/propagation fails closed", async () => {
-    const { dbHandle, userSets, novelSets } = upsertFakeDb({
-      snapshotName: "Old",
+  it("CASE R7-C. duplicate race onto a merge-blocked account - the whole transaction fails closed, nothing written", async () => {
+    const { dbHandle, userSets, novelSets, inserts } = upsertFakeDb({
       lockedName: "Old",
       lockedAuthorName: null,
       activeMergeCase: { id: 3, status: "in_progress" },
@@ -551,34 +546,43 @@ describe("IPE-063R6 upsertUser locked-state decision (P2-A)", () => {
     ).rejects.toThrow(/merge case 3 is in_progress/i);
     expect(userSets).toHaveLength(0);
     expect(novelSets).toHaveLength(0);
+    // The no-op collision detector did not pre-apply the name before the
+    // guard rejected.
+    expect(Object.keys(inserts[0]?.duplicateSet ?? {})).toEqual(["openId"]);
   });
 
-  it("F. explicit pen name on the LOCKED row - users.name may change but the byline stays the pen name", async () => {
-    const { dbHandle, userSets, novelSets } = upsertFakeDb({ snapshotName: "Old", lockedName: "Old", lockedAuthorName: "Pen" });
+  it("CASE R7-D. duplicate race with the same name - no barrier, no propagation, single locked read", async () => {
+    const { dbHandle, userSets, novelSets, executeCalls } = upsertFakeDb({ lockedName: "Same", lockedAuthorName: null });
     db.__setDbForTests(dbHandle);
 
-    await db.upsertUser({ openId: "oauth-7", name: "New", email: "a@b.test", lastSignedIn: new Date() });
+    await db.upsertUser({ openId: "oauth-7", name: "Same", email: "a@b.test", lastSignedIn: new Date() });
 
-    expect(userSets).toHaveLength(1);
-    expect(userSets[0].name).toBe("New");
+    expect(userSets).toHaveLength(1); // the deliberate metadata update still applies
     expect(novelSets).toHaveLength(0);
+    expect(executeCalls()).toBe(1);
   });
 
-  // IPE-063R6 concurrency matrix CASE A: a concurrent rename commits between
-  // the snapshot read and the lock. The pre-lock snapshot still shows
-  // name "A" (equal to the OAuth candidate) but the LOCKED row shows "B" —
-  // the decision must come from the locked state, so the OAuth rename to
-  // "A" still propagates novels.author="A" instead of silently skipping
-  // (which would leave users.name=A with novels.author=B).
-  it("CASE A. concurrent rename visible only under lock - the stale snapshot name cannot decide", async () => {
-    const { dbHandle, userSets, novelSets } = upsertFakeDb({ snapshotName: "A", lockedName: "B", lockedAuthorName: null });
+  it("new user - the insert seeds the candidate name, the locked row matches it, so no byline work runs", async () => {
+    const { dbHandle, userSets, novelSets, executeCalls, inserts } = upsertFakeDb({ lockedName: "Brand New", lockedAuthorName: null });
     db.__setDbForTests(dbHandle);
 
-    await db.upsertUser({ openId: "oauth-7", name: "A", email: "a@b.test", lastSignedIn: new Date() });
+    await db.upsertUser({ openId: "oauth-7", name: "Brand New", email: "a@b.test", lastSignedIn: new Date() });
 
-    expect(userSets[0].name).toBe("A");
-    expect(novelSets).toHaveLength(1);
-    expect(novelSets[0].author).toBe("A");
+    expect(inserts[0]?.vals.name).toBe("Brand New");
+    expect(userSets).toHaveLength(1);
+    expect(novelSets).toHaveLength(0);
+    expect(executeCalls()).toBe(1);
+  });
+
+  it("A. no name update - routine sign-in keeps the single-statement availability path", async () => {
+    const { dbHandle, novelSets, executeCalls, inserts } = upsertFakeDb({ lockedName: "Old", lockedAuthorName: null });
+    db.__setDbForTests(dbHandle);
+
+    await db.upsertUser({ openId: "oauth-7", lastSignedIn: new Date() });
+
+    expect(novelSets).toHaveLength(0);
+    expect(executeCalls()).toBe(0);
+    expect(inserts).toHaveLength(1); // legacy ON DUP metadata write (no name)
   });
 });
 

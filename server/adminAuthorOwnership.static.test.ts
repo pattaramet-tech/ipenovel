@@ -110,8 +110,8 @@ describe("IPE-063R4 canonical fallback propagation helper", () => {
       dbSource.indexOf("export async function upsertUser("),
       dbSource.indexOf("export async function getUserByOpenId(")
     );
-    expect(upsert).toContain("assertAccountMergeClassifiedMutationAllowed(existing.id, tx)");
-    expect(upsert).toContain("propagateFallbackAuthorName(tx, existing.id, candidateName)");
+    expect(upsert).toContain("assertAccountMergeClassifiedMutationAllowed(lockedState.id, tx)");
+    expect(upsert).toContain("propagateFallbackAuthorName(tx, lockedState.id, candidateName)");
   });
 });
 
@@ -126,23 +126,43 @@ describe("IPE-063R6 locked author-state contract (current reads only)", () => {
     );
   });
 
-  it("upsertUser derives the rename decision ONLY from the locked read - the pre-lock snapshot select cannot see name/authorName", () => {
+  it("upsertUser derives the rename decision ONLY from locked current reads - duplicate detection never mutates the name", () => {
     const upsert = dbSourceR6.slice(
       dbSourceR6.indexOf("export async function upsertUser("),
       dbSourceR6.indexOf("export async function getUserByOpenId(")
     );
-    expect(upsert).toContain("lockUserAuthorStateForUpdate(existing.id, tx)");
-    // No snapshot source of truth for the decision state: the only plain
-    // select resolves the account id, never name/authorName.
+    // IPE-063R7 Phase A: the usable-name duplicate clause is a TRUE no-op —
+    // it cannot carry the candidate name (or any Author-relevant field) into
+    // a duplicate collision.
+    expect(upsert).toContain("set: { openId: sql`openId` }");
+    // Phase B: the actual row is locked CURRENT by the identity key.
+    expect(upsert).toContain("lockUserAuthorStateByOpenIdForUpdate(user.openId, tx)");
+    // No snapshot source of truth for the decision state.
     expect(upsert).not.toContain("name: users.name");
     expect(upsert).not.toContain("authorName: users.authorName");
-    // The decision happens AFTER the lock and only a real rename pays for
-    // the barrier/propagation.
+    // Phase C/D: the decision happens AFTER the lock, the barrier precedes a
+    // real rename, the metadata update is applied deliberately after
+    // acquisition, and propagation closes the transaction.
     expect(upsert).toContain("const nameChanged = candidateName !== lockedName;");
-    expect(upsert.indexOf("lockUserAuthorStateForUpdate(existing.id, tx)")).toBeLessThan(
+    expect(upsert.indexOf("lockUserAuthorStateByOpenIdForUpdate(user.openId, tx)")).toBeLessThan(
       upsert.indexOf("const nameChanged = candidateName !== lockedName;")
     );
     expect(upsert).toContain("if (nameChanged) {");
+    expect(upsert).toContain("await tx.update(users).set(updateSet)");
+    expect(upsert).toContain("propagateFallbackAuthorName(tx, lockedState.id, candidateName)");
+  });
+
+  it("the openId-keyed locked read fails closed when no row resolves (alternate unique-key collision)", () => {
+    expect(dbSourceR6).toContain("export async function lockUserAuthorStateByOpenIdForUpdate(");
+    expect(dbSourceR6).toContain(
+      "SELECT id, name, authorName FROM users WHERE openId = ${openId} FOR UPDATE"
+    );
+    const helper = dbSourceR6.slice(
+      dbSourceR6.indexOf("export async function lockUserAuthorStateByOpenIdForUpdate("),
+      dbSourceR6.indexOf("export async function propagateFallbackAuthorName(")
+    );
+    expect(helper).toContain("rows.length !== 1");
+    expect(helper).toContain("throw new Error");
   });
 
   it("propagateFallbackAuthorName re-derives the pen-name decision from a locked read, never from the caller's snapshot", () => {

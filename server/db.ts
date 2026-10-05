@@ -228,53 +228,43 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
     if (hasUsableCandidateName) {
       return db.transaction(async (tx: any) => {
-        // 1. Resolve the existing account through THIS transaction. Only the
-        // id may come from this plain read — under REPEATABLE READ it fixes
-        // the transaction's snapshot, so name/authorName MUST NOT be derived
-        // from it (IPE-063R6 P2-A); the decision state comes exclusively
-        // from the locking read below.
-        const [existing] = await tx
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.openId, user.openId))
-          .limit(1);
+        // IPE-063R7 (P2): Phase A — establish row existence WITHOUT mutating
+        // an existing user's Author-relevant fields. The duplicate clause is
+        // a true no-op (openId set to itself), so a lost first-login race can
+        // never write users.name before locked-state classification: the R6
+        // shape's INSERT ... ON DUPLICATE KEY UPDATE name=... on the
+        // snapshot-miss path could land on a row a concurrent first login had
+        // just created (possibly already owning novels) and change users.name
+        // with no locked decision, barrier, or byline propagation.
+        await tx.insert(users).values(values).onDuplicateKeyUpdate({
+          set: { openId: sql`openId` },
+        });
 
-        // 2. No existing account — new-user insert semantics; there are no
-        // owned novels to propagate to, so no false byline work.
-        if (!existing) {
-          await tx.insert(users).values(values).onDuplicateKeyUpdate({
-            set: updateSet,
-          });
-          return;
-        }
-
-        // 3. IPE-063R6 (P2-A): acquire the users-row lock AND the current
-        // name/authorName from ONE locking read. A plain SELECT is not safe
-        // here even on this same transaction: it is served from the snapshot
-        // fixed by the read above, so a rename committed by a concurrent
-        // transaction after that snapshot would be invisible and a stale
-        // comparison could wrongly decide "name unchanged" and skip byline
-        // propagation (users.name=A while novels.author=B).
-        const lockedState = await lockUserAuthorStateForUpdate(existing.id, tx);
+        // Phase B — current locking read of the ACTUAL row, whether it was
+        // just inserted here or won the duplicate race. Resolving by openId
+        // (the users table's only unique key) also fails closed on any
+        // alternate unique-key collision: a no-op duplicate against some
+        // other account can never be silently adopted as this identity.
+        const lockedState = await lockUserAuthorStateByOpenIdForUpdate(user.openId, tx);
         const lockedName = (lockedState.name ?? "").trim();
         const candidateName = (updateSet.name as string).trim();
         const nameChanged = candidateName !== lockedName;
 
-        // 4. The account-merge barrier is only required for a REAL rename;
-        // an unchanged name keeps the sign-in light (no merge-case locking,
-        // no propagation) — preserves routine OAuth availability.
+        // Phase C/D — classify from the locked current state only, then apply
+        // the metadata updateSet deliberately: the merge barrier precedes any
+        // Author-affecting rename (canonical USER → account-merge case →
+        // novel byline order), and the byline syncs inside the same
+        // transaction. A brand-new row already carries the candidate name
+        // from the insert, so nameChanged is false and no byline work runs;
+        // a duplicate-race row takes exactly the ordinary existing-user path.
         if (nameChanged) {
-          await assertAccountMergeClassifiedMutationAllowed(existing.id, tx);
+          await assertAccountMergeClassifiedMutationAllowed(lockedState.id, tx);
         }
 
-        // 5. Apply the identity update on the same tx.
         await tx.update(users).set(updateSet).where(eq(users.openId, user.openId));
 
-        // 6. Fallback byline propagation — only when the name genuinely
-        // changed; propagateFallbackAuthorName re-derives the pen-name
-        // decision from its OWN locked current read.
         if (nameChanged) {
-          await propagateFallbackAuthorName(tx, existing.id, candidateName);
+          await propagateFallbackAuthorName(tx, lockedState.id, candidateName);
         }
       });
     }
@@ -2830,6 +2820,34 @@ export async function lockUserAuthorStateForUpdate(
   );
   if (rows.length !== 1) {
     throw new Error(`User ${userId} not found while acquiring locked author state`);
+  }
+  const row = rows[0];
+  return {
+    id: Number(row.id),
+    name: row.name ?? null,
+    authorName: row.authorName ?? null,
+  };
+}
+
+/**
+ * IPE-063R7: openId-keyed variant of {@link lockUserAuthorStateForUpdate}
+ * for the duplicate first-login upsert race — after a no-op
+ * INSERT ... ON DUPLICATE KEY UPDATE, the row that actually exists (freshly
+ * inserted here, or created by a concurrently-committing first login) is
+ * locked and read CURRENT by the identity key itself. Fails closed when no
+ * row resolves, which also covers an alternate unique-key collision: a no-op
+ * duplicate against some other account is never adopted as this identity.
+ * Same lock hierarchy — this IS the USER-row lock acquisition.
+ */
+export async function lockUserAuthorStateByOpenIdForUpdate(
+  openId: string,
+  tx: any
+): Promise<{ id: number; name: string | null; authorName: string | null }> {
+  const rows = unwrapAccountMergeMysqlRows(
+    await tx.execute(sql`SELECT id, name, authorName FROM users WHERE openId = ${openId} FOR UPDATE`)
+  );
+  if (rows.length !== 1) {
+    throw new Error("User row not found while acquiring locked author state by openId");
   }
   const row = rows[0];
   return {
