@@ -343,53 +343,38 @@ export function assertNoCrossPackChapterCollisions(
   items: NovelExportItem[],
   selectedItemIds: ReadonlySet<number> | null
 ): void {
-  // IPE-064R4B review round 3 (P2): an UNSELECTED malformed pack (e.g. a
-  // legacy range with fewer headings than declared) must not block exporting
-  // a valid subset — skip expansion failures of unselected items and only
-  // fail closed when the defect belongs to a selected item (or a whole-novel
-  // export, where every item is selected). Unparseable legacy identities are
-  // skipped outright: they cannot be numerically validated, and the
-  // selected-item path still fail-closes on them.
-  const chapters: ThaiNovelLogicalChapter[] = [];
-  for (const item of sortExportItemsCanonical(items)) {
-    const identity = parseExportEpisodeIdentity(item.episodeNumber);
-    if (!identity) continue;
-    try {
-      const expanded =
-        identity.kind === "range"
-          ? expandRangePack(item, identity.start, identity.end)
-          : expandSingleEpisode(item, identity.start);
-      chapters.push(...expanded);
-    } catch (error) {
-      if (selectedItemIds === null || selectedItemIds.has(item.episodeId)) {
-        throw error;
-      }
-    }
-  }
-  // IPE-064R4B review round 6 (P2): a collision wholly between two
-  // UNSELECTED packs is an unrelated data defect — it must not block
-  // exporting the selected subset. Throw only when the scope is whole
-  // (every pack is being exported) or at least one participant is selected.
+  // IPE-064R4B review round 8 (P2): collision evidence uses LENIENT heading
+  // extraction — a malformed pack still OCCUPIES the chapter numbers its
+  // headings declare, so even an expansion that fails count/sequence
+  // validation contributes its numbers to the cross-pack check (dropping it
+  // would let a selected overrunning pack double-export into a malformed
+  // neighbour unnoticed). Strict count/sequence validation of SELECTED
+  // items stays in the entries build, fail-closed. Unparseable legacy
+  // identities are skipped: they cannot be numerically validated.
   const seenByChapterNumber = new Map<string, NovelExportItem>();
-  for (const chapter of chapters) {
-    const collisionKey = /^\d+$/.test(chapter.sourceChapterNumber)
-      ? String(Number(chapter.sourceChapterNumber))
-      : chapter.sourceChapterNumber;
-    const previous = seenByChapterNumber.get(collisionKey);
-    if (
-      previous &&
-      previous.episodeId !== chapter.item.episodeId &&
-      (selectedItemIds === null ||
-        selectedItemIds.has(previous.episodeId) ||
-        selectedItemIds.has(chapter.item.episodeId))
-    ) {
-      throw new NovelExportError(
-        "EXPORT_INVALID_EPISODE_IDENTITY",
-        `พบบทที่ ${chapter.sourceChapterNumber} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${chapter.item.episodeNumber})`,
-        { sourceChapterNumber: chapter.sourceChapterNumber }
-      );
+  for (const item of sortExportItemsCanonical(items)) {
+    if (!parseExportEpisodeIdentity(item.episodeNumber)) continue;
+    const content = String(item.content ?? "");
+    const headingRe = /บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/gm;
+    let match: RegExpExecArray | null;
+    while ((match = headingRe.exec(content)) !== null) {
+      const key = String(Number(match[1]));
+      const previous = seenByChapterNumber.get(key);
+      if (
+        previous &&
+        previous.episodeId !== item.episodeId &&
+        (selectedItemIds === null ||
+          selectedItemIds.has(previous.episodeId) ||
+          selectedItemIds.has(item.episodeId))
+      ) {
+        throw new NovelExportError(
+          "EXPORT_INVALID_EPISODE_IDENTITY",
+          `พบบทที่ ${match[1]} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${item.episodeNumber})`,
+          { sourceChapterNumber: match[1] }
+        );
+      }
+      seenByChapterNumber.set(key, item);
     }
-    seenByChapterNumber.set(collisionKey, chapter.item);
   }
 }
 

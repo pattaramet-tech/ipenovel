@@ -350,7 +350,10 @@ export async function buildThaiNovelExportPreview(
     if (
       isWholeSelection &&
       error instanceof NovelExportError &&
-      (error.code === "EXPORT_LIMIT_ITEMS" || error.code === "EXPORT_INVALID_EPISODE_IDENTITY")
+      (error.code === "EXPORT_LIMIT_ITEMS" ||
+        error.code === "EXPORT_INVALID_EPISODE_IDENTITY" ||
+        error.code === "EXPORT_LIMIT_ENTRY_BYTES" ||
+        error.code === "EXPORT_LIMIT_TOTAL_BYTES")
     ) {
       overLimit =
         error.code === "EXPORT_LIMIT_ITEMS"

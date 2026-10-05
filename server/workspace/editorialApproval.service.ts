@@ -49,7 +49,13 @@ import {
   evaluateEditorialCheckerState,
 } from "./editorialForeignChecker.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
-import { isExactAcceptedSourceNote } from "./editorialStructuralAnomaly.domain";
+import {
+  isExactAcceptedSourceNote,
+} from "./editorialStructuralAnomaly.domain";
+import {
+  isSourceNoteChapterHeadingText,
+  normalizeEditorialText,
+} from "./editorialDraft.domain";
 
 export class WorkspaceEditorialApprovalError extends Error {
   constructor(
@@ -455,17 +461,50 @@ function confirmedSourceNoteTabIds(qc: Awaited<ReturnType<typeof currentQcEviden
  */
 function resolveNonBillableSourceNoteTabIds(
   qc: Awaited<ReturnType<typeof currentQcEvidence>>,
-  tabs: ReadonlyArray<{ sourceTabId: string; title?: string | null; chapterTitle?: string | null }>
+  tabs: ReadonlyArray<{
+    sourceTabId: string;
+    title?: string | null;
+    chapterTitle?: string | null;
+    paragraphs?: ReadonlyArray<{ text: string }>;
+  }>
 ): string[] {
   const confirmed = confirmedSourceNoteTabIds(qc);
   const detected = tabs
-    .filter(
-      (tab) =>
-        isExactAcceptedSourceNote(tab.chapterTitle ?? "") ||
-        isExactAcceptedSourceNote(tab.title ?? "")
-    )
+    .filter((tab) => isAcceptedSourceNoteChapterTab(tab))
     .map((tab) => String(tab.sourceTabId));
   return Array.from(new Set([...confirmed, ...detected]));
+}
+
+/**
+ * IPE-064R4B review round 8 (P2): the pricing exclusion must verify CONTENT,
+ * not just metadata — a tab with the canonical note title that also carries
+ * real narrative stays billable. Mirrors the structural classifier's
+ * acceptance: exact canonical note title AND every meaningful row is a note
+ * row / note-chapter heading / end marker.
+ */
+function isAcceptedSourceNoteChapterTab(tab: {
+  title?: string | null;
+  chapterTitle?: string | null;
+  paragraphs?: ReadonlyArray<{ text: string }>;
+}): boolean {
+  if (
+    !isExactAcceptedSourceNote(tab.title ?? "") &&
+    !isExactAcceptedSourceNote(tab.chapterTitle ?? "")
+  ) {
+    return false;
+  }
+  const meaningful = (tab.paragraphs ?? [])
+    .map((paragraph) =>
+      normalizeEditorialText(paragraph.text).replace(/\s+/g, " ").trim()
+    )
+    .filter((text) => text && !/^[_\-=*#~•·.]{3,}$/.test(text));
+  if (!meaningful.length) return false;
+  return meaningful.every(
+    (text) =>
+      isExactAcceptedSourceNote(text) ||
+      isSourceNoteChapterHeadingText(text) ||
+      /^จบตอน[.!…]*$/i.test(text)
+  );
 }
 
 function resolveEditorialEpisodePackSale(
