@@ -92,8 +92,9 @@ describe("IPE-064 — the 4-pane work area", () => {
     expect(actionBar).toContain("5. Stage");
     expect(actionBar).toContain("6. Publish");
     // Scope: selected packs, or the open pack when nothing is selected —
-    // intersected with the ACTIVE story (IPE-064R4B P1: no cross-story bulk).
-    expect(page).toContain("const actionBarWorkItemIds = (");
+    // intersected with the ACTIVE story (IPE-064R4B P1: no cross-story bulk),
+    // with the open-pack fallback applied after the intersection.
+    expect(page).toContain("const intersectedBulkSelection = rawBulkSelection.filter((workItemId: number) =>");
     expect(page).toContain("storySelectableWorkItemIds.includes(workItemId)");
     expect(page).toContain("<WorkspaceActionBar");
     // Bar is inside the center column, before the main editor card.
