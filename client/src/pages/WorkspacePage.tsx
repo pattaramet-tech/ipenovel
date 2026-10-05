@@ -1770,7 +1770,6 @@ export default function WorkspacePage() {
     if (selectedWorkspaceId) params.set("workspace", String(selectedWorkspaceId));
     if (storyEntered && activeStoryKey) {
       params.set("story", activeStoryKey);
-      params.set("story", activeStoryKey);
       if (selectedSourceWorkItemId) params.set("pack", String(selectedSourceWorkItemId));
       if (chapterEditorTarget?.sourceTabId) params.set("chapter", chapterEditorTarget.sourceTabId);
     }
@@ -1783,6 +1782,7 @@ export default function WorkspacePage() {
   }, [
     storyEntered,
     activeStoryKey,
+    selectedWorkspaceId,
     selectedSourceWorkItemId,
     chapterEditorTarget?.sourceTabId,
   ]);

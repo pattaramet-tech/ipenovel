@@ -385,6 +385,15 @@ export function assertNoCrossPackChapterCollisions(
       while ((match = headingRe.exec(content)) !== null) {
         collide(String(Number(match[1])), item, match[1]);
       }
+      // IPE-064R4B review round 13 (P2): a malformed/headingless range pack
+      // still DECLARES identity.start..end — seed those numbers so an
+      // overrunning selected pack collides with it even when the malformed
+      // content has no headings for the overlap zone. Capped at
+      // MAX_EXPORT_ITEMS past start to bound pathological declared ranges.
+      const seedEnd = Math.min(identity.end, identity.start + MAX_EXPORT_ITEMS);
+      for (let n = identity.start; n <= seedEnd; n += 1) {
+        collide(String(n), item, String(n));
+      }
     } else {
       collide(String(Number(identity.start)), item, String(identity.start));
     }
