@@ -1695,6 +1695,11 @@ export default function WorkspacePage() {
   const urlRestoreAppliedRef = useRef(false);
   useEffect(() => {
     if (urlRestoreAppliedRef.current) return;
+    // IPE-064R4B review round 11 (P1): wait for the workspace LIST before
+    // consuming or rewriting anything — otherwise a workspace-only URL
+    // (?workspace=B) is stripped by the writer before the initializer can
+    // honor it.
+    if (!workspaces.data?.length) return;
     const params = new URLSearchParams(window.location.search);
     const storyParam = params.get("story");
     if (!storyParam) {
