@@ -343,37 +343,47 @@ export function assertNoCrossPackChapterCollisions(
   items: NovelExportItem[],
   selectedItemIds: ReadonlySet<number> | null
 ): void {
-  // IPE-064R4B review round 8 (P2): collision evidence uses LENIENT heading
-  // extraction — a malformed pack still OCCUPIES the chapter numbers its
-  // headings declare, so even an expansion that fails count/sequence
-  // validation contributes its numbers to the cross-pack check (dropping it
-  // would let a selected overrunning pack double-export into a malformed
-  // neighbour unnoticed). Strict count/sequence validation of SELECTED
-  // items stays in the entries build, fail-closed. Unparseable legacy
-  // identities are skipped: they cannot be numerically validated.
+  // IPE-064R4B review round 9 (P2): collision evidence uses LENIENT
+  // extraction — a malformed range pack still OCCUPIES the chapter numbers
+  // its line-anchored headings declare (expansion failures must not hide
+  // them from the cross-pack check), and a single episode occupies its
+  // DECLARED identity number even without a heading line. Strict
+  // count/sequence validation of selected items stays in the entries build,
+  // fail-closed. Unparseable legacy identities are skipped.
   const seenByChapterNumber = new Map<string, NovelExportItem>();
+  const collide = (
+    key: string,
+    item: NovelExportItem,
+    sourceChapterNumber: string
+  ) => {
+    const previous = seenByChapterNumber.get(key);
+    if (
+      previous &&
+      previous.episodeId !== item.episodeId &&
+      (selectedItemIds === null ||
+        selectedItemIds.has(previous.episodeId) ||
+        selectedItemIds.has(item.episodeId))
+    ) {
+      throw new NovelExportError(
+        "EXPORT_INVALID_EPISODE_IDENTITY",
+        `พบบทที่ ${sourceChapterNumber} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${item.episodeNumber})`,
+        { sourceChapterNumber }
+      );
+    }
+    seenByChapterNumber.set(key, item);
+  };
   for (const item of sortExportItemsCanonical(items)) {
-    if (!parseExportEpisodeIdentity(item.episodeNumber)) continue;
-    const content = String(item.content ?? "");
-    const headingRe = /บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/gm;
-    let match: RegExpExecArray | null;
-    while ((match = headingRe.exec(content)) !== null) {
-      const key = String(Number(match[1]));
-      const previous = seenByChapterNumber.get(key);
-      if (
-        previous &&
-        previous.episodeId !== item.episodeId &&
-        (selectedItemIds === null ||
-          selectedItemIds.has(previous.episodeId) ||
-          selectedItemIds.has(item.episodeId))
-      ) {
-        throw new NovelExportError(
-          "EXPORT_INVALID_EPISODE_IDENTITY",
-          `พบบทที่ ${match[1]} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${item.episodeNumber})`,
-          { sourceChapterNumber: match[1] }
-        );
+    const identity = parseExportEpisodeIdentity(item.episodeNumber);
+    if (!identity) continue;
+    if (identity.kind === "range") {
+      const content = String(item.content ?? "");
+      const headingRe = /^บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/gm;
+      let match: RegExpExecArray | null;
+      while ((match = headingRe.exec(content)) !== null) {
+        collide(String(Number(match[1])), item, match[1]);
       }
-      seenByChapterNumber.set(key, item);
+    } else {
+      collide(String(Number(identity.start)), item, String(identity.start));
     }
   }
 }
