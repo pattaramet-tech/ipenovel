@@ -278,15 +278,7 @@ function expandSingleEpisode(item: NovelExportItem, sourceNumber: number): ThaiN
 export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNovelLogicalChapter[] {
   validateExportPackage(pkg);
 
-  const chapters = sortExportItemsCanonical(pkg.items).flatMap((item) => {
-    const identity = parseExportEpisodeIdentity(item.episodeNumber);
-    if (!identity) {
-      return invalidPack(item, "episodeNumber ไม่มีเลขตอนที่อ่านได้");
-    }
-    return identity.kind === "range"
-      ? expandRangePack(item, identity.start, identity.end)
-      : expandSingleEpisode(item, identity.start);
-  });
+  const chapters = expandItemsToLogicalChapters(pkg.items);
 
   if (chapters.length > MAX_EXPORT_ITEMS) {
     throw new NovelExportError(
@@ -296,13 +288,33 @@ export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNov
     );
   }
 
-  // IPE-064R4B (P2): a sequential overrun must never silently overlap ANOTHER
-  // pack — e.g. declared 141-190 with headings through 192 while a normal
-  // 191-240 pack also exists would expand the same chapter twice (duplicate
-  // filenames, or duplicated renumbered content). Fail closed on any
-  // cross-item chapter-number collision; within one item the sequence check
-  // already rejects duplicates. Collision identity is the NUMERIC chapter
-  // number — raw heading strings like "001" and "1" are the same chapter.
+  assertNoCrossItemChapterCollisions(chapters);
+
+  return chapters;
+}
+
+function expandItemsToLogicalChapters(items: NovelExportItem[]): ThaiNovelLogicalChapter[] {
+  return sortExportItemsCanonical(items).flatMap((item) => {
+    const identity = parseExportEpisodeIdentity(item.episodeNumber);
+    if (!identity) {
+      return invalidPack(item, "episodeNumber ไม่มีเลขตอนที่อ่านได้");
+    }
+    return identity.kind === "range"
+      ? expandRangePack(item, identity.start, identity.end)
+      : expandSingleEpisode(item, identity.start);
+  });
+}
+
+/**
+ * IPE-064R4B (P2): a sequential overrun must never silently overlap ANOTHER
+ * pack — e.g. declared 141-190 with headings through 192 while a normal
+ * 191-240 pack also exists would expand the same chapter twice (duplicate
+ * filenames, or duplicated renumbered content). Fail closed on any
+ * cross-item chapter-number collision; within one item the sequence check
+ * already rejects duplicates. Collision identity is the NUMERIC chapter
+ * number — raw heading strings like "001" and "1" are the same chapter.
+ */
+export function assertNoCrossItemChapterCollisions(chapters: ThaiNovelLogicalChapter[]): void {
   const seenByChapterNumber = new Map<string, NovelExportItem>();
   for (const chapter of chapters) {
     const collisionKey = /^\d+$/.test(chapter.sourceChapterNumber)
@@ -318,8 +330,22 @@ export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNov
     }
     seenByChapterNumber.set(collisionKey, chapter.item);
   }
+}
 
-  return chapters;
+/**
+ * IPE-064R4B (P2): per-pack subset exports must not silently double-export
+ * chapters that an overrunning pack shares with a following pack — the
+ * selected-subset collision loop cannot see outside its selection. Validates
+ * the FULL published episode list of the novel (no MAX_EXPORT_ITEMS count
+ * limit here; subsets stay under it and whole-scope keeps its own check).
+ */
+export function assertNoCrossPackChapterCollisions(pkg: NovelExportPackage): void {
+  // Unparseable legacy identities cannot be numerically validated here — the
+  // selected-item path still fail-closes on them; skipping avoids regressing
+  // subsets of novels that contain such rows.
+  const parsableItems = pkg.items.filter(item => parseExportEpisodeIdentity(item.episodeNumber));
+  if (!parsableItems.length) return;
+  assertNoCrossItemChapterCollisions(expandItemsToLogicalChapters(parsableItems));
 }
 
 /**

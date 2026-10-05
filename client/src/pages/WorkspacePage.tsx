@@ -657,10 +657,17 @@ export default function WorkspacePage() {
   });
   const allowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation({
     onSuccess: async () => {
-      // IPE-064R2: the allowlist change invalidates the QC identity, so the
-      // recheck is a FULL deterministic run — fire it in the background and
-      // let its own onSuccess refresh checker/approval/board (and toast the
-      // fresh finding count). The button spinner covers the mutation itself.
+      // IPE-064R4B (P2): refetch the cached checker read model FIRST so the
+      // exactly-once identity picks up the NEW allow-list hash — otherwise a
+      // second quick allow coalesces into the still-running pre-mutation
+      // recheck (old identity) and its allow never gets re-checked.
+      if (selectedWorkspaceId && selectedSourceWorkItemId) {
+        await editorialForeignChecker.refetch();
+      }
+      // IPE-064R4B: the recheck is a FULL deterministic run — fire it in the
+      // background and let its own onSuccess refresh checker/approval/board
+      // (and toast the fresh finding count). The button spinner covers the
+      // mutation itself.
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
         if (latestDraft?.id) {
@@ -683,7 +690,11 @@ export default function WorkspacePage() {
   });
   const unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation({
     onSuccess: async () => {
-      // Same background-recheck rationale as foreignCheckerAllow.
+      // IPE-064R4B (P2): refetch before the recheck — same allow-list-hash
+      // identity rationale as foreignCheckerAllow.
+      if (selectedWorkspaceId && selectedSourceWorkItemId) {
+        await editorialForeignChecker.refetch();
+      }
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
         if (latestDraft?.id) {
@@ -1759,15 +1770,21 @@ export default function WorkspacePage() {
   // IPE-064R4B (P1): the bulk scope is intersected with the ACTIVE story's
   // packs — a selection parked in another story must never be mutated by the
   // action bar of the story currently on screen.
-  const actionBarWorkItemIds = (
-    selectedEditorialWorkItemIds.length
-      ? selectedEditorialWorkItemIds
-      : selectedSourceWorkItemId
-        ? [selectedSourceWorkItemId]
-        : []
-  ).filter((workItemId: number) => storySelectableWorkItemIds.includes(workItemId));
+  const rawBulkSelection = selectedEditorialWorkItemIds.length
+    ? selectedEditorialWorkItemIds
+    : selectedSourceWorkItemId
+      ? [selectedSourceWorkItemId]
+      : [];
+  const intersectedBulkSelection = rawBulkSelection.filter((workItemId: number) =>
+    storySelectableWorkItemIds.includes(workItemId)
+  );
+  const actionBarWorkItemIds = intersectedBulkSelection.length
+    ? intersectedBulkSelection
+    : selectedSourceWorkItemId && storySelectableWorkItemIds.includes(selectedSourceWorkItemId)
+      ? [selectedSourceWorkItemId]
+      : [];
   const actionBarScopeLabel = actionBarWorkItemIds.length
-    ? selectedEditorialWorkItemIds.length
+    ? intersectedBulkSelection.length
       ? `เลือก ${actionBarWorkItemIds.length} แพ็ก`
       : "แพ็กที่เปิดอยู่"
     : "ยังไม่ได้เลือกแพ็ก";

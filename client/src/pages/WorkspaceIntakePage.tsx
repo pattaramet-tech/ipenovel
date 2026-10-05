@@ -248,11 +248,16 @@ export default function WorkspaceIntakePage() {
     if (!selectedWorkspaceId && workspaces.data?.length) {
       // IPE-064R4B (P1): the editorial workspace links here with its own
       // workspace id — honor it before falling back to the first workspace.
+      // The OAuth round trip loses the URL, so the connect button stashes
+      // the workspace in sessionStorage as a second-priority hint.
       const requested = Number(new URLSearchParams(window.location.search).get("workspace"));
+      const stash = Number(window.sessionStorage.getItem("ipe064-intake-workspace"));
       const rows = workspaces.data as any[];
-      const requestedValid =
-        Number.isInteger(requested) && rows.some(({ workspace }: any) => workspace.id === requested);
-      setSelectedWorkspaceId(requestedValid ? requested : rows[0].workspace.id);
+      const pick = [requested, stash].find(
+        (candidate) =>
+          Number.isInteger(candidate) && rows.some(({ workspace }: any) => workspace.id === candidate)
+      );
+      setSelectedWorkspaceId(pick !== undefined ? pick : rows[0].workspace.id);
     }
   }, [selectedWorkspaceId, workspaces.data]);
 
@@ -744,7 +749,15 @@ export default function WorkspaceIntakePage() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => window.location.assign("/api/workspace/google/start")}
+                  onClick={() => {
+                    // IPE-064R4B (P1): the OAuth round trip loses the query
+                    // string — stash the workspace so the remounted intake
+                    // page reconnects Google Docs for the RIGHT workspace.
+                    if (selectedWorkspaceId) {
+                      window.sessionStorage.setItem("ipe064-intake-workspace", String(selectedWorkspaceId));
+                    }
+                    window.location.assign("/api/workspace/google/start");
+                  }}
                 >
                   เชื่อม Google Docs
                 </Button>

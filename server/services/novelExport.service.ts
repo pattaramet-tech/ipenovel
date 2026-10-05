@@ -30,6 +30,7 @@ import {
   sortExportItemsCanonical,
 } from "./novelExport.domain";
 import {
+  assertNoCrossPackChapterCollisions,
   ThaiNovelExportEntry,
   ThaiNovelExportOptions,
   ThaiNovelPreviewEntry,
@@ -128,6 +129,9 @@ export async function buildNovelExportPackage(selection: ExportSelection): Promi
   pkg: NovelExportPackage;
   skippedItems: ExportSkippedItem[];
   publishedEpisodeSummaries: ExportPublishedEpisodeSummary[];
+  /** IPE-064R4B: every published episode with content (subset collision
+   * validation must see outside the selected subset). */
+  allPublishedItems: NovelExportItem[];
 }> {
   const novel = await db.getNovelById(selection.novelId, false);
   if (!novel) {
@@ -212,12 +216,21 @@ export async function buildNovelExportPackage(selection: ExportSelection): Promi
     exportable.push(mapEpisodeToExportItem(episode));
   }
 
+  // IPE-064R4B (P2): every published episode with content — the collision
+  // identity for chapter exports is validated against the WHOLE novel, not
+  // just the selected subset, so an overrunning pack cannot double-export
+  // chapters of a following pack through a per-pack subset.
+  const allPublishedItems = publishedEpisodes
+    .filter((episode) => episode.content && String(episode.content).trim())
+    .map((episode) => mapEpisodeToExportItem(episode));
+
   return {
     pkg: {
       novelId: selection.novelId,
       novelTitle: String(novel.title ?? ""),
       items: exportable,
     },
+    allPublishedItems,
     skippedItems,
     publishedEpisodeSummaries: publishedEpisodes.map((episode) => ({
       episodeId: episode.id,
@@ -312,7 +325,12 @@ export async function buildThaiNovelExportPreview(
   selection: ExportSelection,
   options?: ThaiNovelExportOptions
 ): Promise<ThaiNovelExportPreview> {
-  const { pkg, skippedItems, publishedEpisodeSummaries } = await buildNovelExportPackage(selection);
+  const { pkg, skippedItems, publishedEpisodeSummaries, allPublishedItems } = await buildNovelExportPackage(selection);
+  // IPE-064R4B (P2): per-pack subsets must not silently double-export
+  // chapters that an overrunning pack shares with a following pack —
+  // validate the collision identity against EVERY published episode of the
+  // novel, not just the selected subset (download path stays fail-closed).
+  assertNoCrossPackChapterCollisions({ ...pkg, items: allPublishedItems });
   const isWholeSelection = !selection.episodeIds || selection.episodeIds.length === 0;
   let entries: ThaiNovelExportEntry[];
   let overLimit: { itemCount: number; maxItems: number } | null = null;
@@ -354,7 +372,8 @@ export async function buildThaiNovelZipExport(
   selection: ExportSelection,
   options?: ThaiNovelExportOptions
 ): Promise<ReturnType<typeof buildThaiNovelExportZip> & { novelTitle: string; skippedItems: ExportSkippedItem[] }> {
-  const { pkg, skippedItems } = await buildNovelExportPackage(selection);
+  const { pkg, skippedItems, allPublishedItems } = await buildNovelExportPackage(selection);
+  assertNoCrossPackChapterCollisions({ ...pkg, items: allPublishedItems });
   const serialized = buildThaiNovelExportZip(pkg, options);
   logExportAudit("thainovel-zip", selection.novelId, serialized.itemCount, serialized.content.length);
   return {
