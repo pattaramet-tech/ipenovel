@@ -493,7 +493,7 @@ export default function WorkspacePage() {
     // closure hash — the post-mutation allow-list hash is not visible to
     // this render closure until a later refetch render, so a nonce keeps
     // the follow-up run from coalescing into the pre-mutation in-flight run.
-    const identity = `${selectedSourceWorkItemId}:${draftId}:${currentAllowListSha256 ?? ""}${identityNonce ? `:` : ""}`;
+    const identity = `${selectedSourceWorkItemId}:${draftId}:${currentAllowListSha256 ?? ""}${identityNonce ? `:${identityNonce}` : ""}`;
     const inFlight = editorialAutoRecheckInFlight.current.get(identity);
     if (inFlight) return inFlight;
     if (editorialAutoRecheckDone.current.has(identity)) return Promise.resolve();
