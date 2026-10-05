@@ -66,6 +66,16 @@ describe("WorkspaceNovelExportDialog UI contract", () => {
   it("documents the published-only boundary in the UI", () => {
     expect(dialog).toContain("ส่งออกเฉพาะตอนที่เผยแพร่แล้ว");
   });
+
+  it("filters the novel list with a title/id search box (IPE-064R3)", () => {
+    expect(dialog).toContain('data-testid="export-novel-search"');
+    expect(dialog).toContain("ค้นหาชื่อเรื่อง / Novel ID");
+    expect(dialog).toContain("filteredNovels");
+    // Filtering is display-only: the current selection stays visible even
+    // when the search excludes it.
+    expect(dialog).toContain("const selectableNovels = useMemo(");
+    expect(dialog).toContain("ไม่พบเรื่องที่ตรงกับการค้นหา");
+  });
 });
 
 describe("WorkspacePage export integration contract", () => {
@@ -99,8 +109,13 @@ describe("WorkspacePage export integration contract", () => {
     expect(wiringBlock).not.toMatch(/saveDraft|runChecker|confirmChapter|stageChapter|publishChapter|\.mutate\(/);
   });
 
-  it("derives the novel list from workspace bindings only", () => {
-    expect(page).toContain("workspaceBoundNovels");
-    expect(page).toContain("bindings.data");
+  it("derives the novel list from every active workspace novel, not the read-only bindings join (IPE-064R3)", () => {
+    // The exporter reads published episodes by novelId — it never needs the
+    // read-only binding, whose join silently dropped legacy/re-bound novels.
+    expect(page).toContain("workspaceExportNovels");
+    expect(page).toContain("(detail.data as any)?.novels");
+    expect(page).toContain('(workspaceNovel?.status ?? "active") === "active"');
+    expect(page).not.toContain("workspaceBoundNovels");
+    expect(page).not.toContain("bindings.list.useQuery");
   });
 });

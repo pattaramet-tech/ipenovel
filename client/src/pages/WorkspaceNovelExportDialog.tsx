@@ -70,8 +70,32 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   const [startEpisodeNumber, setStartEpisodeNumber] = useState("");
   const [titlePrefix, setTitlePrefix] = useState("");
   const [appendFilenameToTitle, setAppendFilenameToTitle] = useState(false);
+  // IPE-064R3: title/id search over the novel list — filtering only affects
+  // what the selector shows, never the current selection or the export scope.
+  const [novelSearch, setNovelSearch] = useState("");
+
+  useEffect(() => {
+    if (!open) setNovelSearch("");
+  }, [open]);
 
   const novelId = selectedNovelId ?? (novels.length === 1 ? novels[0].novelId : null);
+  const filteredNovels = useMemo(() => {
+    const query = novelSearch.trim().toLocaleLowerCase("th");
+    if (!query) return novels;
+    return novels.filter(
+      (novel) =>
+        novel.novelTitle.toLocaleLowerCase("th").includes(query) ||
+        String(novel.novelId).includes(query)
+    );
+  }, [novels, novelSearch]);
+  // Keep the current selection visible even when the search filters it out.
+  const selectableNovels = useMemo(() => {
+    if (novelId && !filteredNovels.some((novel) => novel.novelId === novelId)) {
+      const current = novels.find((novel) => novel.novelId === novelId);
+      return current ? [current, ...filteredNovels] : filteredNovels;
+    }
+    return filteredNovels;
+  }, [filteredNovels, novels, novelId]);
   const parsedStart = Number(startEpisodeNumber);
   const validStart = startEpisodeNumber.trim() === "" || (Number.isInteger(parsedStart) && parsedStart >= 1);
   const subsetActive = scope === "subset" && selectedEpisodeIds.length > 0;
@@ -153,18 +177,33 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                 <label className="text-sm font-medium" htmlFor="workspace-export-novel">
                   นิยาย
                 </label>
-                <select
-                  id="workspace-export-novel"
+                <input
+                  type="search"
+                  data-testid="export-novel-search"
+                  aria-label="ค้นหาชื่อเรื่อง / Novel ID"
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                  value={novelId ?? ""}
-                  onChange={(event) => setSelectedNovelId(Number(event.target.value) || null)}
-                >
-                  {novels.map((novel) => (
-                    <option key={novel.novelId} value={novel.novelId}>
-                      {novel.novelTitle}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="พิมพ์ค้นหาชื่อเรื่อง / Novel ID"
+                  value={novelSearch}
+                  onChange={(event) => setNovelSearch(event.target.value)}
+                />
+                {selectableNovels.length === 0 ? (
+                  <p className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
+                    ไม่พบเรื่องที่ตรงกับการค้นหา
+                  </p>
+                ) : (
+                  <select
+                    id="workspace-export-novel"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                    value={novelId ?? ""}
+                    onChange={(event) => setSelectedNovelId(Number(event.target.value) || null)}
+                  >
+                    {selectableNovels.map((novel) => (
+                      <option key={novel.novelId} value={novel.novelId}>
+                        {novel.novelTitle}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
 

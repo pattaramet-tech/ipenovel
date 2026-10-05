@@ -257,12 +257,13 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0 },
     { enabled: isAdmin && Boolean(selectedWorkspaceId) }
   );
-  const bindings = trpc.workspace.bindings.list.useQuery(
-    { workspaceId: selectedWorkspaceId ?? 0 },
-    { enabled: isAdmin && Boolean(selectedWorkspaceId) }
-  );
-  // IPE-059-B: novels bound to the selected workspace, for the export dialog.
-  const workspaceBoundNovels = ((bindings.data as any[] | undefined) ?? [])
+  // IPE-064R3: export covers EVERY active novel bound to the workspace.
+  // The old source (read-only bindings join) silently dropped novels whose
+  // workspace row lacked a synthetic binding (legacy/re-bound rows), so the
+  // export list was shorter than the workspace's own novel list — while the
+  // exporter itself only reads published episodes by novelId.
+  const workspaceExportNovels = ((((detail.data as any)?.novels ?? []) as any[]))
+    .filter(({ workspaceNovel }: any) => (workspaceNovel?.status ?? "active") === "active")
     .map(({ novel }: any) => ({ novelId: novel.id as number, novelTitle: String(novel.title ?? "") }));
   const editorialBoard = trpc.workspace.editorial.board.useQuery(
     { workspaceId: selectedWorkspaceId ?? 0 },
@@ -1860,7 +1861,7 @@ export default function WorkspacePage() {
             variant="outline"
             size="sm"
             data-testid="workspace-novel-export-trigger"
-            disabled={!workspaceBoundNovels.length}
+            disabled={!workspaceExportNovels.length}
             onClick={() => setExportDialogOpen(true)}
           >
             ส่งออก
@@ -1871,7 +1872,7 @@ export default function WorkspacePage() {
       <WorkspaceNovelExportDialog
         open={exportDialogOpen}
         onOpenChange={setExportDialogOpen}
-        novels={workspaceBoundNovels}
+        novels={workspaceExportNovels}
       />
 
       <section className="space-y-6">
