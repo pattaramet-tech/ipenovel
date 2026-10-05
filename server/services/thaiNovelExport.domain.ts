@@ -214,7 +214,12 @@ function expandRangePack(item: NovelExportItem, start: number, end: number): Tha
   }
 
   const expectedCount = end - start + 1;
-  if (matches.length !== expectedCount) {
+  // IPE-064R3: headings FEWER than the declared range stay a defect (missing
+  // chapters). Headings BEYOND the declared end are allowed — the pack
+  // genuinely contains extra chapters (พบ 52, คาด 50) — as long as the
+  // sequence check below proves they continue 141, 142, … without gaps or
+  // duplicates; any sequence break still blocks.
+  if (matches.length < expectedCount) {
     return invalidPack(item, `จำนวนหัวบทในแพ็กไม่ตรงช่วงที่ประกาศ (พบ ${matches.length}, คาด ${expectedCount})`);
   }
 
@@ -266,7 +271,9 @@ function expandSingleEpisode(item: NovelExportItem, sourceNumber: number): ThaiN
 
 /**
  * Expand canonical source Episodes into logical Thai-Novel chapters.
- * Range identities MUST split exactly to every declared chapter.
+ * Range identities must split to every declared chapter — fewer headings
+ * than declared is a defect; sequential extras beyond the declared end are
+ * included (IPE-064R3).
  */
 export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNovelLogicalChapter[] {
   validateExportPackage(pkg);

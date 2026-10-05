@@ -248,3 +248,30 @@ describe("Thai-Novel ZIP download contract", () => {
     expect(zip.filename).toBe("ตำนานมังกร-thainovel.zip");
   });
 });
+
+describe("IPE-064R3 over-limit preview", () => {
+  it("whole-novel preview over MAX_EXPORT_ITEMS returns overLimit + sourceEpisodes instead of throwing", async () => {
+    mockNovel(1, "เรื่องใหญ่");
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({ id: 10, episodeNumber: "1 - 250", content: makePackContent(1, 250) }),
+      makeEpisode({ id: 11, episodeNumber: "251 - 501", content: makePackContent(251, 501) }),
+    ] as any);
+
+    const preview = await buildThaiNovelExportPreview({ novelId: 1 });
+    expect(preview.overLimit).toEqual({ itemCount: 501, maxItems: 500 });
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.sourceEpisodes).toHaveLength(2);
+  });
+
+  it("an explicit subset over the limit still fails closed", async () => {
+    mockNovel(1, "เรื่องใหญ่");
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({ id: 10, episodeNumber: "1 - 300", content: makePackContent(1, 300) }),
+      makeEpisode({ id: 11, episodeNumber: "301 - 600", content: makePackContent(301, 600) }),
+    ] as any);
+
+    await expect(
+      buildThaiNovelExportPreview({ novelId: 1, episodeIds: [10, 11] })
+    ).rejects.toMatchObject({ code: "EXPORT_LIMIT_ITEMS" });
+  });
+});

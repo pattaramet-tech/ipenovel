@@ -140,7 +140,20 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   const previewError = mode === "thainovel" ? thaiPreview.error : backupPreview.error;
   const previewLoading = mode === "thainovel" ? thaiPreview.isFetching : backupPreview.isFetching;
   const entryCount = mode === "thainovel" ? (thaiPreview.data?.entries.length ?? 0) : (backupPreview.data?.exportItemCount ?? 0);
-  const downloadDisabled = !novelId || !validStart || previewLoading || Boolean(previewError) || entryCount === 0 || downloadPending || (scope === "subset" && !subsetActive);
+  // IPE-064R3: whole-novel Thai export over MAX_EXPORT_ITEMS — the preview
+  // still returns sourceEpisodes (per-pack subset is the way out), but the
+  // whole-scope download stays disabled/fail-closed.
+  const thaiOverLimit = thaiPreview.data?.overLimit ?? null;
+  const wholeScopeOverLimit = Boolean(thaiOverLimit && scope === "whole");
+  const downloadDisabled =
+    !novelId ||
+    !validStart ||
+    previewLoading ||
+    Boolean(previewError) ||
+    entryCount === 0 ||
+    downloadPending ||
+    (scope === "subset" && !subsetActive) ||
+    wholeScopeOverLimit;
 
   const handleDownload = () => {
     if (!novelId) return;
@@ -324,6 +337,17 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
               <p className="text-xs text-muted-foreground" data-testid="export-backup-explanation">
                 แพ็กสำรองประกอบด้วย manifest.csv และโฟลเดอร์ contents/*.txt ซึ่งนำกลับเข้าระบบผ่าน ZIP Import เดิมได้
               </p>
+            )}
+
+            {mode === "thainovel" && thaiOverLimit && scope === "whole" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-over-limit-banner">
+                <p className="font-medium">
+                  เรื่องนี้แยกแพ็กได้ {thaiOverLimit.itemCount.toLocaleString()} บท — เกินลิมิตต่อไฟล์ ({thaiOverLimit.maxItems} บท)
+                </p>
+                <p className="text-xs">
+                  ส่งออกแบบ "ทั้งเรื่อง" ไม่ได้ — เลือกโหมด "เลือกบางตอน" แล้วติ๊กเลือกรายแพ็กที่ต้องการ (ต่อไฟล์ไม่เกิน {thaiOverLimit.maxItems} บท) แล้วส่งออกเป็นชุด
+                </p>
+              </div>
             )}
 
             <div className="space-y-1" data-testid="export-preview-table">

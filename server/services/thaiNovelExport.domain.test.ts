@@ -296,3 +296,44 @@ describe("limits", () => {
     expect(resolveThaiNovelFilename('บทที่ 1 ชื่อ: ทดสอบ?')).toBe("บทที่ 1 ชื่อ ทดสอบ.txt");
   });
 });
+
+describe("IPE-064R3 range-pack over-run", () => {
+  const makeOverRunContent = (declaredEnd: number, actualEnd: number, start = 141) => {
+    const chapters = Array.from({ length: actualEnd - start + 1 }, (_, index) => {
+      const chapter = start + index;
+      return `บทที่ ${chapter} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท ${chapter} 🐉`;
+    });
+    return `แพ็กตอน ${start} - ${declaredEnd} 001\n\n${chapters.join("\n\n")}\n`;
+  };
+
+  it("includes sequential extra chapters beyond the declared range (พบ 52 คาด 50)", () => {
+    // Pack declares 141-190 but the content genuinely contains 141-192.
+    const item = makeItem({ episodeNumber: "141 - 190", content: makeOverRunContent(190, 192) });
+    const rows = buildThaiNovelPreviewRows(buildThaiNovelExportEntries(makePackage({ items: [item] })));
+    expect(rows).toHaveLength(52);
+    expect(rows.at(-1)).toMatchObject({ sourceChapterNumber: "192" });
+  });
+
+  it("still rejects fewer headings than the declared range", () => {
+    const item = makeItem({ episodeNumber: "141 - 190", content: makeOverRunContent(190, 189) });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [item] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+
+  it("still rejects a duplicate/out-of-order heading in the extra chapters", () => {
+    const chapters = [
+      ...Array.from({ length: 50 }, (_, index) => `บทที่ ${141 + index} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท ${141 + index} 🐉`),
+      "บทที่ 190 ซ้ำ\n\nเนื้อหาซ้ำ",
+    ];
+    const item = makeItem({
+      episodeNumber: "141 - 190",
+      content: `แพ็กตอน 141 - 190 001\n\n${chapters.join("\n\n")}\n`,
+    });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [item] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+});

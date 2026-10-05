@@ -76,6 +76,16 @@ describe("WorkspaceNovelExportDialog UI contract", () => {
     expect(dialog).toContain("const selectableNovels = useMemo(");
     expect(dialog).toContain("ไม่พบเรื่องที่ตรงกับการค้นหา");
   });
+
+  it("surfaces an over-limit banner and blocks the whole-scope download (IPE-064R3)", () => {
+    expect(dialog).toContain('data-testid="export-over-limit-banner"');
+    expect(dialog).toContain("const thaiOverLimit = thaiPreview.data?.overLimit ?? null;");
+    // The whole-scope ZIP stays fail-closed while the per-pack subset is the
+    // advertised way out.
+    expect(dialog).toContain('const wholeScopeOverLimit = Boolean(thaiOverLimit && scope === "whole");');
+    expect(dialog).toContain("wholeScopeOverLimit;");
+    expect(dialog).toContain("เลือกโหมด \"เลือกบางตอน\"");
+  });
 });
 
 describe("WorkspacePage export integration contract", () => {

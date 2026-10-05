@@ -30,6 +30,7 @@ import {
   sortExportItemsCanonical,
 } from "./novelExport.domain";
 import {
+  ThaiNovelExportEntry,
   ThaiNovelExportOptions,
   ThaiNovelPreviewEntry,
   buildThaiNovelExportEntries,
@@ -292,6 +293,14 @@ export interface ThaiNovelExportPreview {
   sourceEpisodes: ExportPublishedEpisodeSummary[];
   entries: ThaiNovelPreviewEntry[];
   skippedItems: ExportSkippedItem[];
+  /**
+   * IPE-064R3: set when a WHOLE-novel selection expands past
+   * MAX_EXPORT_ITEMS. The preview still returns sourceEpisodes so the
+   * operator can pick a per-pack subset (the old behavior threw and made
+   * over-500-chapter novels un-exportable); the ZIP download keeps failing
+   * closed for over-limit selections.
+   */
+  overLimit: { itemCount: number; maxItems: number } | null;
   limits: {
     maxItems: number;
     maxPerItemBytes: number;
@@ -304,15 +313,35 @@ export async function buildThaiNovelExportPreview(
   options?: ThaiNovelExportOptions
 ): Promise<ThaiNovelExportPreview> {
   const { pkg, skippedItems, publishedEpisodeSummaries } = await buildNovelExportPackage(selection);
-  const entries = buildThaiNovelExportEntries(pkg, options);
+  const isWholeSelection = !selection.episodeIds || selection.episodeIds.length === 0;
+  let entries: ThaiNovelExportEntry[];
+  let overLimit: { itemCount: number; maxItems: number } | null = null;
+  try {
+    entries = buildThaiNovelExportEntries(pkg, options);
+  } catch (error) {
+    if (
+      isWholeSelection &&
+      error instanceof NovelExportError &&
+      error.code === "EXPORT_LIMIT_ITEMS"
+    ) {
+      overLimit = {
+        itemCount: Number(error.details?.itemCount ?? 0),
+        maxItems: Number(error.details?.maxItems ?? MAX_EXPORT_ITEMS),
+      };
+      entries = [];
+    } else {
+      throw error;
+    }
+  }
 
   return {
     novelId: pkg.novelId,
     novelTitle: pkg.novelTitle,
-    mode: selection.episodeIds && selection.episodeIds.length > 0 ? "explicit_subset" : "whole_novel",
+    mode: isWholeSelection ? "whole_novel" : "explicit_subset",
     sourceEpisodes: publishedEpisodeSummaries,
-    entries: buildThaiNovelPreviewRows(entries),
+    entries: overLimit ? [] : buildThaiNovelPreviewRows(entries),
     skippedItems,
+    overLimit,
     limits: {
       maxItems: MAX_EXPORT_ITEMS,
       maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,
