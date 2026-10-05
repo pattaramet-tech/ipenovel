@@ -20,7 +20,8 @@ describe("IPE-064 — intake separation", () => {
     // intake page cannot fall back to the wrong (first) workspace.
     expect(page).toContain("href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : \"\"}`}");
     expect(page).toContain('params.get("workspace")');
-    expect(intake).toContain('href="/workspace"');
+    // IPE-064R4B (P2): the return link carries the managed workspace back.
+    expect(intake).toContain("href={`/workspace${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : \"\"}`}");
   });
 
   it("moves the import/intake tooling out of WorkspacePage", () => {

@@ -653,7 +653,11 @@ export default function WorkspaceIntakePage() {
           <p className="text-sm font-medium text-primary">IpeNovel Workspace · Intake</p>
           <h1 className="text-3xl font-bold tracking-tight">ตั้งค่าและนำเข้า</h1>
         </div>
-        <Link href="/workspace" className="text-sm text-primary underline" data-testid="intake-back-to-workspace">
+        <Link
+          href={`/workspace${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}
+          className="text-sm text-primary underline"
+          data-testid="intake-back-to-workspace"
+        >
           ← กลับไปหน้า Workspace
         </Link>
       </header>

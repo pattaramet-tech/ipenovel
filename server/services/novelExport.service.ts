@@ -330,7 +330,10 @@ export async function buildThaiNovelExportPreview(
   // chapters that an overrunning pack shares with a following pack —
   // validate the collision identity against EVERY published episode of the
   // novel, not just the selected subset (download path stays fail-closed).
-  assertNoCrossPackChapterCollisions({ ...pkg, items: allPublishedItems });
+  assertNoCrossPackChapterCollisions(
+    allPublishedItems,
+    selection.episodeIds && selection.episodeIds.length > 0 ? new Set(selection.episodeIds) : null
+  );
   const isWholeSelection = !selection.episodeIds || selection.episodeIds.length === 0;
   let entries: ThaiNovelExportEntry[];
   let overLimit: { itemCount: number; maxItems: number } | null = null;
@@ -373,7 +376,10 @@ export async function buildThaiNovelZipExport(
   options?: ThaiNovelExportOptions
 ): Promise<ReturnType<typeof buildThaiNovelExportZip> & { novelTitle: string; skippedItems: ExportSkippedItem[] }> {
   const { pkg, skippedItems, allPublishedItems } = await buildNovelExportPackage(selection);
-  assertNoCrossPackChapterCollisions({ ...pkg, items: allPublishedItems });
+  assertNoCrossPackChapterCollisions(
+    allPublishedItems,
+    selection.episodeIds && selection.episodeIds.length > 0 ? new Set(selection.episodeIds) : null
+  );
   const serialized = buildThaiNovelExportZip(pkg, options);
   logExportAudit("thainovel-zip", selection.novelId, serialized.itemCount, serialized.content.length);
   return {

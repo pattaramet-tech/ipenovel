@@ -342,7 +342,13 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     if (!selectedWorkspaceId && workspaces.data?.length) {
-      setSelectedWorkspaceId((workspaces.data as any[])[0].workspace.id);
+      // IPE-064R4B (P2): the intake page's return link carries the workspace
+      // it was managing — honor it before the first-workspace fallback.
+      const requested = Number(new URLSearchParams(window.location.search).get("workspace"));
+      const rows = workspaces.data as any[];
+      const requestedValid =
+        Number.isInteger(requested) && rows.some(({ workspace }: any) => workspace.id === requested);
+      setSelectedWorkspaceId(requestedValid ? requested : rows[0].workspace.id);
     }
   }, [selectedWorkspaceId, workspaces.data]);
 
@@ -399,6 +405,10 @@ export default function WorkspacePage() {
   const bulkRunEditorialChecker = trpc.workspace.editorial.bulkRunChecker.useMutation({
     onSuccess: async (results) => {
       await refreshBulkEditorial();
+      // IPE-064R4B (P2): the open pack's finding card / chapter issue counts /
+      // stale indicator derive from this query — refresh it after bulk Check
+      // or they keep showing the previous run.
+      await editorialForeignChecker.refetch();
       const technicalFailed = results.filter((result) => !result.ok);
       const needsFix = results.filter((result: any) => result.ok && result.effectiveStatus === "failed");
       toast[technicalFailed.length || needsFix.length ? "error" : "success"](
@@ -474,12 +484,16 @@ export default function WorkspacePage() {
   // storage), and never double-runs on refetch.
   const editorialAutoRecheckInFlight = useRef(new Map<string, Promise<unknown>>());
   const editorialAutoRecheckDone = useRef(new Set<string>());
-  const runEditorialForeignCheckerOnceForDraft = (draftId: number) => {
+  const runEditorialForeignCheckerOnceForDraft = (draftId: number, identityNonce?: string) => {
     if (!selectedWorkspaceId || !selectedSourceWorkItemId) {
       return Promise.resolve();
     }
     const currentAllowListSha256 = editorialCheckerData?.currentAllowListSha256 as string | undefined;
-    const identity = `${selectedSourceWorkItemId}:${draftId}:${currentAllowListSha256 ?? ""}`;
+    // IPE-064R4B (P2): identityNonce lets allow/unallow bypass the STALE
+    // closure hash — the post-mutation allow-list hash is not visible to
+    // this render closure until a later refetch render, so a nonce keeps
+    // the follow-up run from coalescing into the pre-mutation in-flight run.
+    const identity = `${selectedSourceWorkItemId}:${draftId}:${currentAllowListSha256 ?? ""}${identityNonce ? `:` : ""}`;
     const inFlight = editorialAutoRecheckInFlight.current.get(identity);
     if (inFlight) return inFlight;
     if (editorialAutoRecheckDone.current.has(identity)) return Promise.resolve();
@@ -671,7 +685,9 @@ export default function WorkspacePage() {
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
         if (latestDraft?.id) {
-          void runEditorialForeignCheckerOnceForDraft(latestDraft.id).catch(() => {});
+          // IPE-064R4B (P2): nonce — the post-allow allow-list hash is not
+          // visible to this closure yet; force a fresh run identity.
+          void runEditorialForeignCheckerOnceForDraft(latestDraft.id, String(Date.now())).catch(() => {});
         }
       }
     },
@@ -698,7 +714,9 @@ export default function WorkspacePage() {
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
         const latestDraft = (editorialSourceDraft.data as any)?.latestDraft;
         if (latestDraft?.id) {
-          void runEditorialForeignCheckerOnceForDraft(latestDraft.id).catch(() => {});
+          // IPE-064R4B (P2): nonce forces a fresh identity for the
+          // post-unallow allow-list state.
+          void runEditorialForeignCheckerOnceForDraft(latestDraft.id, String(Date.now())).catch(() => {});
         }
       }
     },

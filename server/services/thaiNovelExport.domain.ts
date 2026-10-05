@@ -339,13 +339,34 @@ export function assertNoCrossItemChapterCollisions(chapters: ThaiNovelLogicalCha
  * the FULL published episode list of the novel (no MAX_EXPORT_ITEMS count
  * limit here; subsets stay under it and whole-scope keeps its own check).
  */
-export function assertNoCrossPackChapterCollisions(pkg: NovelExportPackage): void {
-  // Unparseable legacy identities cannot be numerically validated here — the
-  // selected-item path still fail-closes on them; skipping avoids regressing
-  // subsets of novels that contain such rows.
-  const parsableItems = pkg.items.filter(item => parseExportEpisodeIdentity(item.episodeNumber));
-  if (!parsableItems.length) return;
-  assertNoCrossItemChapterCollisions(expandItemsToLogicalChapters(parsableItems));
+export function assertNoCrossPackChapterCollisions(
+  items: NovelExportItem[],
+  selectedItemIds: ReadonlySet<number> | null
+): void {
+  // IPE-064R4B review round 3 (P2): an UNSELECTED malformed pack (e.g. a
+  // legacy range with fewer headings than declared) must not block exporting
+  // a valid subset — skip expansion failures of unselected items and only
+  // fail closed when the defect belongs to a selected item (or a whole-novel
+  // export, where every item is selected). Unparseable legacy identities are
+  // skipped outright: they cannot be numerically validated, and the
+  // selected-item path still fail-closes on them.
+  const chapters: ThaiNovelLogicalChapter[] = [];
+  for (const item of sortExportItemsCanonical(items)) {
+    const identity = parseExportEpisodeIdentity(item.episodeNumber);
+    if (!identity) continue;
+    try {
+      const expanded =
+        identity.kind === "range"
+          ? expandRangePack(item, identity.start, identity.end)
+          : expandSingleEpisode(item, identity.start);
+      chapters.push(...expanded);
+    } catch (error) {
+      if (selectedItemIds === null || selectedItemIds.has(item.episodeId)) {
+        throw error;
+      }
+    }
+  }
+  assertNoCrossItemChapterCollisions(chapters);
 }
 
 /**
