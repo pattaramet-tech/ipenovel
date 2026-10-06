@@ -507,7 +507,14 @@ function expandSplitParagraph(
 }
 
 function hasNarrativeEvidence(tab: EditorialDraftDocument["tabs"][number]) {
-  if (classifyEditorialChapterNumber(tab.chapterNumber).kind !== "single") {
+  // IPE-064R4B round 21: only pack-range identity blocks the ending cleanup.
+  // reindexEditorialDraftDocument derives chapterNumber from the tab CONTENT,
+  // so canonical-note heading tabs and unnumbered narrative chapters carry
+  // null here — they are ordinary chapters and keep the จบตอน marker.
+  // Genuinely note-only tabs never reach this point (the
+  // isAcceptedSourceNoteChapterTab guard above) and table-of-contents-like
+  // tabs fail the row scan below.
+  if (classifyEditorialChapterNumber(tab.chapterNumber).kind === "range") {
     return false;
   }
   return tab.paragraphs.some(paragraph => {
