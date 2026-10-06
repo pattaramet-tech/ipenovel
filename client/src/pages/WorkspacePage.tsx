@@ -1728,13 +1728,15 @@ export default function WorkspacePage() {
   // runs once when the board first arrives; the story-switch machinery
   // above then re-opens the seeded pack/chapter through storyUiStates.
   const urlRestoreAppliedRef = useRef(false);
-  // IPE-064R4B review round 29 (P2): "settled" means both workspace-scoped
-  // queries finished their first load for the CURRENT workspace. A zero
-  // group count only proves the workspace is empty AFTER that — while the
-  // queries are still fetching, empty groups are transient and the restore
-  // must keep waiting, or legitimate bookmarks get consumed too early.
+  // IPE-064R4B review round 33 (P2): "settled" means both workspace-scoped
+  // queries have SUCCESSFULLY resolved for the current workspace — !isLoading
+  // alone also covers an ERROR state (failed first request, groups still
+  // empty), and consuming the restore there would let the URL writer erase
+  // the bookmarked story/pack/chapter before any retry could restore it. A
+  // genuine retry-then-succeed path either restores the bookmark normally
+  // (groups present) or consumes it only once the workspace is proven empty.
   const editorialWorkspaceDataSettled =
-    Boolean(selectedWorkspaceId) && !editorialBoard.isLoading && !detail.isLoading;
+    Boolean(selectedWorkspaceId) && editorialBoard.isSuccess && detail.isSuccess;
   useEffect(() => {
     if (urlRestoreAppliedRef.current) return;
     // IPE-064R4B review round 11 (P1): wait for the workspace LIST before

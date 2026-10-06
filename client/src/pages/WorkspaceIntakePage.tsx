@@ -434,7 +434,14 @@ export default function WorkspaceIntakePage() {
     onError: (error) => toast.error(error.message),
   });
   const bulkImportEpisodeFiles = trpc.workspace.editorial.bulkImportEpisodeFiles.useMutation({
-    onSuccess: async (results) => {
+    // IPE-064R4B R33 (P2): mirror the Google Docs bulk handler — retain only
+    // the FAILED files after a partial bulk import. The server returns one
+    // result per input file in the same order (no rowIndex), so failed result
+    // positions map back onto the submitted files positionally; the retained
+    // rows are the ORIGINAL client file objects (name/mimeType/paragraphs/
+    // episodeNumber/episodeTitle preserved), so a retry resubmits only the
+    // files that never created their Episode Pack.
+    onSuccess: async (results, variables) => {
       await Promise.all([editorialBoard.refetch(), masterIntakeHistory.refetch()]);
       const failed = results.filter((result) => !result.ok);
       const firstSuccess = results.find((result) => result.ok && result.workItemId);
@@ -446,9 +453,24 @@ export default function WorkspaceIntakePage() {
         setEpisodePrice("");
         setEpisodeFreeState("");
         setEpisodeGoogleDocUrl("");
+      } else {
+        const failedIndexes = new Set(
+          results.flatMap((result, index) => (result.ok ? [] : [index]))
+        );
+        setEpisodeBatchFiles((current) => {
+          const submitted = current.length === variables.files.length ? current : variables.files.map((file) => ({
+            name: file.fileName,
+            mimeType: file.mimeType,
+            paragraphs: [...file.paragraphs],
+            episodeNumber: file.episodeNumber,
+            episodeTitle: file.episodeTitle ?? "",
+          }));
+          return submitted.filter((_file, index) => failedIndexes.has(index));
+        });
       }
+      const firstError = failed[0]?.error;
       toast[failed.length ? "error" : "success"](
-        `นำเข้าไฟล์ ${results.length - failed.length}/${results.length} แพ็ก${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`
+        `นำเข้าไฟล์ ${results.length - failed.length}/${results.length} แพ็ก${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}${firstError ? ` · ${firstError}` : ""}`
       );
     },
     onError: (error) => toast.error(error.message),

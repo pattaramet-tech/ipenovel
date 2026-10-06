@@ -51,6 +51,31 @@ describe("IPE-064 — intake separation", () => {
     expect(page).not.toContain("Safe Transform Preview");
     expect(page).not.toContain("Apply เป็น Draft revision ใหม่");
   });
+
+  it("retains only failed files after a partial bulk-file import (IPE-064R4B R33)", () => {
+    // Mirror of the Google Docs bulk handler: onSuccess reads the mutation
+    // variables, keeps the FAILED result positions only, and retains the
+    // original client file objects (name/mimeType/paragraphs/episodeNumber/
+    // episodeTitle) so retry resubmits exactly the files that never created
+    // their Episode Pack.
+    expect(intake).toContain("bulkImportEpisodeFiles.useMutation({");
+    expect(intake).toContain("onSuccess: async (results, variables) => {");
+    // Positional mapping: results[index] ↔ variables.files[index] — failed
+    // indexes derive from the results array in order.
+    expect(intake).toContain("results.flatMap((result, index) => (result.ok ? [] : [index]))");
+    // Prefer the live client batch when it still matches the submission
+    // (rich file objects preserved); otherwise the retained rows are rebuilt
+    // from the submitted request with every retry field.
+    expect(intake).toContain("current.length === variables.files.length ? current : variables.files.map((file) => ({");
+    expect(intake).toContain("name: file.fileName,");
+    expect(intake).toContain("paragraphs: [...file.paragraphs],");
+    expect(intake).toContain("episodeTitle: file.episodeTitle ?? \"\",");
+    // All success clears the batch exactly as before; the filter path only
+    // runs when failed.length > 0.
+    expect(intake).toContain("if (!failed.length) {");
+    // The Google Docs bulk behavior is unchanged (rowIndex-based retention).
+    expect(intake).toContain("const failedIndexes = new Set(failed.map((result) => result.rowIndex));");
+  });
 });
 
 describe("IPE-064 — story gate", () => {
@@ -178,17 +203,20 @@ describe("IPE-064R3 — workspace context & navigation", () => {
     expect(page).toContain("if (!urlRestoreAppliedRef.current) return;");
   });
 
-  it("consumes the stale story restore only after the workspace data settles (IPE-064R4B R29)", () => {
-    // Zero groups while board/detail are still fetching is TRANSIENT — the
-    // restore must keep waiting, or legitimate bookmarks get consumed early.
+  it("consumes the stale story restore only after the workspace data settles (IPE-064R4B R29/R33)", () => {
+    // R33 (P2): settled = both workspace-scoped queries have SUCCESSFULLY
+    // resolved — !isLoading alone also covers an ERROR state, which would
+    // consume the restore and let the URL writer erase the bookmark before
+    // any retry could restore it.
     expect(page).toContain("const editorialWorkspaceDataSettled =");
     expect(page).toContain(
-      "Boolean(selectedWorkspaceId) && !editorialBoard.isLoading && !detail.isLoading;"
+      "Boolean(selectedWorkspaceId) && editorialBoard.isSuccess && detail.isSuccess;"
     );
+    expect(page).not.toContain("!editorialBoard.isLoading && !detail.isLoading");
     // A SETTLED empty workspace consumes the stale restore exactly like the
     // !group branch below it — the URL writer then canonicalizes from live
     // state and the stale ?workspace can never yank the operator back into
-    // the empty workspace.
+    // the empty workspace (R29 behavior preserved).
     expect(page).toContain("if (!editorialWorkspaceDataSettled) return;");
     // The settled flag participates in the effect deps so a zero-length group
     // list that merely settles (length 0 → 0) still re-runs the restore
@@ -201,6 +229,29 @@ describe("IPE-064R3 — workspace context & navigation", () => {
     expect(page).not.toContain("urlRestoreAppliedRef.current = false");
     // The URL writer stays guarded by the one-time restore flag.
     expect(page).toContain("if (!urlRestoreAppliedRef.current) return;");
+  });
+
+  it("requires SUCCESSFUL workspace queries before consuming the URL restore (IPE-064R4B R33)", () => {
+    // A/B/C: loading OR error on either query must never classify as a
+    // settled empty workspace — only isSuccess (retry-resolved success)
+    // counts; the restore keeps waiting so the bookmark survives a failed
+    // first board request and can restore on a later retry.
+    expect(page).toContain(
+      "Boolean(selectedWorkspaceId) && editorialBoard.isSuccess && detail.isSuccess;"
+    );
+    expect(page).not.toContain("!editorialBoard.isLoading");
+    expect(page).not.toContain("!detail.isLoading");
+    // D: a successfully resolved empty workspace still consumes the stale
+    // restore (the R29 dead-end fix preserved).
+    expect(page).toContain("if (!editorialWorkspaceDataSettled) return;");
+    expect(page).toContain("urlRestoreAppliedRef.current = true;");
+    // F: the pre-existing restore branches (no story param, workspace-first
+    // switch, stale workspace validation, pack/chapter seeding) untouched.
+    expect(page).toContain("if (!workspaces.data?.length) return;");
+    expect(page).toContain('const storyParam = params.get("story");');
+    expect(page).toContain("if (workspaceParamValid && workspaceParam !== selectedWorkspaceId) {");
+    expect(page).toContain("const packValid =");
+    expect(page).toContain("const chapterParam = params.get(\"chapter\");");
   });
 
   it("routes both intake links through the canonical dirty-editor boundary (IPE-064R4B R31)", () => {
