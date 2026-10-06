@@ -643,15 +643,12 @@ function applySingleTransform(input: {
 
   const beforeSha = editorialDraftSha256(next);
   for (const tab of next.tabs) {
-    if (!hasNarrativeEvidence(tab)) continue;
-    // IPE-060B/IPE-064R4B round 17: a tab is an intentional source-note
-    // chapter only when its identity is the exact canonical note AND its
-    // content is genuinely note-only — canonical metadata over narrative
-    // content is an ordinary chapter and receives the standard marker.
+    // IPE-064R4B round 20: source-note classification runs BEFORE the
+    // narrative guard — a genuinely note-only tab (canonical identity +
+    // note-only rows) has its legacy generated จบตอน stripped even though
+    // it contains no narrative evidence (which would otherwise skip the
+    // cleanup entirely and strand the marker).
     if (isAcceptedSourceNoteChapterTab(tab)) {
-      // IPE-064R4B round 18: note-only tabs never RECEIVE an ending marker —
-      // and legacy v8-era generated markers (sourceParagraphIndex === 0) are
-      // stripped so pre-round-15 drafts migrate to the marker-less contract.
       tab.paragraphs = tab.paragraphs.filter(
         paragraph =>
           !(
@@ -661,6 +658,7 @@ function applySingleTransform(input: {
       );
       continue;
     }
+    if (!hasNarrativeEvidence(tab)) continue;
     const hadMarker = tab.paragraphs.some(paragraph =>
       /^จบตอน[.!…]*$/i.test(normalizeEditorialText(paragraph.text))
     );
