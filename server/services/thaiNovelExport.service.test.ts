@@ -263,15 +263,26 @@ describe("IPE-064R3 over-limit preview", () => {
     expect(preview.sourceEpisodes).toHaveLength(2);
   });
 
-  it("an explicit subset over the limit still fails closed", async () => {
+  // IPE-064R4B review round 26 (P2): an over-limit subset previously
+  // rejected, stranding the dialog's picker with the oversized selection
+  // still applied. The preview now reports overLimit with sourceEpisodes so
+  // the operator can deselect; the actual download stays fail-closed.
+  it("an explicit subset over the limit reports overLimit + sourceEpisodes; the ZIP still fails closed", async () => {
     mockNovel(1, "เรื่องใหญ่");
     mockedDb.getEpisodesByNovelId.mockResolvedValue([
       makeEpisode({ id: 10, episodeNumber: "1 - 300", content: makePackContent(1, 300) }),
       makeEpisode({ id: 11, episodeNumber: "301 - 600", content: makePackContent(301, 600) }),
     ] as any);
 
+    const preview = await buildThaiNovelExportPreview({ novelId: 1, episodeIds: [10, 11] });
+    expect(preview.mode).toBe("explicit_subset");
+    expect(preview.overLimit).toEqual({ itemCount: 600, maxItems: 500 });
+    expect(preview.validationError?.code).toBe("EXPORT_LIMIT_ITEMS");
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.sourceEpisodes).toHaveLength(2);
+
     await expect(
-      buildThaiNovelExportPreview({ novelId: 1, episodeIds: [10, 11] })
+      buildThaiNovelZipExport({ novelId: 1, episodeIds: [10, 11] })
     ).rejects.toMatchObject({ code: "EXPORT_LIMIT_ITEMS" });
   });
 });

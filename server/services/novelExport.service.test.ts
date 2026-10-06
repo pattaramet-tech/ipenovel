@@ -18,6 +18,7 @@ import {
   buildNovelExportPreview,
   buildNovelTxtExport,
   buildNovelZipExport,
+  buildThaiNovelExportPreview,
   buildThaiNovelZipExport,
 } from "./novelExport.service";
 
@@ -285,6 +286,47 @@ describe("ZIP export - sale metadata integrity", () => {
       makeEpisode({ id: 11, episodeNumber: "191", content: null }),
     ] as any);
 
+    await expect(buildThaiNovelZipExport({ novelId: 1, episodeIds: [10] })).rejects.toMatchObject({
+      code: "EXPORT_INVALID_EPISODE_IDENTITY",
+    } as Partial<NovelExportError>);
+  });
+});
+
+// IPE-064R4B review round 26 (P2): an explicit-subset preview that fails on
+// its own selected defect must still return sourceEpisodes — the export
+// dialog renders its picker from that list, so rejecting would strand the
+// operator with a stale selection they cannot deselect.
+describe("Thai preview - picker preservation on subset validation failures", () => {
+  it("reports a contentless selected episode as validationError and keeps the picker", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({ id: 10, episodeNumber: "1" }),
+      makeEpisode({ id: 11, episodeNumber: "2", content: null }),
+    ] as any);
+
+    const preview = await buildThaiNovelExportPreview({ novelId: 1, episodeIds: [11] });
+    expect(preview.mode).toBe("explicit_subset");
+    expect(preview.validationError?.code).toBe("EXPORT_EPISODE_MISSING_CONTENT");
+    expect(preview.entries).toEqual([]);
+    expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).toEqual([10, 11]);
+    expect(preview.overLimit).toBeNull();
+  });
+
+  it("reports a subset identity defect as validationError and keeps the picker (ZIP still fails closed)", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({
+        id: 10,
+        episodeNumber: "141-190",
+        content: "บทที่ 141 เริ่มต้น\nเนื้อหา\nบทที่ 191 ล้นช่วง\nเนื้อหาล้น",
+      }),
+      makeEpisode({ id: 11, episodeNumber: "191", content: null }),
+    ] as any);
+
+    const preview = await buildThaiNovelExportPreview({ novelId: 1, episodeIds: [10] });
+    expect(preview.mode).toBe("explicit_subset");
+    expect(preview.validationError?.code).toBe("EXPORT_INVALID_EPISODE_IDENTITY");
+    expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).toEqual([10, 11]);
     await expect(buildThaiNovelZipExport({ novelId: 1, episodeIds: [10] })).rejects.toMatchObject({
       code: "EXPORT_INVALID_EPISODE_IDENTITY",
     } as Partial<NovelExportError>);

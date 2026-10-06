@@ -325,11 +325,71 @@ export interface ThaiNovelExportPreview {
   };
 }
 
+// IPE-064R4B review round 26 (P2): picker-preserving metadata for an explicit
+// preview that failed on its own selected defect — novel title + every
+// published episode so the dialog can render the checkbox list and the
+// operator can deselect the bad item.
+async function loadExportPreviewFallback(novelId: number): Promise<{
+  novelTitle: string;
+  sourceEpisodes: ExportPublishedEpisodeSummary[];
+}> {
+  const novel = await db.getNovelById(novelId, false);
+  if (!novel) {
+    throw new NovelExportError("EXPORT_NOVEL_NOT_FOUND", `ไม่พบนิยาย id ${novelId}`, {
+      novelId,
+    });
+  }
+  const allEpisodes = (await db.getEpisodesByNovelId(novelId)) as ExportableEpisodeRow[];
+  return {
+    novelTitle: String(novel.title ?? ""),
+    sourceEpisodes: allEpisodes
+      .filter((episode) => episode.isPublished === true)
+      .map((episode) => ({
+        episodeId: episode.id,
+        episodeNumber: String(episode.episodeNumber ?? ""),
+        title: String(episode.title ?? ""),
+      })),
+  };
+}
+
 export async function buildThaiNovelExportPreview(
   selection: ExportSelection,
   options?: ThaiNovelExportOptions
 ): Promise<ThaiNovelExportPreview> {
-  const { pkg, skippedItems, publishedEpisodeSummaries, allPublishedItems } = await buildNovelExportPackage(selection);
+  let pkg: NovelExportPackage;
+  let skippedItems: ExportSkippedItem[];
+  let publishedEpisodeSummaries: ExportPublishedEpisodeSummary[];
+  let allPublishedItems: NovelExportItem[];
+  try {
+    ({ pkg, skippedItems, publishedEpisodeSummaries, allPublishedItems } =
+      await buildNovelExportPackage(selection));
+  } catch (error) {
+    // IPE-064R4B review round 26 (P2): an explicit subset that names a
+    // defective episode is the RECOVERY path after the whole-novel guidance —
+    // the dialog renders its picker from sourceEpisodes, so rejecting here
+    // leaves the operator stuck with a stale selection. Report the defect as
+    // validationError with the picker metadata intact; the ZIP download path
+    // stays fail-closed.
+    if (error instanceof NovelExportError && error.code === "EXPORT_EPISODE_MISSING_CONTENT") {
+      const fallback = await loadExportPreviewFallback(selection.novelId);
+      return {
+        novelId: selection.novelId,
+        novelTitle: fallback.novelTitle,
+        mode: "explicit_subset",
+        sourceEpisodes: fallback.sourceEpisodes,
+        entries: [],
+        skippedItems: [],
+        overLimit: null,
+        validationError: { code: error.code, message: error.message },
+        limits: {
+          maxItems: MAX_EXPORT_ITEMS,
+          maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,
+          maxTotalBytes: MAX_EXPORT_TOTAL_BYTES,
+        },
+      };
+    }
+    throw error;
+  }
   const isWholeSelection = !selection.episodeIds || selection.episodeIds.length === 0;
   // IPE-064R4B (P2): validation scope — whole-novel requests fail closed on
   // ANY published defect (surfaced as flags so sourceEpisodes still loads);
@@ -337,7 +397,7 @@ export async function buildThaiNovelExportPreview(
   // so unrelated unselected defects never block a valid per-pack export.
   const selectedItemIds = isWholeSelection
     ? null
-    : new Set(selection.episodeIds ?? []); !selection.episodeIds || selection.episodeIds.length === 0;
+    : new Set(selection.episodeIds ?? []);
   let entries: ThaiNovelExportEntry[];
   let overLimit: { itemCount: number; maxItems: number } | null = null;
   let validationError: { code: string; message: string } | null = null;
@@ -350,8 +410,11 @@ export async function buildThaiNovelExportPreview(
     assertNoCrossPackChapterCollisions(allPublishedItems, selectedItemIds);
     entries = buildThaiNovelExportEntries(pkg, options);
   } catch (error) {
+    // IPE-064R4B review round 26 (P2): recovery is no longer whole-selection
+    // only — an explicit subset whose OWN items carry an identity/sale/size
+    // defect also returns validationError so the picker stays alive; unrelated
+    // unselected defects still throw (the subset scope rule above).
     if (
-      isWholeSelection &&
       error instanceof NovelExportError &&
       (error.code === "EXPORT_LIMIT_ITEMS" ||
         error.code === "EXPORT_INVALID_EPISODE_IDENTITY" ||
