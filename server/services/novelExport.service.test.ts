@@ -331,4 +331,24 @@ describe("Thai preview - picker preservation on subset validation failures", () 
       code: "EXPORT_INVALID_EPISODE_IDENTITY",
     } as Partial<NovelExportError>);
   });
+
+  // IPE-064R4B review round 28 (P2): an episode that becomes UNPUBLISHED
+  // after the operator selected it must be ABSENT from the recovery picker —
+  // the returned sourceEpisodes set is authoritative and the client prunes
+  // its stale selection against exactly this list, so a hidden selected ID
+  // can never survive into the next preview.
+  it("excludes an unpublished selected episode from the recovery picker set", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({ id: 10, episodeNumber: "1" }),
+      makeEpisode({ id: 11, episodeNumber: "2", isPublished: false }),
+    ] as any);
+
+    const preview = await buildThaiNovelExportPreview({ novelId: 1, episodeIds: [11] });
+    expect(preview.mode).toBe("explicit_subset");
+    expect(preview.validationError?.code).toBe("EXPORT_EPISODE_MISSING_CONTENT");
+    expect(preview.entries).toEqual([]);
+    expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).toEqual([10]);
+    expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).not.toContain(11);
+  });
 });

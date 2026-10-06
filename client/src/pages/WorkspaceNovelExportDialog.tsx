@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
+import { pruneEpisodeSelection } from "./workspaceNovelExportSelection";
 
 export interface ExportDialogNovel {
   novelId: number;
@@ -127,6 +128,21 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
     { ...selectionInput, ...thaiOptions },
     { enabled: open && Boolean(novelId), retry: false }
   );
+  // IPE-064R4B review round 28 (P2): the response's sourceEpisodes is the
+  // authoritative picker set — checkboxes render only from it. A selected
+  // episode that becomes unpublished / contentless is absent from the set,
+  // and without reconciliation the stale ID stays selected invisibly while
+  // every subsequent preview resubmits it. Prune the selection against the
+  // picker on every successful response; pruneEpisodeSelection returns the
+  // same reference when nothing changed, so React bails out and this can
+  // never loop or refetch on its own. While the response is absent
+  // (loading / error) the selection is left untouched.
+  const pickerEpisodes = thaiPreview.data?.sourceEpisodes;
+  useEffect(() => {
+    if (!pickerEpisodes) return;
+    const pickerIds = pickerEpisodes.map((episode) => episode.episodeId);
+    setSelectedEpisodeIds(current => pruneEpisodeSelection(current, pickerIds));
+  }, [pickerEpisodes]);
   const backupPreview = trpc.admin.novelExport.preview.useQuery(selectionInput, {
     enabled: open && Boolean(novelId) && mode === "backup",
     retry: false,

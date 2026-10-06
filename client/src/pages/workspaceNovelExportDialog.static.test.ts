@@ -91,6 +91,23 @@ describe("WorkspaceNovelExportDialog UI contract", () => {
     expect(dialog).toContain('Boolean(mode === "thainovel" && thaiValidationError)');
     expect(dialog).toContain("เลือกโหมด \"เลือกบางตอน\"");
   });
+
+  it("prunes stale selected episodes against the recovery picker (IPE-064R4B R28)", () => {
+    // The returned sourceEpisodes set is the authoritative picker — a
+    // selected episode that becomes unpublished / contentless is absent from
+    // it, and the stale ID must be pruned automatically instead of staying
+    // selected invisibly (checkboxes render only from sourceEpisodes).
+    expect(dialog).toContain('from "./workspaceNovelExportSelection"');
+    expect(dialog).toContain("pruneEpisodeSelection");
+    expect(dialog).toContain("const pickerEpisodes = thaiPreview.data?.sourceEpisodes;");
+    // Never prune while the response is absent (loading / error) — the
+    // selection must not be blanket-cleared by a missing response.
+    expect(dialog).toContain("if (!pickerEpisodes) return;");
+    // Prune goes through the functional updater with the reference-stable
+    // helper, so it cannot loop or refetch on its own.
+    expect(dialog).toContain("setSelectedEpisodeIds(current => pruneEpisodeSelection(current, pickerIds))");
+    expect(dialog).toContain("}, [pickerEpisodes]);");
+  });
 });
 
 describe("WorkspacePage export integration contract", () => {
