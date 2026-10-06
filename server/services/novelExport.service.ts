@@ -216,13 +216,16 @@ export async function buildNovelExportPackage(selection: ExportSelection): Promi
     exportable.push(mapEpisodeToExportItem(episode));
   }
 
-  // IPE-064R4B (P2): every published episode with content — the collision
+  // IPE-064R4B (P2): every published episode — content or not — the collision
   // identity for chapter exports is validated against the WHOLE novel, not
   // just the selected subset, so an overrunning pack cannot double-export
-  // chapters of a following pack through a per-pack subset.
-  const allPublishedItems = publishedEpisodes
-    .filter((episode) => episode.content && String(episode.content).trim())
-    .map((episode) => mapEpisodeToExportItem(episode));
+  // chapters of a following pack through a per-pack subset. A legacy
+  // contentless row still occupies its DECLARED episodeNumber here (the
+  // round-22 review): the MISSING_CONTENT skip policy keeps it out of the
+  // ZIP output, but its declared identity must fence the collision check.
+  const allPublishedItems = publishedEpisodes.map((episode) =>
+    mapEpisodeToExportItem(episode)
+  );
 
   return {
     pkg: {

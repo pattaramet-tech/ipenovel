@@ -18,6 +18,7 @@ import {
   buildNovelExportPreview,
   buildNovelTxtExport,
   buildNovelZipExport,
+  buildThaiNovelZipExport,
 } from "./novelExport.service";
 
 const mockedDb = vi.mocked(db, true);
@@ -267,5 +268,25 @@ describe("ZIP export - sale metadata integrity", () => {
     expect(result.itemCount).toBe(1);
     expect(result.skippedItems.map((s) => s.episodeId)).toEqual([11]);
     expect(result.mimeType).toBe("application/zip");
+  });
+
+  // IPE-064R4B review round 23 (P2): a contentless published episode still
+  // owns its DECLARED identity — a selected range pack overrunning into that
+  // number must fail the collision check even though the empty episode is
+  // skipped from the archive itself.
+  it("fails the Thai ZIP when a selected range pack overruns into a contentless published episode", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({
+        id: 10,
+        episodeNumber: "141-190",
+        content: "บทที่ 141 เริ่มต้น\nเนื้อหา\nบทที่ 191 ล้นช่วง\nเนื้อหาล้น",
+      }),
+      makeEpisode({ id: 11, episodeNumber: "191", content: null }),
+    ] as any);
+
+    await expect(buildThaiNovelZipExport({ novelId: 1, episodeIds: [10] })).rejects.toMatchObject({
+      code: "EXPORT_INVALID_EPISODE_IDENTITY",
+    } as Partial<NovelExportError>);
   });
 });
