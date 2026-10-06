@@ -364,13 +364,23 @@ export async function buildThaiNovelExportPreview(
     ({ pkg, skippedItems, publishedEpisodeSummaries, allPublishedItems } =
       await buildNovelExportPackage(selection));
   } catch (error) {
-    // IPE-064R4B review round 26 (P2): an explicit subset that names a
-    // defective episode is the RECOVERY path after the whole-novel guidance —
-    // the dialog renders its picker from sourceEpisodes, so rejecting here
-    // leaves the operator stuck with a stale selection. Report the defect as
-    // validationError with the picker metadata intact; the ZIP download path
+    // IPE-064R4B review round 26 (P2) + round 32 (P2): an explicit subset that
+    // names a defective episode is the RECOVERY path after the whole-novel
+    // guidance — the dialog renders its picker from sourceEpisodes, so
+    // rejecting here leaves the operator stuck with a stale selection. This
+    // branch is EXPLICIT-SUBSET ONLY (a whole-novel request has no selection
+    // to reconcile): both a hard-DELETEd selected episode (EXPORT_UNKNOWN_EPISODE)
+    // and an unpublished/contentless one (EXPORT_EPISODE_MISSING_CONTENT) are
+    // reported as validationError with the current picker catalog intact —
+    // the client's R28 pruning removes the stale ID; the ZIP download path
     // stays fail-closed.
-    if (error instanceof NovelExportError && error.code === "EXPORT_EPISODE_MISSING_CONTENT") {
+    const isExplicitSubset =
+      Array.isArray(selection.episodeIds) && selection.episodeIds.length > 0;
+    const recoverable =
+      error instanceof NovelExportError &&
+      (error.code === "EXPORT_EPISODE_MISSING_CONTENT" ||
+        error.code === "EXPORT_UNKNOWN_EPISODE");
+    if (isExplicitSubset && recoverable) {
       const fallback = await loadExportPreviewFallback(selection.novelId);
       return {
         novelId: selection.novelId,

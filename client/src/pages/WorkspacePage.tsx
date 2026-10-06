@@ -2836,10 +2836,22 @@ export default function WorkspacePage() {
                         selectedChapterEditorIssue.kind === "structural" &&
                         (selectedChapterEditorIssue.anomaly as any).anomalyType === "source_note_only"
                     )}
+                    // IPE-064R4B R32 (P2): reopen is for a reversible resolved
+                    // disposition (ignored/fixed) — allowlist-derived accepted
+                    // findings must use the existing allow/unallow authority,
+                    // never this flow.
+                    canReopen={Boolean(
+                      selectedChapterEditorIssue &&
+                        selectedChapterEditorIssue.kind === "finding" &&
+                        ((selectedChapterEditorIssue.finding as any).disposition === "ignored" ||
+                          (selectedChapterEditorIssue.finding as any).disposition === "fixed") &&
+                        !editorialCheckerRunStale
+                    )}
                     ignorePending={resolveEditorialFinding.isPending}
                     allowPending={allowEditorialFinding.isPending}
                     confirmNotePending={setStructuralConfirmation.isPending}
                     unallowPending={unallowEditorialWord.isPending}
+                    reopenPending={resolveEditorialFinding.isPending}
                     dirty={chapterEditorDirty}
                     savePending={editEditorialDraft.isPending}
                     allowWords={(editorialCheckerData as any)?.allowWords ?? []}
@@ -2874,6 +2886,24 @@ export default function WorkspacePage() {
                         findingId: finding.id,
                         expectedVersion: finding.resolutionVersion ?? 0,
                         idempotencyKey: `editorial-allow:${finding.id}:${finding.resolutionVersion ?? 0}`,
+                      });
+                    }}
+                    // IPE-064R4B R32 (P2): reopen an accidentally ignored or
+                    // resolved-fixed finding — the same resolve mutation with
+                    // disposition "open", the current resolutionVersion as
+                    // expectedVersion, and a distinct idempotencyKey.
+                    onReopen={() => {
+                      const issue = selectedChapterEditorIssue;
+                      if (!issue || issue.kind !== "finding") return;
+                      const finding = issue.finding as any;
+                      if (finding.disposition !== "ignored" && finding.disposition !== "fixed") return;
+                      resolveEditorialFinding.mutate({
+                        workspaceId: selectedWorkspaceId,
+                        workItemId: selectedSourceWorkItemId,
+                        findingId: finding.id,
+                        disposition: "open",
+                        expectedVersion: finding.resolutionVersion ?? 0,
+                        idempotencyKey: `editorial-reopen:${finding.id}:${finding.resolutionVersion ?? 0}`,
                       });
                     }}
                     onUnallow={(word) =>

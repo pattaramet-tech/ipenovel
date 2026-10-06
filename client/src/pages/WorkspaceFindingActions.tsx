@@ -42,10 +42,13 @@ interface WorkspaceFindingActionsProps {
   canIgnore: boolean;
   canAllow: boolean;
   canConfirmSourceNote: boolean;
+  /** IPE-064R4B R32 (P2): an ignored/fixed finding can be reopened. */
+  canReopen: boolean;
   ignorePending: boolean;
   allowPending: boolean;
   confirmNotePending: boolean;
   unallowPending: boolean;
+  reopenPending: boolean;
   dirty: boolean;
   savePending: boolean;
   allowWords: Array<{ id: number; displayWord: string; normalizedWord: string }>;
@@ -53,6 +56,7 @@ interface WorkspaceFindingActionsProps {
   onNext: () => void;
   onIgnore: () => void;
   onAllow: () => void;
+  onReopen: () => void;
   onUnallow: (word: { normalizedWord: string }) => void;
   onToggleConfirmSourceNote: () => void;
   onOpenRelatedTab: (tab: WorkspaceRelatedTab) => void;
@@ -72,10 +76,12 @@ export function WorkspaceFindingActions({
   canIgnore,
   canAllow,
   canConfirmSourceNote,
+  canReopen,
   ignorePending,
   allowPending,
   confirmNotePending,
   unallowPending,
+  reopenPending,
   dirty,
   savePending,
   allowWords,
@@ -83,6 +89,7 @@ export function WorkspaceFindingActions({
   onNext,
   onIgnore,
   onAllow,
+  onReopen,
   onUnallow,
   onToggleConfirmSourceNote,
   onOpenRelatedTab,
@@ -150,7 +157,7 @@ export function WorkspaceFindingActions({
                   size="sm"
                   variant="outline"
                   data-testid="workspace-finding-ignore"
-                  disabled={!canIgnore || ignorePending}
+                  disabled={!canIgnore || ignorePending || reopenPending}
                   onClick={onIgnore}
                 >
                   {ignorePending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -161,12 +168,29 @@ export function WorkspaceFindingActions({
                   size="sm"
                   variant="outline"
                   data-testid="workspace-finding-allow"
-                  disabled={!canAllow || allowPending}
+                  disabled={!canAllow || allowPending || reopenPending}
                   onClick={onAllow}
                 >
                   {allowPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   เพิ่มอนุญาต
                 </Button>
+                {/* IPE-064R4B R32 (P2): undo path — an accidentally skipped
+                    (ignored) or resolved-fixed finding carries a reversible
+                    disposition that survives checker reruns; reopen it via
+                    the existing resolve mutation with disposition "open". */}
+                {canReopen ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    data-testid="workspace-finding-reopen"
+                    disabled={reopenPending || ignorePending || allowPending}
+                    onClick={onReopen}
+                  >
+                    {reopenPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    คืนสถานะ
+                  </Button>
+                ) : null}
               </div>
             </>
           ) : (

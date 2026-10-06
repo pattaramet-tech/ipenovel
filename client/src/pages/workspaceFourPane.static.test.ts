@@ -242,6 +242,33 @@ describe("IPE-064R3 — workspace context & navigation", () => {
     expect(page).toContain('window.addEventListener("beforeunload", beforeUnload);');
   });
 
+  it("reopens reversible resolved findings via the existing resolve mutation (IPE-064R4B R32)", () => {
+    const card = source("client/src/pages/WorkspaceFindingActions.tsx");
+    // The reopen action renders ONLY for a reversible resolved disposition
+    // (ignored/fixed) and shares the resolve mutation's pending state, so a
+    // repeated click cannot double-submit while pending.
+    expect(card).toContain('data-testid="workspace-finding-reopen"');
+    expect(card).toContain("canReopen ? (");
+    expect(card).toContain("คืนสถานะ");
+    expect(card).toContain("reopenPending");
+    expect(card).toContain("disabled={reopenPending || ignorePending || allowPending}");
+
+    // The page's open handler targets ONLY ignored/fixed dispositions —
+    // allowlist-derived accepted findings must use the existing allow/unallow
+    // authority, not this flow.
+    expect(page).toContain('if (finding.disposition !== "ignored" && finding.disposition !== "fixed") return;');
+    // Same mutation + expectedVersion (current resolutionVersion) + distinct
+    // idempotencyKey namespace — no duplicate server endpoint.
+    expect(page).toContain('disposition: "open",');
+    expect(page).toContain('idempotencyKey: `editorial-reopen:${finding.id}:${finding.resolutionVersion ?? 0}`');
+    // canReopen gates on the checker evidence being current (stale →
+    // disabled, consistent with the other finding mutations) — pin via the
+    // canReopen block's last condition.
+    const canReopenIndex = page.indexOf("canReopen={Boolean(");
+    expect(canReopenIndex).toBeGreaterThan(-1);
+    expect(page.slice(canReopenIndex, canReopenIndex + 420)).toContain("!editorialCheckerRunStale");
+  });
+
   it("offers a quick story switcher in the header (guarded by the dirty check)", () => {
     expect(page).toContain('data-testid="workspace-story-switcher"');
     expect(page).toContain("if (selectStory(event.target.value)) setStoryEntered(true);");

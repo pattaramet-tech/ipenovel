@@ -351,4 +351,40 @@ describe("Thai preview - picker preservation on subset validation failures", () 
     expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).toEqual([10]);
     expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).not.toContain(11);
   });
+
+  // IPE-064R4B review round 32 (P2): a HARD-DELETED selected episode raises
+  // EXPORT_UNKNOWN_EPISODE from buildNovelExportPackage — recovery must still
+  // serve the current catalog so the client's R28 pruning can drop the stale
+  // ID, while the ZIP download stays fail-closed.
+  it("recovers a hard-deleted selected episode as validationError (picker pruning keeps the valid remainder)", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({ id: 10, episodeNumber: "1" }),
+    ] as any);
+
+    const preview = await buildThaiNovelExportPreview({ novelId: 1, episodeIds: [10, 11] });
+    expect(preview.mode).toBe("explicit_subset");
+    expect(preview.validationError?.code).toBe("EXPORT_UNKNOWN_EPISODE");
+    expect(preview.entries).toEqual([]);
+    expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).toEqual([10]);
+    expect(preview.sourceEpisodes.map((episode) => episode.episodeId)).not.toContain(11);
+    expect(preview.overLimit).toBeNull();
+
+    await expect(buildThaiNovelZipExport({ novelId: 1, episodeIds: [10, 11] })).rejects.toMatchObject({
+      code: "EXPORT_UNKNOWN_EPISODE",
+    } as Partial<NovelExportError>);
+  });
+
+  // Whole-novel behavior is unchanged: an unknown/missing episode in the full
+  // catalog is NOT silently absorbed by subset recovery.
+  it("a whole-novel request with no published episodes still fails closed", async () => {
+    mockNovel(1);
+    mockedDb.getEpisodesByNovelId.mockResolvedValue([
+      makeEpisode({ id: 10, episodeNumber: "1", isPublished: false }),
+    ] as any);
+
+    await expect(buildThaiNovelZipExport({ novelId: 1 })).rejects.toMatchObject({
+      code: "EXPORT_EMPTY_SELECTION",
+    } as Partial<NovelExportError>);
+  });
 });
