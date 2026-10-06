@@ -81,8 +81,10 @@ describe("WorkspaceNovelExportDialog UI contract", () => {
     expect(dialog).toContain('data-testid="export-over-limit-banner"');
     expect(dialog).toContain("const thaiOverLimit = thaiPreview.data?.overLimit ?? null;");
     // The whole-scope ZIP stays fail-closed while the per-pack subset is the
-    // advertised way out.
-    expect(dialog).toContain('const wholeScopeOverLimit = Boolean(thaiOverLimit && scope === "whole");');
+    // advertised way out. IPE-064R4B R30 (P2): the limit gate is scoped to
+    // THAI mode — the cached thaiPreview must not keep the independently
+    // valid Backup download disabled after a mode switch.
+    expect(dialog).toContain("thaiOverLimitBlocksDownload(mode, scope, thaiOverLimit)");
     expect(dialog).toContain("wholeScopeOverLimit ||");
     // IPE-064R4B (P2): a whole-scope data defect (collision / malformed pack)
     // is surfaced as a banner; per-pack subsets stay exportable around it.
@@ -107,6 +109,31 @@ describe("WorkspaceNovelExportDialog UI contract", () => {
     // helper, so it cannot loop or refetch on its own.
     expect(dialog).toContain("setSelectedEpisodeIds(current => pruneEpisodeSelection(current, pickerIds))");
     expect(dialog).toContain("}, [pickerEpisodes]);");
+  });
+
+  it("isolates the Thai over-limit to Thai mode and resets cross-novel subsets (IPE-064R4B R30)", () => {
+    // P2 #1: the Thai expansion limit gates ONLY the Thai-Novel download —
+    // the cached thaiPreview must not keep Backup disabled after a mode
+    // switch (the helper pins Thai mode + whole scope + overLimit).
+    expect(dialog).toContain('thaiOverLimitBlocksDownload(mode, scope, thaiOverLimit)');
+    // Over-limit/limit banners stay Thai-mode scoped as well.
+    expect(dialog).toContain('{mode === "thainovel" && thaiOverLimit && scope === "whole" && (');
+    expect(dialog).toContain('{mode === "thainovel" && thaiOverLimit && scope === "subset" && (');
+
+    // P2 #2: episode IDs belong to one novel — changing novels clears the
+    // subset selection atomically inside the novel-select handler (the R28
+    // pruning cannot recover a preview that fails with
+    // EXPORT_UNKNOWN_EPISODE before a successful response).
+    expect(dialog).toContain("const nextNovelId = Number(event.target.value) || null;");
+    expect(dialog).toContain("if (nextNovelId !== novelId) setSelectedEpisodeIds([]);");
+    expect(dialog).toContain("setSelectedNovelId(nextNovelId);");
+
+    // Search text stays display-only — the search input's onChange must
+    // never touch the subset selection.
+    expect(dialog).toContain("onChange={(event) => setNovelSearch(event.target.value)}");
+
+    // R28 picker pruning remains intact.
+    expect(dialog).toContain("pruneEpisodeSelection");
   });
 });
 

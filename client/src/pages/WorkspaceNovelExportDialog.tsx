@@ -19,7 +19,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
-import { pruneEpisodeSelection } from "./workspaceNovelExportSelection";
+import { pruneEpisodeSelection, thaiOverLimitBlocksDownload } from "./workspaceNovelExportSelection";
 
 export interface ExportDialogNovel {
   novelId: number;
@@ -163,7 +163,12 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   // IPE-064R4B (P2): a data defect (collision / malformed pack) surfaced by
   // the whole-novel request — per-pack subsets remain exportable.
   const thaiValidationError = thaiPreview.data?.validationError ?? null;
-  const wholeScopeOverLimit = Boolean(thaiOverLimit && scope === "whole");
+  // IPE-064R4B review round 30 (P2): the Thai chapter limit must gate ONLY
+  // the Thai-Novel download — thaiPreview data stays cached when the
+  // operator switches to Backup mode, and the previously unscoped flag kept
+  // the independently valid Backup download disabled. Banners are likewise
+  // Thai-mode scoped; Backup eligibility derives from Backup state alone.
+  const wholeScopeOverLimit = thaiOverLimitBlocksDownload(mode, scope, thaiOverLimit);
   const downloadDisabled =
     !novelId ||
     !validStart ||
@@ -228,7 +233,18 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                     id="workspace-export-novel"
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                     value={novelId ?? ""}
-                    onChange={(event) => setSelectedNovelId(Number(event.target.value) || null)}
+                    onChange={(event) => {
+                      // IPE-064R4B review round 30 (P2): episode IDs belong to
+                      // ONE novel — carrying a subset selection across a novel
+                      // switch submits foreign IDs with the new novelId and the
+                      // preview rejects EXPORT_UNKNOWN_EPISODE before the R28
+                      // pruning effect ever sees a successful response. Clear
+                      // the subset selection atomically as part of the novel
+                      // transition; scope/mode/Thai options/search stay as-is.
+                      const nextNovelId = Number(event.target.value) || null;
+                      if (nextNovelId !== novelId) setSelectedEpisodeIds([]);
+                      setSelectedNovelId(nextNovelId);
+                    }}
                   >
                     {selectableNovels.map((novel) => (
                       <option key={novel.novelId} value={novel.novelId}>

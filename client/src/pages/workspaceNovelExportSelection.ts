@@ -15,3 +15,17 @@ export function pruneEpisodeSelection(
   const pruned = selected.filter(id => allowed.has(id));
   return pruned.length === selected.length ? (selected as number[]) : pruned;
 }
+
+// IPE-064R4B review round 30 (P2): the Thai expansion limit is a THAI-mode
+// constraint. thaiPreview data stays cached after the operator switches to
+// Backup mode, so an unscoped over-limit flag leaked across modes and kept
+// the independently valid Backup download disabled. This predicate gates the
+// limit to exactly the Thai whole-scope download; Backup eligibility derives
+// from Backup state alone (entryCount/preview already switch with the mode).
+export function thaiOverLimitBlocksDownload(
+  mode: "thainovel" | "backup",
+  scope: "whole" | "subset",
+  overLimit: { itemCount: number; maxItems: number } | null
+): boolean {
+  return mode === "thainovel" && scope === "whole" && overLimit !== null;
+}
