@@ -74,8 +74,29 @@ export interface StoryEvidence {
   error?: string | null;
 }
 
-export type StoryPackStatus = "published" | "passed" | "needs_fix" | "anomalous" | "not_checked";
+/**
+ * IPE-065: distinguishes "the evidence row is loaded from a successful
+ * server projection" from "the projection has not produced a row (yet)".
+ * A card WITHOUT a row is never treated as a genuine not_checked — it is
+ * either still loading (query in flight for its scope) or unknown
+ * (unavailable: query error / scope never fetched), both fail-closed.
+ */
+export type StoryEvidenceState = "loaded" | "loading" | "unavailable";
 
+export type StoryPackStatus =
+  | "published"
+  | "passed"
+  | "needs_fix"
+  | "anomalous"
+  | "not_checked"
+  | "loading"
+  | "unknown";
+
+/**
+ * IPE-065: success-path status mapping — UNCHANGED. Only a loaded evidence
+ * row may map to published/passed/needs_fix/anomalous/not_checked; a query
+ * error inside the row itself keeps the anomalous (fail-closed) branch.
+ */
 export function derivePackStatus(evidence: StoryEvidence | null | undefined): StoryPackStatus {
   if (!evidence) return "not_checked";
   if (evidence.available === false) return "anomalous";
@@ -85,12 +106,29 @@ export function derivePackStatus(evidence: StoryEvidence | null | undefined): St
   return "not_checked";
 }
 
+/**
+ * IPE-065: card-level status — wraps the success-path mapper with the
+ * progressive-loading contract. Without a loaded evidence row the status is
+ * neutral (loading/unknown) and NEVER a positive/checked state; an absent
+ * evidenceState signal is treated as unavailable (fail closed), never PASS.
+ */
+export function derivePackCardStatus(card: {
+  evidence?: StoryEvidence | null;
+  evidenceState?: StoryEvidenceState;
+}): StoryPackStatus {
+  if (card.evidence) return derivePackStatus(card.evidence);
+  if (card.evidenceState === "loading") return "loading";
+  return "unknown";
+}
+
 export const STORY_PACK_STATUS_LABEL: Record<StoryPackStatus, string> = {
   published: "ลงแล้ว",
   passed: "ผ่าน",
   needs_fix: "ต้องแก้",
   anomalous: "ผิดปกติ",
   not_checked: "ยังไม่ตรวจ",
+  loading: "กำลังโหลด",
+  unknown: "ไม่ทราบสถานะ",
 };
 
 export interface StoryPackSummary {
@@ -99,11 +137,14 @@ export interface StoryPackSummary {
   passed: number;
   needsFix: number;
   anomalous: number;
+  /** Success-path only: the row loaded and the checker genuinely never ran. */
   notChecked: number;
+  /** IPE-065: neutral bucket — no loaded row (loading or unavailable). */
+  unknown: number;
 }
 
 export function summarizeStoryPacks(
-  cards: Array<{ evidence: StoryEvidence | null }>
+  cards: Array<{ evidence?: StoryEvidence | null; evidenceState?: StoryEvidenceState }>
 ): StoryPackSummary {
   const summary: StoryPackSummary = {
     total: cards.length,
@@ -112,9 +153,10 @@ export function summarizeStoryPacks(
     needsFix: 0,
     anomalous: 0,
     notChecked: 0,
+    unknown: 0,
   };
   for (const card of cards) {
-    switch (derivePackStatus(card.evidence)) {
+    switch (derivePackCardStatus(card)) {
       case "published":
         summary.published += 1;
         break;
@@ -127,8 +169,12 @@ export function summarizeStoryPacks(
       case "anomalous":
         summary.anomalous += 1;
         break;
-      default:
+      case "not_checked":
         summary.notChecked += 1;
+        break;
+      default:
+        // loading/unknown — neutral, never counted toward any checked state.
+        summary.unknown += 1;
     }
   }
   return summary;
@@ -149,6 +195,9 @@ export function storyOverallStatus(summary: StoryPackSummary): StoryOverallStatu
   if (summary.total === 0) return "in_progress";
   if (summary.anomalous > 0) return "anomalous";
   if (summary.needsFix > 0) return "needs_fix";
+  // IPE-065: unknown/loading packs keep the story neutral in-progress — an
+  // unloaded or unavailable projection can never roll up to passed/published.
+  if (summary.unknown > 0) return "in_progress";
   if (summary.notChecked > 0) return "in_progress";
   if (summary.published === summary.total) return "published";
   return "passed";

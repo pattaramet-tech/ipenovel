@@ -76,6 +76,48 @@ describe("IPE-064 — intake separation", () => {
     // The Google Docs bulk behavior is unchanged (rowIndex-based retention).
     expect(intake).toContain("const failedIndexes = new Set(failed.map((result) => result.rowIndex));");
   });
+
+  it("keeps the board event-driven and the evidence projection scoped (IPE-065)", () => {
+    // D: the heavy board query no longer force-refetches on every mount and
+    // focus and has NO unconditional 30s interval — a staleTime window makes
+    // remounts/focus reuse recent data, and mutations refetch via onSuccess.
+    expect(page).not.toContain('refetchOnMount: "always"');
+    expect(page).not.toContain('refetchOnWindowFocus: "always"');
+    expect(page).not.toContain("refetchInterval: 30_000");
+    expect(page).toContain("staleTime: 30_000,");
+    expect(page).toContain("refetchOnMount: true,");
+    expect(page).toContain("refetchOnWindowFocus: true,");
+
+    // C: the evidence projection query is scoped to the ACTIVE story's pack
+    // ids (state-held, stable per story) — not every work item on the board.
+    expect(page).toContain("const [activeEvidenceScopeIds, setActiveEvidenceScopeIds] = useState<number[]>([]);");
+    expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
+    expect(page).toContain("activeEvidenceScopeIds.length > 0");
+    // Rows accumulate per workspace so loaded stories keep their badges; the
+    // map is dropped on a workspace switch (race safety).
+    expect(page).toContain("const [editorialEvidenceRows, setEditorialEvidenceRows] = useState(");
+    expect(page).toContain("setEditorialEvidenceRows(new Map());");
+    // B: a card without a loaded row is neutral — loading only while its
+    // scoped projection is in flight, otherwise unavailable.
+    expect(page).toContain('const evidenceState: "loaded" | "loading" | "unavailable" = row');
+    expect(page).toContain('activeEvidenceScopeSet.has(card.workItemId) && editorialEvidenceStatuses.isFetching');
+  });
+
+  it("removes a workspace story instantly via cache pruning (IPE-065)", () => {
+    // E: the unlink success path prunes the detail/bindings/board caches
+    // FIRST, toasts without waiting, and only then reconciles in the
+    // background — never `await refreshIntake()` before the UI settles.
+    expect(intake).toContain("const utils = trpc.useUtils();");
+    expect(intake).toContain("onSuccess: async (_result, variables) => {");
+    expect(intake).toContain("utils.workspace.detail.setData(scope,");
+    expect(intake).toContain("utils.workspace.bindings.list.setData(scope,");
+    expect(intake).toContain("utils.workspace.editorial.board.setData(scope,");
+    expect(intake).toContain('toast.success("นำเรื่องออกจาก Workspace แล้ว — ตัวนิยายต้นฉบับยังอยู่");');
+    expect(intake).toContain("void refreshIntake();");
+    // The unlink message keeps remove-from-workspace distinct from deleting
+    // the source novel.
+    expect(intake).toContain("ตัวนิยายต้นฉบับยังอยู่");
+  });
 });
 
 describe("IPE-064 — story gate", () => {

@@ -273,9 +273,15 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0 },
     {
       enabled: isAdmin && Boolean(selectedWorkspaceId),
-      refetchOnMount: "always",
-      refetchOnWindowFocus: "always",
-      refetchInterval: 30_000,
+      // IPE-065 (D): event-driven refresh — the unconditional 30s heavy
+      // polling and the forced refetch on every mount/focus are gone. With a
+      // 30s staleTime, remounts and window focus reuse recent data and
+      // refetch only when the cached board is older; every board/evidence
+      // mutation already refetches through its own onSuccess, so an idle
+      // workspace issues no background heavy refresh at all.
+      staleTime: 30_000,
+      refetchOnMount: true,
+      refetchOnWindowFocus: true,
       refetchIntervalInBackground: false,
     }
   );
@@ -283,10 +289,54 @@ export default function WorkspacePage() {
     .flatMap((column: any) => column.cards ?? [])
     .map((card: any) => card.workItemId)
     .filter((id: any): id is number => Number.isInteger(id) && id > 0);
-  const editorialEvidenceStatuses = trpc.workspace.editorial.evidenceStatuses.useQuery(
-    { workspaceId: selectedWorkspaceId ?? 0, workItemIds: editorialEvidenceWorkItemIds },
-    { enabled: isAdmin && Boolean(selectedWorkspaceId) && editorialEvidenceWorkItemIds.length > 0, retry: false }
+  // IPE-065 (C): the heavyweight evidence projection is SCOPED to the active
+  // story's packs instead of every work item on the board. The scope is held
+  // in state (stable reference while the story's pack set is unchanged) so
+  // the query key only changes when the story actually changes — switching
+  // stories fetches that story's projection, and React Query's cache keeps
+  // previously loaded stories (staleTime below avoids needless refires).
+  const [activeEvidenceScopeIds, setActiveEvidenceScopeIds] = useState<number[]>([]);
+  const activeEvidenceScopeIdsKey = activeEvidenceScopeIds.join(",");
+  const activeEvidenceScopeSet = useMemo(
+    () => new Set(activeEvidenceScopeIds),
+    [activeEvidenceScopeIdsKey]
   );
+  const editorialEvidenceStatuses = trpc.workspace.editorial.evidenceStatuses.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, workItemIds: activeEvidenceScopeIds },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId) && activeEvidenceScopeIds.length > 0,
+      retry: false,
+      staleTime: 30_000,
+      refetchIntervalInBackground: false,
+    }
+  );
+  // IPE-065 (C): accumulate loaded evidence rows per workspace so a story's
+  // badges persist while another story is focused (the scoped query only
+  // covers the active story). Rows are keyed by workItemId and merged only
+  // while they belong to the CURRENT workspace — the board query is keyed by
+  // workspaceId, so its data can never be from another workspace here — and
+  // the whole map is dropped on a workspace switch (race safety A). The map
+  // carries last-server-derived durable evidence only; a mutation always
+  // refetches through its own onSuccess, so stale rows are never promoted to
+  // fresh authority (race safety F).
+  const [editorialEvidenceRows, setEditorialEvidenceRows] = useState(
+    () => new Map<number, any>()
+  );
+  useEffect(() => {
+    setEditorialEvidenceRows(new Map());
+  }, [selectedWorkspaceId]);
+  useEffect(() => {
+    const data = editorialEvidenceStatuses.data;
+    if (!Array.isArray(data) || !data.length) return;
+    setEditorialEvidenceRows((current) => {
+      const next = new Map(current);
+      for (const row of data) {
+        if (row && Number.isInteger(row.workItemId)) next.set(row.workItemId, row);
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorialEvidenceStatuses.data]);
   const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
     {
       workspaceId: selectedWorkspaceId ?? 0,
@@ -907,18 +957,29 @@ export default function WorkspacePage() {
   ]);
 
   const editorialColumns = (((editorialBoard.data as any)?.columns as any[] | undefined) ?? []);
-  const editorialEvidenceByWorkItemId = new Map(
-    (((editorialEvidenceStatuses.data as any[]) ?? [])).map((status: any) => [status.workItemId, status])
-  );
   const editorialCards = editorialColumns.flatMap((column: any) =>
     (column.cards ?? [])
       .filter((card: any) => card.workItemType !== "NEW_STORY")
-      .map((card: any) => ({
-        ...card,
-        columnKey: column.key,
-        columnName: column.name,
-        evidence: editorialEvidenceByWorkItemId.get(card.workItemId) ?? null,
-      }))
+      .map((card: any) => {
+        // IPE-065 (B): a card WITHOUT a loaded evidence row is neutral —
+        // "loading" only while the scoped projection is in flight for its
+        // pack, otherwise "unavailable" (other story / query error). The
+        // pack badge derives loading/unknown from this signal and never
+        // presents an unloaded row as not_checked/passed/published.
+        const row = editorialEvidenceRows.get(card.workItemId);
+        const evidenceState: "loaded" | "loading" | "unavailable" = row
+          ? "loaded"
+          : activeEvidenceScopeSet.has(card.workItemId) && editorialEvidenceStatuses.isFetching
+            ? "loading"
+            : "unavailable";
+        return {
+          ...card,
+          columnKey: column.key,
+          columnName: column.name,
+          evidence: row ?? null,
+          evidenceState,
+        };
+      })
   );
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
@@ -1673,6 +1734,23 @@ export default function WorkspacePage() {
     editorialNovelGroups.find(
       (group: any) => storyKeyFor(group.workspaceNovelId, group.novel?.id) === activeStoryKey
     ) ?? null;
+
+  // IPE-065 (C): keep the evidence query scoped to the ACTIVE story's packs.
+  // The scope state only changes when the pack-id set actually changes, so
+  // the query key (and its cache entry per story) is stable across unrelated
+  // re-renders.
+  useEffect(() => {
+    const ids = (activeStoryGroup?.cards ?? [])
+      .map((card: any) => card.workItemId)
+      .filter((id: any): id is number => Number.isInteger(id) && id > 0)
+      .sort((left: number, right: number) => left - right);
+    setActiveEvidenceScopeIds((current) =>
+      current.length === ids.length && current.every((id, index) => id === ids[index])
+        ? current
+        : ids
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStoryKey, activeStoryGroup?.cards.length, editorialBoard.data]);
 
   // Persist the live pack/chapter/tab/filter into the active story's record.
   useEffect(() => {

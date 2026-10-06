@@ -111,6 +111,8 @@ export default function WorkspaceIntakePage() {
   const [selectedPackWorkItemId, setSelectedPackWorkItemId] = useState<number>();
   const ensuredEditorialWorkspaces = useRef(new Set<number>());
   const { isAdmin, loading: adminLoading } = useAdminGuard();
+  // IPE-065 (E): direct cache access for the fast remove-story path.
+  const utils = trpc.useUtils();
 
   const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
   const detail = trpc.workspace.detail.useQuery(
@@ -580,11 +582,48 @@ export default function WorkspaceIntakePage() {
     onError: (error) => toast.error(error.message),
   });
   const removeWorkspaceNovel = trpc.workspace.bindings.removePublicationNovel.useMutation({
-    onSuccess: async () => {
+    // IPE-065 (E): the unlink is a lightweight server authority — on success
+    // the story must disappear from the Intake UI IMMEDIATELY, not after six
+    // awaited refetches. Prune the detail/bindings/board caches first (the
+    // removed story's rows vanish in the same render pass), toast without
+    // waiting, then let the full refreshIntake() reconcile every surface in
+    // the background — the server remains the authority, and its response
+    // can never resurrect a story it just unlinked.
+    onSuccess: async (_result, variables) => {
       setEpisodeWorkspaceNovelId("");
       setSelectedPackWorkItemId(undefined);
-      await refreshIntake();
+      const removedWorkspaceNovelId = variables.workspaceNovelId;
+      const scope = { workspaceId: variables.workspaceId };
+      utils.workspace.detail.setData(scope, (old: any) =>
+        old
+          ? {
+              ...old,
+              novels: (old.novels ?? []).filter(
+                (row: any) => row.workspaceNovel?.id !== removedWorkspaceNovelId
+              ),
+            }
+          : old
+      );
+      utils.workspace.bindings.list.setData(scope, (old: any) =>
+        Array.isArray(old)
+          ? old.filter((row: any) => row.workspaceNovel?.id !== removedWorkspaceNovelId)
+          : old
+      );
+      utils.workspace.editorial.board.setData(scope, (old: any) =>
+        old
+          ? {
+              ...old,
+              columns: (old.columns ?? []).map((column: any) => ({
+                ...column,
+                cards: (column.cards ?? []).filter(
+                  (card: any) => card.workspaceNovelId !== removedWorkspaceNovelId
+                ),
+              })),
+            }
+          : old
+      );
       toast.success("นำเรื่องออกจาก Workspace แล้ว — ตัวนิยายต้นฉบับยังอยู่");
+      void refreshIntake();
     },
     onError: (error) => toast.error(error.message),
   });

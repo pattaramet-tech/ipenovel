@@ -64,8 +64,12 @@ describe("Workspace Editorial Preview UX", () => {
     expect(source).toContain("bulkStageDrafts.useMutation");
     expect(source).toContain("bulkRequestPublish.useMutation");
     expect(source).toContain("ส่งเผยแพร่ ${results.length - failed.length}/${results.length} ตอน");
-    // Ghost-selection pruning keeps the board as server truth.
-    expect(source).toContain('refetchOnMount: "always"');
+    // Ghost-selection pruning keeps the board as server truth. IPE-065: the
+    // board refresh is event-driven (staleTime-bounded remount/focus +
+    // mutation onSuccess refetches) instead of forced "always"/30s polling —
+    // every successful fetch still feeds the same prune effect.
+    expect(source).toContain("staleTime: 30_000,");
+    expect(source).not.toContain('refetchOnMount: "always"');
     expect(source).toContain("editorialBoardWorkItemIdKey");
     expect(source).toContain("!activeWorkItemIds.has(selectedSourceWorkItemId)");
   });

@@ -89,6 +89,9 @@ export function WorkspaceStoryOverview({ stories, onFocusStory }: WorkspaceStory
                 {story.summary.needsFix > 0 && <span className="rounded-full border border-orange-200 bg-orange-50 px-1.5">ต้องแก้ {story.summary.needsFix}</span>}
                 {story.summary.anomalous > 0 && <span className="rounded-full border border-red-200 bg-red-50 px-1.5">ผิดปกติ {story.summary.anomalous}</span>}
                 {story.summary.notChecked > 0 && <span className="rounded-full border border-slate-200 bg-slate-50 px-1.5">ยังไม่ตรวจ {story.summary.notChecked}</span>}
+                {/* IPE-065: neutral bucket — packs whose status projection has
+                    not loaded yet are counted here, never as a checked state. */}
+                {story.summary.unknown > 0 && <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5">รอสถานะ {story.summary.unknown}</span>}
               </div>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] text-muted-foreground">

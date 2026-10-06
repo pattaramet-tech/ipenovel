@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createStoryUiState,
+  derivePackCardStatus,
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
   filterPacksByQuery,
@@ -59,13 +60,13 @@ describe("workspaceMultiStory — evidence rollup", () => {
     expect(STORY_PACK_STATUS_LABEL.needs_fix).toBe("ต้องแก้");
   });
 
-  it("summarizes a story's packs into the four operator counters", () => {
+  it("summarizes a story's packs into the operator counters", () => {
     const summary = summarizeStoryPacks([
       { evidence: { checkerRan: true, checker: true } },
       { evidence: { checkerRan: true, checker: true, published: true } },
       { evidence: { checkerRan: true, checker: false } },
       { evidence: { available: false } },
-      { evidence: null },
+      { evidence: {} },
     ]);
     expect(summary).toEqual({
       total: 5,
@@ -74,8 +75,52 @@ describe("workspaceMultiStory — evidence rollup", () => {
       needsFix: 1,
       anomalous: 1,
       notChecked: 1,
+      unknown: 0,
     });
     expect(storyOverallStatus(summary)).toBe("anomalous");
+  });
+
+  // IPE-065: progressive loading semantics — a pack WITHOUT a loaded evidence
+  // row is loading/unknown, never a genuine not_checked.
+  it("keeps loading and unknown distinct from not_checked (loaded rows only)", () => {
+    expect(derivePackCardStatus({ evidence: null, evidenceState: "loading" })).toBe("loading");
+    expect(derivePackCardStatus({ evidence: null, evidenceState: "unavailable" })).toBe("unknown");
+    // No signal at all fails closed to unknown.
+    expect(derivePackCardStatus({ evidence: null })).toBe("unknown");
+    expect(derivePackCardStatus({})).toBe("unknown");
+    // A LOADED row maps through the unchanged success-path contract.
+    expect(derivePackCardStatus({ evidence: {}, evidenceState: "loaded" })).toBe("not_checked");
+    expect(derivePackCardStatus({ evidence: { checker: true }, evidenceState: "loaded" })).toBe("passed");
+    expect(derivePackCardStatus({ evidence: { published: true, checker: true }, evidenceState: "loaded" })).toBe("published");
+  });
+
+  it("never promotes loading/unknown/error evidence into a checked or passed state", () => {
+    for (const state of ["loading", "unknown"] as const) {
+      const status = derivePackCardStatus({ evidence: null, evidenceState: state });
+      expect(["passed", "published", "not_checked"]).not.toContain(status);
+    }
+    // A row that reports an error stays anomalous (fail closed), never PASS.
+    expect(derivePackStatus({ available: false, error: "boom" })).toBe("anomalous");
+    expect(derivePackCardStatus({ evidence: { available: false }, evidenceState: "loaded" })).toBe("anomalous");
+  });
+
+  it("counts missing-row packs as unknown, keeping notChecked genuine (IPE-065)", () => {
+    const summary = summarizeStoryPacks([
+      { evidence: { checkerRan: true, checker: true }, evidenceState: "loaded" },
+      { evidence: null, evidenceState: "loading" },
+      { evidence: null, evidenceState: "unavailable" },
+    ]);
+    expect(summary).toEqual({
+      total: 3,
+      published: 0,
+      passed: 1,
+      needsFix: 0,
+      anomalous: 0,
+      notChecked: 0,
+      unknown: 2,
+    });
+    // Unknown packs keep the story neutral in-progress.
+    expect(storyOverallStatus(summary)).toBe("in_progress");
   });
 
   it("rolls the story up as published only when every pack is published", () => {
@@ -85,6 +130,8 @@ describe("workspaceMultiStory — evidence rollup", () => {
     expect(storyOverallStatus(summarizeStoryPacks([]))).toBe("in_progress");
     expect(storyOverallStatus(summarizeStoryPacks([{ evidence: { checker: true } }]))).toBe("passed");
     expect(storyOverallStatus(summarizeStoryPacks([{ evidence: { checkerRan: true, checker: false } }]))).toBe("needs_fix");
+    // A full-unknown story never rolls up to passed/published (IPE-065).
+    expect(storyOverallStatus(summarizeStoryPacks([{ evidence: null, evidenceState: "unavailable" }]))).toBe("in_progress");
   });
 });
 
