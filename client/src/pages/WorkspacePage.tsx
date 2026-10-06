@@ -337,6 +337,40 @@ export default function WorkspacePage() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorialEvidenceStatuses.data]);
+  // IPE-065R1 (P1): ONE centralized invalidation authority for every
+  // evidence-changing mutation. Steps: (A) drop the affected rows from the
+  // accumulated map IMMEDIATELY — those cards fail closed to loading/unknown
+  // instead of keep presenting a known-stale ผ่าน/พร้อม Publish/ลงแล้ว; (C)
+  // reconcile from server authority by refetching the SCOPED evidence query,
+  // and only when an affected id belongs to the active scope — never a
+  // page-wide projection, never a timer. D: untouched workItemIds survive.
+  const invalidateEvidenceRows = (
+    workItemIds: ReadonlyArray<number | null | undefined>,
+    options?: { refetch?: boolean }
+  ) => {
+    const ids = Array.from(
+      new Set(
+        workItemIds.filter(
+          (id): id is number => Number.isInteger(id) && Number(id) > 0
+        )
+      )
+    );
+    if (!ids.length) return;
+    setEditorialEvidenceRows((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const id of ids) {
+        if (next.delete(id)) changed = true;
+      }
+      return changed ? next : current;
+    });
+    // Race protection: refetch with cancelRefetch aborts any pre-mutation
+    // in-flight evidence request, so a response that started before the
+    // mutation can never reinsert stale positive rows after it lands.
+    if (options?.refetch !== false && ids.some((id) => activeEvidenceScopeSet.has(id))) {
+      void editorialEvidenceStatuses.refetch({ cancelRefetch: true }).catch(() => undefined);
+    }
+  };
   const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
     {
       workspaceId: selectedWorkspaceId ?? 0,
@@ -442,6 +476,13 @@ export default function WorkspacePage() {
   };
   const bulkApproveEditorialDrafts = trpc.workspace.editorial.bulkApproveDrafts.useMutation({
     onSuccess: async (results) => {
+      // IPE-065R1 (P1): prune the affected rows first — refreshBulkEditorial
+      // then refetches the scoped projection (cancelling any pre-mutation
+      // in-flight request) so only fresh server evidence is re-merged.
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false }
+      );
       await refreshBulkEditorial();
       const failed = results.filter((result) => !result.ok);
       const firstError = failed.find((result: any) => result.error)?.error;
@@ -452,11 +493,23 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const bulkStageEditorialDrafts = trpc.workspace.editorial.bulkStageDrafts.useMutation({
-    onSuccess: async (results) => { await refreshBulkEditorial(); const failed = results.filter((result) => !result.ok); toast[failed.length ? "error" : "success"](`Stage ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`); },
+    onSuccess: async (results) => {
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false }
+      );
+      await refreshBulkEditorial();
+      const failed = results.filter((result) => !result.ok);
+      toast[failed.length ? "error" : "success"](`Stage ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`);
+    },
     onError: (error) => toast.error(error.message),
   });
   const bulkRunEditorialChecker = trpc.workspace.editorial.bulkRunChecker.useMutation({
     onSuccess: async (results) => {
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false }
+      );
       await refreshBulkEditorial();
       // IPE-064R4B (P2): the open pack's finding card / chapter issue counts /
       // stale indicator derive from this query — refresh it after bulk Check
@@ -472,6 +525,10 @@ export default function WorkspacePage() {
   });
   const bulkRequestEditorialPublish = trpc.workspace.editorial.bulkRequestPublish.useMutation({
     onSuccess: async (results) => {
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false }
+      );
       await refreshBulkEditorial();
       const failed = results.filter((result) => !result.ok);
       const firstError = failed.find((result: any) => result.error)?.error;
@@ -482,14 +539,19 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const updateEditorialEpisode = trpc.workspace.editorial.updateEpisode.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): a range/episodeNumber change can flip the published
+      // fallback mapping — the old evidence row must not stay current.
+      invalidateEvidenceRows([variables.workItemId]);
       await editorialBoard.refetch();
       toast.success("แก้ไข Episode Pack แล้ว");
     },
     onError: (error) => toast.error(error.message),
   });
   const updateEditorialEpisodeSale = trpc.workspace.editorial.updateEpisodeSale.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): sale validity feeds publish readiness — fail closed.
+      invalidateEvidenceRows([variables.workItemId]);
       await editorialBoard.refetch();
       toast.success("อัปเดตการขายของ Episode Pack แล้ว");
     },
@@ -498,6 +560,9 @@ export default function WorkspacePage() {
   const removeEditorialEpisode = trpc.workspace.editorial.removeEpisode.useMutation({
     onSuccess: async (_result, variables) => {
       if (selectedSourceWorkItemId === variables.workItemId) setSelectedSourceWorkItemId(undefined);
+      // IPE-065R1 (§5): the removed pack must not linger in the accumulated
+      // evidence cache — prune its row without a needless scoped refetch.
+      invalidateEvidenceRows([variables.workItemId], { refetch: false });
       await editorialBoard.refetch();
       toast.success("นำ Episode Pack ออกจาก Workspace แล้ว");
     },
@@ -517,7 +582,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const runEditorialForeignChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): the run changed checkerRan/checker — the previous row
+      // (possibly a PASS from the earlier draft) must stop being current now.
+      invalidateEvidenceRows([variables.workItemId]);
       await Promise.all([
         editorialForeignChecker.refetch(),
         editorialApproval.refetch(),
@@ -569,6 +637,11 @@ export default function WorkspacePage() {
 
   const editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation({
     onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): the save created a NEW draft revision — every QC/
+      // approval/stage fact in the previous evidence row belongs to the OLD
+      // revision and must stop being presented immediately (the background
+      // recheck lands later with fresh evidence).
+      invalidateEvidenceRows([variables.workItemId]);
       const savedChapterTarget =
         variables.command.kind === "replace_tab" ? chapterEditorTarget : undefined;
       // Controlled canvas history never crosses a server save revision.
@@ -670,15 +743,26 @@ export default function WorkspacePage() {
     ]);
   };
   const excludeEditorialTab = trpc.workspace.editorial.editorExcludeTab.useMutation({
-    onSuccess: async () => { await refreshAfterTabRevision(); toast.success("นำแท็บออกจาก Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่"); },
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): a tab revision invalidates the pack's QC evidence.
+      invalidateEvidenceRows([variables.workItemId]);
+      await refreshAfterTabRevision();
+      toast.success("นำแท็บออกจาก Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่");
+    },
     onError: (error) => toast.error(error.message),
   });
   const restoreEditorialTab = trpc.workspace.editorial.editorRestoreTab.useMutation({
-    onSuccess: async () => { await refreshAfterTabRevision(); toast.success("คืนแท็บเข้า Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่"); },
+    onSuccess: async (_result, variables) => {
+      invalidateEvidenceRows([variables.workItemId]);
+      await refreshAfterTabRevision();
+      toast.success("คืนแท็บเข้า Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่");
+    },
     onError: (error) => toast.error(error.message),
   });
   const undoEditorialEdit = trpc.workspace.editorial.editorUndo.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): undo creates a new draft revision — same stale rule.
+      invalidateEvidenceRows([variables.workItemId]);
       setChapterEditorTarget(undefined);
       setChapterEditorParagraphs([]);
       await Promise.all([
@@ -702,7 +786,9 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const approveEditorialDraft = trpc.workspace.editorial.approveDraft.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): approval validity changed — refresh the row.
+      invalidateEvidenceRows([variables.workItemId]);
       await editorialApproval.refetch();
       toast.success(
         result.replayed
@@ -713,7 +799,9 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const stageEditorialEpisode = trpc.workspace.editorial.stageEpisodeDraft.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): staging changes stage/readyToPublish evidence.
+      invalidateEvidenceRows([variables.workItemId]);
       await Promise.all([
         editorialApproval.refetch(),
         editorialBoard.refetch(),
@@ -727,7 +815,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const resolveEditorialFinding = trpc.workspace.editorial.foreignCheckerResolve.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): resolve/reopen changes the unresolved count that the
+      // checker flag derives from — refresh the row.
+      invalidateEvidenceRows([variables.workItemId]);
       await Promise.all([
         editorialForeignChecker.refetch(),
         editorialApproval.refetch(),
@@ -736,7 +827,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const allowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): the allow-list changed and a recheck is about to run —
+      // the pre-allow evidence row must stop being current immediately.
+      invalidateEvidenceRows([variables.workItemId]);
       // IPE-064R4B (P2): refetch the cached checker read model FIRST so the
       // exactly-once identity picks up the NEW allow-list hash — otherwise a
       // second quick allow coalesces into the still-running pre-mutation
@@ -768,7 +862,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const setStructuralConfirmation = trpc.workspace.editorial.structuralConfirmation.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): a structural confirmation can clear a blocking issue
+      // from the QC chain — refresh the row.
+      invalidateEvidenceRows([variables.workItemId]);
       await Promise.all([
         editorialForeignChecker.refetch(),
         editorialApproval.refetch(),
@@ -780,6 +877,10 @@ export default function WorkspacePage() {
   });
   const unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation({
     onSuccess: async () => {
+      // IPE-065R1 (P1): the unallow has no workItemId in its input — the
+      // recheck runs for the currently selected pack, so its row is the one
+      // that must stop being current.
+      invalidateEvidenceRows([selectedSourceWorkItemId]);
       // IPE-064R4B (P2): refetch before the recheck — same allow-list-hash
       // identity rationale as foreignCheckerAllow.
       if (selectedWorkspaceId && selectedSourceWorkItemId) {

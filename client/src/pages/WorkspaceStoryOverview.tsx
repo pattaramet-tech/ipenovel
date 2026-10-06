@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   STORY_OVERALL_LABEL,
-  STORY_PACK_STATUS_LABEL,
+  storyOverviewFooterLine,
   type StoryOverallStatus,
   type StoryPackSummary,
 } from "./workspaceMultiStory";
@@ -94,12 +94,11 @@ export function WorkspaceStoryOverview({ stories, onFocusStory }: WorkspaceStory
                 {story.summary.unknown > 0 && <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5">รอสถานะ {story.summary.unknown}</span>}
               </div>
               <div className="flex items-center justify-between gap-2">
+                {/* IPE-065R1 (P2): the footer derives from the pure helper —
+                    an unknown/loading story renders "รอสถานะ N แพ็ก", never a
+                    PASS line; genuine passed/published rollups keep theirs. */}
                 <span className="text-[11px] text-muted-foreground">
-                  {story.focused
-                    ? "กำลังทำงานอยู่ — state ของเรื่องนี้ถูกจำไว้"
-                    : story.summary.needsFix + story.summary.anomalous > 0
-                      ? `มีงานรอแก้ ${story.summary.needsFix + story.summary.anomalous} แพ็ก`
-                      : STORY_PACK_STATUS_LABEL.passed}
+                  {storyOverviewFooterLine(story)}
                 </span>
                 <Button
                   type="button"

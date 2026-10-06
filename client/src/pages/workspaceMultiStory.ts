@@ -203,6 +203,27 @@ export function storyOverallStatus(summary: StoryPackSummary): StoryOverallStatu
   return "passed";
 }
 
+/**
+ * IPE-065R1 (P2): the story-card footer must never say "ผ่าน" while any pack's
+ * status projection is still loading/unavailable — a genuine PASS/PUBLISHED
+ * line requires the rollup to BE passed/published with zero neutral packs.
+ */
+export function storyOverviewFooterLine(input: {
+  focused: boolean;
+  summary: StoryPackSummary;
+  overall: StoryOverallStatus;
+}): string {
+  if (input.focused) return "กำลังทำงานอยู่ — state ของเรื่องนี้ถูกจำไว้";
+  if (input.summary.needsFix + input.summary.anomalous > 0) {
+    return `มีงานรอแก้ ${input.summary.needsFix + input.summary.anomalous} แพ็ก`;
+  }
+  if (input.summary.unknown > 0) return `รอสถานะ ${input.summary.unknown} แพ็ก`;
+  if (input.summary.notChecked > 0) return `ยังไม่ตรวจ ${input.summary.notChecked} แพ็ก`;
+  if (input.overall === "published") return STORY_PACK_STATUS_LABEL.published;
+  if (input.overall === "passed") return STORY_PACK_STATUS_LABEL.passed;
+  return "กำลังดำเนินการ";
+}
+
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(
   cards: T[],
   rawQuery: string

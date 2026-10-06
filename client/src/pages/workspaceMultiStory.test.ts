@@ -10,6 +10,7 @@ import {
   resolveStoryUiState,
   sortPacksByEpisode,
   storyKeyFor,
+  storyOverviewFooterLine,
   storyOverallStatus,
   STORY_PACK_STATUS_LABEL,
   STORY_OVERALL_LABEL,
@@ -132,6 +133,86 @@ describe("workspaceMultiStory — evidence rollup", () => {
     expect(storyOverallStatus(summarizeStoryPacks([{ evidence: { checkerRan: true, checker: false } }]))).toBe("needs_fix");
     // A full-unknown story never rolls up to passed/published (IPE-065).
     expect(storyOverallStatus(summarizeStoryPacks([{ evidence: null, evidenceState: "unavailable" }]))).toBe("in_progress");
+  });
+});
+
+// IPE-065R1 (P2): the story-card footer is a pure decision — an
+// unknown/loading story must NEVER render a PASS line.
+describe("workspaceMultiStory — story overview footer (IPE-065R1)", () => {
+  const summaryOf = (cards: Parameters<typeof summarizeStoryPacks>[number]) =>
+    summarizeStoryPacks(cards);
+
+  it("shows neutral รอสถานะ wording for a story with unknown/loading packs (never ผ่าน)", () => {
+    const summary = summaryOf([
+      { evidence: null, evidenceState: "loading" },
+      { evidence: null, evidenceState: "unavailable" },
+    ]);
+    const footer = storyOverviewFooterLine({ focused: false, summary, overall: "in_progress" });
+    expect(footer).toBe("รอสถานะ 2 แพ็ก");
+    expect(footer).not.toContain(STORY_PACK_STATUS_LABEL.passed);
+    expect(footer).not.toContain(STORY_PACK_STATUS_LABEL.published);
+  });
+
+  it("shows ยังไม่ตรวจ wording for genuinely-not-checked packs (not a PASS line)", () => {
+    const footer = storyOverviewFooterLine({
+      focused: false,
+      summary: summaryOf([{ evidence: {} }]),
+      overall: "in_progress",
+    });
+    expect(footer).toBe("ยังไม่ตรวจ 1 แพ็ก");
+  });
+
+  it("keeps the needs-fix/anomalous warning wording unchanged", () => {
+    expect(
+      storyOverviewFooterLine({
+        focused: false,
+        summary: summaryOf([{ evidence: { checkerRan: true, checker: false } }]),
+        overall: "needs_fix",
+      })
+    ).toBe("มีงานรอแก้ 1 แพ็ก");
+    expect(
+      storyOverviewFooterLine({
+        focused: false,
+        summary: summaryOf([{ evidence: { available: false } }, { evidence: { checkerRan: true, checker: false } }]),
+        overall: "anomalous",
+      })
+    ).toBe("มีงานรอแก้ 2 แพ็ก");
+  });
+
+  it("renders the PASS line only for a genuinely passed rollup", () => {
+    const passed = storyOverviewFooterLine({
+      focused: false,
+      summary: summaryOf([{ evidence: { checker: true } }]),
+      overall: "passed",
+    });
+    expect(passed).toBe(STORY_PACK_STATUS_LABEL.passed);
+    // Mixed with a single unknown pack the same story stops being "ผ่าน".
+    const withUnknown = storyOverviewFooterLine({
+      focused: false,
+      summary: summaryOf([{ evidence: { checker: true } }, { evidence: null, evidenceState: "unavailable" }]),
+      overall: "in_progress",
+    });
+    expect(withUnknown).toBe("รอสถานะ 1 แพ็ก");
+  });
+
+  it("renders the published line only for a genuinely published rollup", () => {
+    expect(
+      storyOverviewFooterLine({
+        focused: false,
+        summary: summaryOf([{ evidence: { published: true, checker: true } }]),
+        overall: "published",
+      })
+    ).toBe(STORY_PACK_STATUS_LABEL.published);
+  });
+
+  it("keeps the focused-story line for the story being worked on", () => {
+    expect(
+      storyOverviewFooterLine({
+        focused: true,
+        summary: summaryOf([{ evidence: { checker: true } }]),
+        overall: "passed",
+      })
+    ).toBe("กำลังทำงานอยู่ — state ของเรื่องนี้ถูกจำไว้");
   });
 });
 

@@ -118,6 +118,66 @@ describe("IPE-064 — intake separation", () => {
     // the source novel.
     expect(intake).toContain("ตัวนิยายต้นฉบับยังอยู่");
   });
+
+  it("invalidates stale evidence rows on every evidence-changing mutation (IPE-065R1 P1)", () => {
+    // ONE centralized invalidation authority: drops the affected rows from
+    // the accumulated map immediately (fail closed to loading/unknown), then
+    // refetches the SCOPED projection only when an affected id is in the
+    // active scope — with cancelRefetch so a pre-mutation in-flight response
+    // can never reinsert stale positive rows.
+    expect(page).toContain("const invalidateEvidenceRows = (");
+    expect(page).toContain("if (next.delete(id)) changed = true;");
+    expect(page).toContain("ids.some((id) => activeEvidenceScopeSet.has(id))");
+    expect(page).toContain('editorialEvidenceStatuses.refetch({ cancelRefetch: true })');
+    // Single-pack evidence-changing paths wired to the helper.
+    for (const mutation of [
+      "runEditorialForeignChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation",
+      "editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation",
+      "approveEditorialDraft = trpc.workspace.editorial.approveDraft.useMutation",
+      "stageEditorialEpisode = trpc.workspace.editorial.stageEpisodeDraft.useMutation",
+      "resolveEditorialFinding = trpc.workspace.editorial.foreignCheckerResolve.useMutation",
+      "allowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation",
+      "setStructuralConfirmation = trpc.workspace.editorial.structuralConfirmation.useMutation",
+      "updateEditorialEpisode = trpc.workspace.editorial.updateEpisode.useMutation",
+      "updateEditorialEpisodeSale = trpc.workspace.editorial.updateEpisodeSale.useMutation",
+    ]) {
+      const at = page.indexOf(mutation);
+      expect(at).toBeGreaterThan(-1);
+      // Each mutation's onSuccess body calls the invalidation helper.
+      const body = page.slice(at, at + 1600);
+      expect(body).toContain("invalidateEvidenceRows([variables.workItemId])");
+    }
+    // exclude/restore/undo route through the same helper.
+    expect(page).toContain("invalidateEvidenceRows([variables.workItemId]);\n      await refreshAfterTabRevision();");
+    expect(page).toContain("// IPE-065R1 (P1): undo creates a new draft revision — same stale rule.");
+    // Bulk paths prune the affected ids, then refreshBulkEditorial refetches
+    // the scoped projection (no page-wide reintroduction).
+    const bulkPrunes = page.match(/invalidateEvidenceRows\(\s*results\.map\(\(result: any\) => result\.workItemId\),\s*\{ refetch: false \}\s*\)/g) ?? [];
+    expect(bulkPrunes.length).toBe(4);
+    // remove pack prunes its evidence row (refetch suppressed — board refetch
+    // already runs and the work item is gone).
+    const removeAt = page.indexOf("removeEditorialEpisode = trpc.workspace.editorial.removeEpisode.useMutation");
+    expect(page.slice(removeAt, removeAt + 700)).toContain('invalidateEvidenceRows([variables.workItemId], { refetch: false })');
+    // unallow has no workItemId in its input — the selected pack's row is
+    // invalidated instead.
+    const unallowAt = page.indexOf("unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation");
+    expect(page.slice(unallowAt, unallowAt + 700)).toContain("invalidateEvidenceRows([selectedSourceWorkItemId])");
+    // Evidence-neutral mutations stay untouched (no helper wiring).
+    const assignAt = page.indexOf("assignEditorialWorkItem = trpc.workspace.editorial.assignWorkItem.useMutation");
+    expect(page.slice(assignAt, assignAt + 320)).not.toContain("invalidateEvidenceRows");
+    // The performance contract survives: scoped query input, no polling.
+    expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
+    expect(page).not.toContain("refetchInterval: 30_000");
+    expect(page).not.toContain('refetchOnMount: "always"');
+  });
+
+  it("renders the story footer through the pure fail-closed helper (IPE-065R1 P2)", () => {
+    const overview = source("client/src/pages/WorkspaceStoryOverview.tsx");
+    // The footer comes from storyOverviewFooterLine — no inline fallthrough
+    // that could print ผ่าน for an unknown/loading story.
+    expect(overview).toContain("storyOverviewFooterLine(story)");
+    expect(overview).not.toContain(": STORY_PACK_STATUS_LABEL.passed}");
+  });
 });
 
 describe("IPE-064 — story gate", () => {
