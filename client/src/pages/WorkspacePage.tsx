@@ -1850,45 +1850,67 @@ export default function WorkspacePage() {
   const actionBarCards = editorialCards.filter((card: any) =>
     actionBarWorkItemIds.includes(card.workItemId)
   );
+  // IPE-064R4B round 22 (P2): the bulk endpoints cap workItemIds at 100
+  // (server/workspace/router.ts bulk*.max(100)), so a select-all over a large
+  // story must not send the whole array in one request — it would be rejected
+  // wholesale before any pack is processed. Split the scope into
+  // endpoint-sized batches and run them sequentially; every batch refreshes
+  // and toasts through the existing mutation hooks, and a failed batch stops
+  // the remaining ones while the batches already applied stay visible.
+  const BULK_ACTION_BATCH_LIMIT = 100;
   const runBulkAction = (
     action: "check" | "confirm" | "stage" | "publish"
   ) => {
     if (!selectedWorkspaceId || !actionBarWorkItemIds.length) return;
-    if (action === "check") {
-      bulkRunEditorialChecker.mutate({
-        workspaceId: selectedWorkspaceId,
-        workItemIds: actionBarWorkItemIds,
-      });
-      return;
-    }
-    if (action === "confirm") {
-      bulkApproveEditorialDrafts.mutate({
-        workspaceId: selectedWorkspaceId,
-        workItemIds: actionBarWorkItemIds,
-      });
-      return;
-    }
-    if (action === "stage") {
-      bulkStageEditorialDrafts.mutate({
-        workspaceId: selectedWorkspaceId,
-        workItemIds: actionBarWorkItemIds,
-      });
-      return;
-    }
-    const readyCount = actionBarCards.filter(
-      (card: any) => card.evidence?.readyToPublish && !card.evidence?.published
-    ).length;
-    const blockedCount = actionBarCards.length - readyCount;
-    if (
-      window.confirm(
+    let confirmed = true;
+    if (action === "publish") {
+      const readyCount = actionBarCards.filter(
+        (card: any) => card.evidence?.readyToPublish && !card.evidence?.published
+      ).length;
+      const blockedCount = actionBarCards.length - readyCount;
+      confirmed = window.confirm(
         `Controlled Publish\n\nพร้อมลง ${readyCount} ตอน · ยังไม่พร้อม ${blockedCount} ตอน\n\nรายการที่ไม่ผ่าน readiness / ownership / evidence จะไม่ถูกเผยแพร่`
-      )
-    ) {
-      bulkRequestEditorialPublish.mutate({
-        workspaceId: selectedWorkspaceId,
-        workItemIds: actionBarWorkItemIds,
-      });
+      );
     }
+    if (!confirmed) return;
+    const batches: number[][] = [];
+    for (
+      let at = 0;
+      at < actionBarWorkItemIds.length;
+      at += BULK_ACTION_BATCH_LIMIT
+    ) {
+      batches.push(
+        actionBarWorkItemIds.slice(at, at + BULK_ACTION_BATCH_LIMIT)
+      );
+    }
+    const runBatches = async () => {
+      for (const workItemIds of batches) {
+        if (action === "check") {
+          await bulkRunEditorialChecker.mutateAsync({
+            workspaceId: selectedWorkspaceId,
+            workItemIds,
+          });
+        } else if (action === "confirm") {
+          await bulkApproveEditorialDrafts.mutateAsync({
+            workspaceId: selectedWorkspaceId,
+            workItemIds,
+          });
+        } else if (action === "stage") {
+          await bulkStageEditorialDrafts.mutateAsync({
+            workspaceId: selectedWorkspaceId,
+            workItemIds,
+          });
+        } else {
+          await bulkRequestEditorialPublish.mutateAsync({
+            workspaceId: selectedWorkspaceId,
+            workItemIds,
+          });
+        }
+      }
+    };
+    // The mutation hooks toast per batch (success and transport error alike);
+    // swallow the rejection here so the remaining batches simply stop.
+    void runBatches().catch(() => undefined);
   };
   // IPE-064: master select-all over the active story's packs.
   const activeStorySelectableIds = activeStoryPacks
