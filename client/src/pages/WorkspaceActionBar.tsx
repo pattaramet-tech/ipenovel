@@ -14,6 +14,10 @@ interface WorkspaceActionBarProps {
   confirmPending: boolean;
   stagePending: boolean;
   publishPending: boolean;
+  /** IPE-064R4B round 24 (P1): shown when the bar is blocked for a reason
+   * beyond an empty scope — e.g. the open pack has unsaved editor edits that
+   * the server-side bulk actions would never see. */
+  blockedReason?: string | null;
   onCheck: () => void;
   onConfirm: () => void;
   onStage: () => void;
@@ -27,6 +31,7 @@ export function WorkspaceActionBar({
   confirmPending,
   stagePending,
   publishPending,
+  blockedReason,
   onCheck,
   onConfirm,
   onStage,
@@ -90,6 +95,14 @@ export function WorkspaceActionBar({
           {scopeLabel}
         </span>
       </div>
+      {blockedReason && (
+        <p
+          className="text-xs font-medium text-amber-600"
+          data-testid="workspace-action-bar-blocked"
+        >
+          {blockedReason}
+        </p>
+      )}
       <p className="text-xs text-muted-foreground">
         ขอบเขตการทำงาน: แพ็กที่เลือกในรายการซ้าย (ถ้าไม่เลือก = แพ็กที่เปิดอยู่) ·
         รายการที่ไม่ผ่าน QC/readiness จะไม่ถูกยืนยัน/เผยแพร่

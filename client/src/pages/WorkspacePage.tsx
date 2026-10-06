@@ -1847,6 +1847,15 @@ export default function WorkspacePage() {
       ? `เลือก ${actionBarWorkItemIds.length} แพ็ก`
       : "แพ็กที่เปิดอยู่"
     : "ยังไม่ได้เลือกแพ็ก";
+  // IPE-064R4B round 24 (P1): unsaved editor edits live only in the browser —
+  // the bulk endpoints operate on the server-side latestDraft. While the open
+  // pack is inside the action-bar scope and dirty, the bar must not fire, or
+  // an operator can publish stale content believing the visible edits are
+  // included.
+  const actionBarContainsDirtyOpenPack =
+    chapterEditorDirty &&
+    selectedSourceWorkItemId != null &&
+    actionBarWorkItemIds.includes(selectedSourceWorkItemId);
   const actionBarCards = editorialCards.filter((card: any) =>
     actionBarWorkItemIds.includes(card.workItemId)
   );
@@ -1862,6 +1871,9 @@ export default function WorkspacePage() {
     action: "check" | "confirm" | "stage" | "publish"
   ) => {
     if (!selectedWorkspaceId || !actionBarWorkItemIds.length) return;
+    // Round 24 (P1): mirror of the bar's disabled state — the bulk endpoints
+    // never see browser-only edits, so a dirty in-scope pack must not fire.
+    if (actionBarContainsDirtyOpenPack) return;
     let confirmed = true;
     if (action === "publish") {
       const readyCount = actionBarCards.filter(
@@ -2348,7 +2360,16 @@ export default function WorkspacePage() {
                   6.Publish) above the editor — scope = selected packs. */}
               <WorkspaceActionBar
                 scopeLabel={actionBarScopeLabel}
-                disabled={!actionBarWorkItemIds.length || bulkBusy}
+                disabled={
+                  !actionBarWorkItemIds.length ||
+                  bulkBusy ||
+                  actionBarContainsDirtyOpenPack
+                }
+                blockedReason={
+                  actionBarContainsDirtyOpenPack
+                    ? "แพ็กที่เปิดอยู่มีการแก้ไขยังไม่บันทึก — กดบันทึก Draft ก่อนใช้แถบนี้ เพราะการตรวจ/ยืนยัน/Stage/เผยแพร่ ทำงานกับฉบับล่าสุดบนเซิร์ฟเวอร์เท่านั้น"
+                    : null
+                }
                 checkPending={bulkRunEditorialChecker.isPending}
                 confirmPending={bulkApproveEditorialDrafts.isPending}
                 stagePending={bulkStageEditorialDrafts.isPending}
