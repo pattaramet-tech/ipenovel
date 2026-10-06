@@ -314,7 +314,11 @@ describe("IPE-058-D Full Checker parity core", () => {
   });
 });
 
-  it("IPE-060B A. exact source-note tab never receives an ending marker", () => {
+  it("IPE-060B A/R4B. canonical note heading over narrative is an ordinary chapter", () => {
+    // IPE-064R4B round 15: canonical source-note metadata over REAL
+    // narrative content is an ordinary narrative chapter — the standard
+    // จบตอน marker is appended (only genuinely note-only tabs keep the
+    // marker-less contract).
     const draft = documentFromTabs([
       {
         sourceTabId: "note-tab",
@@ -330,9 +334,28 @@ describe("IPE-058-D Full Checker parity core", () => {
       transformCode: "ending_cleanup",
     });
     const texts = preview.document.tabs[0]!.paragraphs.map(row => row.text);
+    expect(texts.at(-1)).toBe("จบตอน");
+    expect(texts).toContain("เขาเดินกลับบ้านอย่างเงียบงัน");
+  });
+
+  it("IPE-064R4B round 15. a genuinely note-only tab keeps the marker-less contract", () => {
+    const draft = documentFromTabs([
+      {
+        sourceTabId: "note-tab",
+        tabOrder: 1,
+        title: "หมายเหตุจากต้นฉบับ",
+        chapterNumber: "205",
+        chapterTitle: "หมายเหตุจากต้นฉบับ",
+        paragraphs: ["หมายเหตุจากต้นฉบับ"],
+      },
+    ]);
+    const preview = previewEditorialFullCheckerTransform({
+      document: draft,
+      transformCode: "ending_cleanup",
+    });
+    const texts = preview.document.tabs[0]!.paragraphs.map(row => row.text);
     expect(texts).not.toContain("จบตอน");
     expect(texts).toContain("หมายเหตุจากต้นฉบับ");
-    expect(texts).toContain("เขาเดินกลับบ้านอย่างเงียบงัน");
   });
 
   it("IPE-060B E. ordinary narrative chapters still get the ending marker", () => {
