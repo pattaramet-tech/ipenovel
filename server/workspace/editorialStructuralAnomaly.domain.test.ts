@@ -87,6 +87,74 @@ describe("Editorial Structural Anomaly domain", () => {
     expect(result.summary.counts.tab_count_mismatch).toBe(0);
   });
 
+  // IPE-064R4B review round 25 (P1): pack-level anomalies were emitted with
+  // sourceTabId null, so they never matched any tab in the chapter-scoped
+  // issue surfaces and an operator could not see which chapter is missing.
+  it("anchors missing_expected_chapter to the nearest preceding chapter tab", () => {
+    const tabs: EditorialStructuralTabInput[] = [];
+    for (let chapter = 141; chapter <= 190; chapter += 1) {
+      if (chapter === 189) continue;
+      tabs.push(
+        tab({
+          sourceTabId: `tab-${chapter}`,
+          tabOrder: chapter - 141,
+          chapterNumber: String(chapter),
+          paragraphs: [
+            `บทที่ ${chapter}`,
+            `เนื้อเรื่องบทที่ ${chapter} มีเหตุการณ์ต่อเนื่องและข้อความจริง`,
+            "จบตอน",
+          ],
+        })
+      );
+    }
+
+    const result = evaluateEditorialStructuralAnomalies({
+      tabs,
+      episodeNumber: "141-190",
+    });
+
+    const missing = result.anomalies.filter(
+      anomaly => anomaly.anomalyType === "missing_expected_chapter"
+    );
+    expect(missing).toHaveLength(1);
+    expect(missing[0]!.chapterNumber).toBe("189");
+    expect(missing[0]!.sourceTabId).toBe("tab-188");
+  });
+
+  it("anchors missing_expected_chapter of the first chapter to the pack's first tab and anchors tab_count_mismatch", () => {
+    const tabs: EditorialStructuralTabInput[] = [];
+    for (let chapter = 142; chapter <= 190; chapter += 1) {
+      tabs.push(
+        tab({
+          sourceTabId: `tab-${chapter}`,
+          tabOrder: chapter - 142,
+          chapterNumber: String(chapter),
+          paragraphs: [
+            `บทที่ ${chapter}`,
+            `เนื้อเรื่องบทที่ ${chapter} มีเหตุการณ์ต่อเนื่องและข้อความจริง`,
+            "จบตอน",
+          ],
+        })
+      );
+    }
+
+    const result = evaluateEditorialStructuralAnomalies({
+      tabs,
+      episodeNumber: "141-190",
+    });
+
+    const missingFirst = result.anomalies.find(
+      anomaly =>
+        anomaly.anomalyType === "missing_expected_chapter" &&
+        anomaly.chapterNumber === "141"
+    );
+    expect(missingFirst?.sourceTabId).toBe("tab-142");
+    const mismatch = result.anomalies.find(
+      anomaly => anomaly.anomalyType === "tab_count_mismatch"
+    );
+    expect(mismatch?.sourceTabId).toBe("tab-142");
+  });
+
   it("distinguishes an originally empty tab from a source tab that literally contains only จบตอน", () => {
     const generatedEndOnly = tab({
       sourceTabId: "empty",
@@ -267,7 +335,11 @@ describe("Editorial Structural Anomaly domain", () => {
     expect(result.summary.counts.source_note_only).toBe(0);
   });
 
-  it("IPE-060B C. numbered heading with source note keeps the original blocking behavior", () => {
+  it("IPE-064R3 C. numbered heading with source note is accepted, not a blocking anomaly", () => {
+    // Supersedes the IPE-060B "keeps the original blocking behavior" pin:
+    // a chapter whose heading is "บทที่ NN หมายเหตุจากต้นฉบับ" with only
+    // note lines (+ optional legacy end marker) is an intentional
+    // non-narrative chapter and must not block QC.
     const result = evaluateEditorialStructuralAnomalies({
       episodeNumber: "138",
       tabs: [
@@ -281,8 +353,30 @@ describe("Editorial Structural Anomaly domain", () => {
         }),
       ],
     });
-    expect(result.summary.counts.source_note_only).toBe(1);
-    expect(result.summary.blockingAnomalyCount).toBe(1);
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+    expect(result.summary.counts.source_note_only).toBe(0);
+  });
+
+  it("IPE-064R3 C2. numbered source-note heading without a legacy end marker is accepted too", () => {
+    // New builds stop appending จบตอน to source-note chapters — the
+    // acceptance must not depend on the end marker being present.
+    const result = evaluateEditorialStructuralAnomalies({
+      episodeNumber: "138",
+      tabs: [
+        tab({
+          sourceTabId: "note",
+          tabOrder: 0,
+          chapterNumber: "138",
+          chapterTitle: "หมายเหตุจากต้นฉบับ",
+          tabTitle: "บทที่ 138 หมายเหตุจากต้นฉบับ",
+          paragraphs: ["บทที่ 138 หมายเหตุจากต้นฉบับ", "หมายเหตุจากต้นฉบับ"],
+        }),
+      ],
+    });
+    expect(result.anomalies).toHaveLength(0);
+    expect(result.summary.blockingAnomalyCount).toBe(0);
+    expect(result.summary.counts.source_note_only).toBe(0);
   });
 
   it("IPE-060B D. near-miss spelling หมายเหตุต้นฉบับ keeps the original behavior", () => {

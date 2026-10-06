@@ -38,16 +38,13 @@ describe("M29.2 Structural Anomaly Check safety", () => {
     expect(domain).toContain('severity: "warning"');
   });
 
-  it("surfaces tab count and grouped anomalies in bulk checker summary", () => {
+  it("keeps structural anomalies in the server read model (bulk summary UI retired, IPE-064)", () => {
     const page = read("client/src/pages/WorkspacePage.tsx");
     const router = read("server/workspace/router.ts");
     expect(router).toContain("structuralSummary: checker.structuralSummary");
     expect(router).toContain("anomalies: checker.anomalies");
-    expect(page).toContain("รวม {totalTabs} แท็บ");
-    expect(page).toContain("บทที่หาย:");
-    expect(page).toContain("แท็บมีเฉพาะ “จบตอน”");
-    expect(page).toContain("หมายเหตุจากต้นฉบับ:");
-    expect(page).toContain("เนื้อหาซ้ำ/คล้ายซ้ำ:");
+    // Anomalies surface per-pack in the chapter tools card / finding card.
+    expect(page).toContain("chapterEditorStructuralRepairGuidance");
   });
 
   it("does not mutate Draft, Google Docs, Sheets, or Publish", () => {
@@ -76,8 +73,9 @@ describe("M29.2 Structural Anomaly Check safety", () => {
     expect(checker).toContain('located.anomaly.anomalyType !== "source_note_only"');
     expect(approval).toContain('anomaly.disposition !== "confirmed_source_note"');
     expect(router).toContain("structuralConfirmation: adminProcedure");
-    expect(page).toContain("ยืนยันว่าเป็นหมายเหตุต้นฉบับ");
-    expect(page).toContain("ตรวจ structural ซ้ำ");
+    const findingCard = read("client/src/pages/WorkspaceFindingActions.tsx");
+    expect(findingCard).toContain("ยืนยันหมายเหตุจากผู้เขียน");
+    expect(page).toContain("setStructuralConfirmation.mutate");
     const journal = JSON.parse(read("drizzle/meta/_journal.json"));
     const entries = journal.entries.filter(
       (entry: any) =>

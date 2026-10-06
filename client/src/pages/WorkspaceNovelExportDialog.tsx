@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
+import { pruneEpisodeSelection, thaiOverLimitBlocksDownload } from "./workspaceNovelExportSelection";
 
 export interface ExportDialogNovel {
   novelId: number;
@@ -70,8 +71,32 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   const [startEpisodeNumber, setStartEpisodeNumber] = useState("");
   const [titlePrefix, setTitlePrefix] = useState("");
   const [appendFilenameToTitle, setAppendFilenameToTitle] = useState(false);
+  // IPE-064R3: title/id search over the novel list — filtering only affects
+  // what the selector shows, never the current selection or the export scope.
+  const [novelSearch, setNovelSearch] = useState("");
+
+  useEffect(() => {
+    if (!open) setNovelSearch("");
+  }, [open]);
 
   const novelId = selectedNovelId ?? (novels.length === 1 ? novels[0].novelId : null);
+  const filteredNovels = useMemo(() => {
+    const query = novelSearch.trim().toLocaleLowerCase("th");
+    if (!query) return novels;
+    return novels.filter(
+      (novel) =>
+        novel.novelTitle.toLocaleLowerCase("th").includes(query) ||
+        String(novel.novelId).includes(query)
+    );
+  }, [novels, novelSearch]);
+  // Keep the current selection visible even when the search filters it out.
+  const selectableNovels = useMemo(() => {
+    if (novelId && !filteredNovels.some((novel) => novel.novelId === novelId)) {
+      const current = novels.find((novel) => novel.novelId === novelId);
+      return current ? [current, ...filteredNovels] : filteredNovels;
+    }
+    return filteredNovels;
+  }, [filteredNovels, novels, novelId]);
   const parsedStart = Number(startEpisodeNumber);
   const validStart = startEpisodeNumber.trim() === "" || (Number.isInteger(parsedStart) && parsedStart >= 1);
   const subsetActive = scope === "subset" && selectedEpisodeIds.length > 0;
@@ -103,6 +128,21 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
     { ...selectionInput, ...thaiOptions },
     { enabled: open && Boolean(novelId), retry: false }
   );
+  // IPE-064R4B review round 28 (P2): the response's sourceEpisodes is the
+  // authoritative picker set — checkboxes render only from it. A selected
+  // episode that becomes unpublished / contentless is absent from the set,
+  // and without reconciliation the stale ID stays selected invisibly while
+  // every subsequent preview resubmits it. Prune the selection against the
+  // picker on every successful response; pruneEpisodeSelection returns the
+  // same reference when nothing changed, so React bails out and this can
+  // never loop or refetch on its own. While the response is absent
+  // (loading / error) the selection is left untouched.
+  const pickerEpisodes = thaiPreview.data?.sourceEpisodes;
+  useEffect(() => {
+    if (!pickerEpisodes) return;
+    const pickerIds = pickerEpisodes.map((episode) => episode.episodeId);
+    setSelectedEpisodeIds(current => pruneEpisodeSelection(current, pickerIds));
+  }, [pickerEpisodes]);
   const backupPreview = trpc.admin.novelExport.preview.useQuery(selectionInput, {
     enabled: open && Boolean(novelId) && mode === "backup",
     retry: false,
@@ -116,7 +156,29 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
   const previewError = mode === "thainovel" ? thaiPreview.error : backupPreview.error;
   const previewLoading = mode === "thainovel" ? thaiPreview.isFetching : backupPreview.isFetching;
   const entryCount = mode === "thainovel" ? (thaiPreview.data?.entries.length ?? 0) : (backupPreview.data?.exportItemCount ?? 0);
-  const downloadDisabled = !novelId || !validStart || previewLoading || Boolean(previewError) || entryCount === 0 || downloadPending || (scope === "subset" && !subsetActive);
+  // IPE-064R3: whole-novel Thai export over MAX_EXPORT_ITEMS — the preview
+  // still returns sourceEpisodes (per-pack subset is the way out), but the
+  // whole-scope download stays disabled/fail-closed.
+  const thaiOverLimit = thaiPreview.data?.overLimit ?? null;
+  // IPE-064R4B (P2): a data defect (collision / malformed pack) surfaced by
+  // the whole-novel request — per-pack subsets remain exportable.
+  const thaiValidationError = thaiPreview.data?.validationError ?? null;
+  // IPE-064R4B review round 30 (P2): the Thai chapter limit must gate ONLY
+  // the Thai-Novel download — thaiPreview data stays cached when the
+  // operator switches to Backup mode, and the previously unscoped flag kept
+  // the independently valid Backup download disabled. Banners are likewise
+  // Thai-mode scoped; Backup eligibility derives from Backup state alone.
+  const wholeScopeOverLimit = thaiOverLimitBlocksDownload(mode, scope, thaiOverLimit);
+  const downloadDisabled =
+    !novelId ||
+    !validStart ||
+    previewLoading ||
+    Boolean(previewError) ||
+    entryCount === 0 ||
+    downloadPending ||
+    (scope === "subset" && !subsetActive) ||
+    wholeScopeOverLimit ||
+    Boolean(mode === "thainovel" && thaiValidationError);
 
   const handleDownload = () => {
     if (!novelId) return;
@@ -153,18 +215,44 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                 <label className="text-sm font-medium" htmlFor="workspace-export-novel">
                   นิยาย
                 </label>
-                <select
-                  id="workspace-export-novel"
+                <input
+                  type="search"
+                  data-testid="export-novel-search"
+                  aria-label="ค้นหาชื่อเรื่อง / Novel ID"
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                  value={novelId ?? ""}
-                  onChange={(event) => setSelectedNovelId(Number(event.target.value) || null)}
-                >
-                  {novels.map((novel) => (
-                    <option key={novel.novelId} value={novel.novelId}>
-                      {novel.novelTitle}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="พิมพ์ค้นหาชื่อเรื่อง / Novel ID"
+                  value={novelSearch}
+                  onChange={(event) => setNovelSearch(event.target.value)}
+                />
+                {selectableNovels.length === 0 ? (
+                  <p className="rounded-md border border-dashed p-2 text-sm text-muted-foreground">
+                    ไม่พบเรื่องที่ตรงกับการค้นหา
+                  </p>
+                ) : (
+                  <select
+                    id="workspace-export-novel"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                    value={novelId ?? ""}
+                    onChange={(event) => {
+                      // IPE-064R4B review round 30 (P2): episode IDs belong to
+                      // ONE novel — carrying a subset selection across a novel
+                      // switch submits foreign IDs with the new novelId and the
+                      // preview rejects EXPORT_UNKNOWN_EPISODE before the R28
+                      // pruning effect ever sees a successful response. Clear
+                      // the subset selection atomically as part of the novel
+                      // transition; scope/mode/Thai options/search stay as-is.
+                      const nextNovelId = Number(event.target.value) || null;
+                      if (nextNovelId !== novelId) setSelectedEpisodeIds([]);
+                      setSelectedNovelId(nextNovelId);
+                    }}
+                  >
+                    {selectableNovels.map((novel) => (
+                      <option key={novel.novelId} value={novel.novelId}>
+                        {novel.novelTitle}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
 
@@ -285,6 +373,46 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
               <p className="text-xs text-muted-foreground" data-testid="export-backup-explanation">
                 แพ็กสำรองประกอบด้วย manifest.csv และโฟลเดอร์ contents/*.txt ซึ่งนำกลับเข้าระบบผ่าน ZIP Import เดิมได้
               </p>
+            )}
+
+            {mode === "thainovel" && thaiValidationError && scope === "whole" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-validation-error-banner">
+                <p className="font-medium">ตรวจพบปัญหาข้อมูลในนิยายนี้ — ส่งออกแบบ "ทั้งเรื่อง" ไม่ได้</p>
+                <p className="text-xs">{thaiValidationError.message} — เลือกโหมด "เลือกบางตอน" แล้วติ๊กรายแพ็กที่ถูกต้องเพื่อส่งออกเป็นชุด</p>
+              </div>
+            )}
+            {/* IPE-064R4B review round 27 (P2): subset recovery must surface
+                its OWN validation failure — the preview returns
+                validationError with the picker intact, so hiding this banner
+                left only the generic empty message and the operator could not
+                tell which selected pack failed or why. */}
+            {mode === "thainovel" && thaiValidationError && scope === "subset" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-subset-validation-error-banner">
+                <p className="font-medium">ตรวจพบปัญหาข้อมูลในรายการที่เลือก — ส่งออกชุดนี้ไม่ได้</p>
+                <p className="text-xs">{thaiValidationError.message} — ตรวจแพ็กที่เกี่ยวข้องใน Workspace หรือถอนติ๊กรายการที่มีปัญหาออก แล้วลองใหม่</p>
+              </div>
+            )}
+
+            {mode === "thainovel" && thaiOverLimit && scope === "whole" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-over-limit-banner">
+                <p className="font-medium">
+                  เรื่องนี้แยกแพ็กได้ {thaiOverLimit.itemCount.toLocaleString()} บท — เกินลิมิตต่อไฟล์ ({thaiOverLimit.maxItems} บท)
+                </p>
+                <p className="text-xs">
+                  ส่งออกแบบ "ทั้งเรื่อง" ไม่ได้ — เลือกโหมด "เลือกบางตอน" แล้วติ๊กเลือกรายแพ็กที่ต้องการ (ต่อไฟล์ไม่เกิน {thaiOverLimit.maxItems} บท) แล้วส่งออกเป็นชุด
+                </p>
+              </div>
+            )}
+            {/* Round 27 (P2): same for an oversized subset selection. */}
+            {mode === "thainovel" && thaiOverLimit && scope === "subset" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-subset-over-limit-banner">
+                <p className="font-medium">
+                  รายการที่เลือกแยกแพ็กได้ {thaiOverLimit.itemCount.toLocaleString()} บท — เกินลิมิตต่อไฟล์ ({thaiOverLimit.maxItems} บท)
+                </p>
+                <p className="text-xs">
+                  ถอนติ๊กรายการออกจนไม่เกิน {thaiOverLimit.maxItems} บท แล้วส่งออกเป็นชุด (ส่งออกหลายรอบได้)
+                </p>
+              </div>
             )}
 
             <div className="space-y-1" data-testid="export-preview-table">

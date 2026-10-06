@@ -66,6 +66,75 @@ describe("WorkspaceNovelExportDialog UI contract", () => {
   it("documents the published-only boundary in the UI", () => {
     expect(dialog).toContain("ส่งออกเฉพาะตอนที่เผยแพร่แล้ว");
   });
+
+  it("filters the novel list with a title/id search box (IPE-064R3)", () => {
+    expect(dialog).toContain('data-testid="export-novel-search"');
+    expect(dialog).toContain("ค้นหาชื่อเรื่อง / Novel ID");
+    expect(dialog).toContain("filteredNovels");
+    // Filtering is display-only: the current selection stays visible even
+    // when the search excludes it.
+    expect(dialog).toContain("const selectableNovels = useMemo(");
+    expect(dialog).toContain("ไม่พบเรื่องที่ตรงกับการค้นหา");
+  });
+
+  it("surfaces an over-limit banner and blocks the whole-scope download (IPE-064R3)", () => {
+    expect(dialog).toContain('data-testid="export-over-limit-banner"');
+    expect(dialog).toContain("const thaiOverLimit = thaiPreview.data?.overLimit ?? null;");
+    // The whole-scope ZIP stays fail-closed while the per-pack subset is the
+    // advertised way out. IPE-064R4B R30 (P2): the limit gate is scoped to
+    // THAI mode — the cached thaiPreview must not keep the independently
+    // valid Backup download disabled after a mode switch.
+    expect(dialog).toContain("thaiOverLimitBlocksDownload(mode, scope, thaiOverLimit)");
+    expect(dialog).toContain("wholeScopeOverLimit ||");
+    // IPE-064R4B (P2): a whole-scope data defect (collision / malformed pack)
+    // is surfaced as a banner; per-pack subsets stay exportable around it.
+    expect(dialog).toContain("const thaiValidationError = thaiPreview.data?.validationError ?? null;");
+    expect(dialog).toContain('data-testid="export-validation-error-banner"');
+    expect(dialog).toContain('Boolean(mode === "thainovel" && thaiValidationError)');
+    expect(dialog).toContain("เลือกโหมด \"เลือกบางตอน\"");
+  });
+
+  it("prunes stale selected episodes against the recovery picker (IPE-064R4B R28)", () => {
+    // The returned sourceEpisodes set is the authoritative picker — a
+    // selected episode that becomes unpublished / contentless is absent from
+    // it, and the stale ID must be pruned automatically instead of staying
+    // selected invisibly (checkboxes render only from sourceEpisodes).
+    expect(dialog).toContain('from "./workspaceNovelExportSelection"');
+    expect(dialog).toContain("pruneEpisodeSelection");
+    expect(dialog).toContain("const pickerEpisodes = thaiPreview.data?.sourceEpisodes;");
+    // Never prune while the response is absent (loading / error) — the
+    // selection must not be blanket-cleared by a missing response.
+    expect(dialog).toContain("if (!pickerEpisodes) return;");
+    // Prune goes through the functional updater with the reference-stable
+    // helper, so it cannot loop or refetch on its own.
+    expect(dialog).toContain("setSelectedEpisodeIds(current => pruneEpisodeSelection(current, pickerIds))");
+    expect(dialog).toContain("}, [pickerEpisodes]);");
+  });
+
+  it("isolates the Thai over-limit to Thai mode and resets cross-novel subsets (IPE-064R4B R30)", () => {
+    // P2 #1: the Thai expansion limit gates ONLY the Thai-Novel download —
+    // the cached thaiPreview must not keep Backup disabled after a mode
+    // switch (the helper pins Thai mode + whole scope + overLimit).
+    expect(dialog).toContain('thaiOverLimitBlocksDownload(mode, scope, thaiOverLimit)');
+    // Over-limit/limit banners stay Thai-mode scoped as well.
+    expect(dialog).toContain('{mode === "thainovel" && thaiOverLimit && scope === "whole" && (');
+    expect(dialog).toContain('{mode === "thainovel" && thaiOverLimit && scope === "subset" && (');
+
+    // P2 #2: episode IDs belong to one novel — changing novels clears the
+    // subset selection atomically inside the novel-select handler (the R28
+    // pruning cannot recover a preview that fails with
+    // EXPORT_UNKNOWN_EPISODE before a successful response).
+    expect(dialog).toContain("const nextNovelId = Number(event.target.value) || null;");
+    expect(dialog).toContain("if (nextNovelId !== novelId) setSelectedEpisodeIds([]);");
+    expect(dialog).toContain("setSelectedNovelId(nextNovelId);");
+
+    // Search text stays display-only — the search input's onChange must
+    // never touch the subset selection.
+    expect(dialog).toContain("onChange={(event) => setNovelSearch(event.target.value)}");
+
+    // R28 picker pruning remains intact.
+    expect(dialog).toContain("pruneEpisodeSelection");
+  });
 });
 
 describe("WorkspacePage export integration contract", () => {
@@ -99,8 +168,14 @@ describe("WorkspacePage export integration contract", () => {
     expect(wiringBlock).not.toMatch(/saveDraft|runChecker|confirmChapter|stageChapter|publishChapter|\.mutate\(/);
   });
 
-  it("derives the novel list from workspace bindings only", () => {
-    expect(page).toContain("workspaceBoundNovels");
-    expect(page).toContain("bindings.data");
+  it("derives the novel list from the full system catalog, not workspace bindings (IPE-064R3)", () => {
+    // The exporter reads published episodes by novelId behind an admin gate —
+    // the list must cover the ENTIRE catalog (same source as the intake
+    // selector), never scoped to workspace bindings.
+    expect(page).toContain("availablePublicationNovels.useQuery");
+    expect(page).toContain("exportNovelOptions");
+    expect(page).not.toContain("workspaceBoundNovels");
+    expect(page).not.toContain("workspaceExportNovels");
+    expect(page).not.toContain("bindings.list.useQuery");
   });
 });

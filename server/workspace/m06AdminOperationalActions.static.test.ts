@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-const page = readFileSync("client/src/pages/WorkspacePage.tsx", "utf8");
+const page = readFileSync("client/src/pages/WorkspaceIntakePage.tsx", "utf8");
 const router = readFileSync("server/workspace/router.ts", "utf8");
 
 describe("M06-B admin operational actions", () => {

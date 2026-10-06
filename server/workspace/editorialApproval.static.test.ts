@@ -109,7 +109,14 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
     const service = source("server/workspace/editorialApproval.service.ts");
     const provider = source("server/workspace/ipenovelPublish.provider.ts");
     expect(service).toContain("sourceTabId: anomaly.sourceTabId ?? null");
-    expect(service).toContain("confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc)");
+    // IPE-063R7: read/stage wire the union helper — legacy confirmed
+    // dispositions PLUS exact-marker detection (no manual confirm needed
+    // for the exact canonical note heading).
+    expect(service).toContain(
+      "confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs)"
+    );
+    expect(service).toContain("resolveNonBillableSourceNoteTabIds");
+    expect(service).toContain("isExactAcceptedSourceNote(tab.chapterTitle ?? \"\")");
     expect(provider).toContain("workspaceEditorialStructuralConfirmations");
     expect(provider).toContain("confirmedSourceNoteTabIds: confirmedSourceNotes");
   });
@@ -189,9 +196,12 @@ describe("Workspace Editorial approval + Episode staging static boundaries", () 
   });
 
   it("shows explicit Confirm and unpublished Episode staging controls in Workspace", () => {
+    // IPE-064: the per-pack ยืนยัน/Stage controls live in the sticky
+    // toolbar CTA and the bulk action bar; the old rail sections retired.
     const page = source("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("4. ยืนยัน Draft ปัจจุบัน");
-    expect(page).toContain("5. Stage");
+    expect(page).toContain("onConfirm={submitApprovalConfirm}");
+    expect(page).toContain("onStage={submitStageDraft}");
+    expect(page).toContain("bulkStageEditorialDrafts.mutate");
     expect(page).toContain("unpublished");
   });
 });

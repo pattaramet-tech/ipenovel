@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { normalizeEditorialText } from "./editorialDraft.domain";
+import {
+  EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE,
+  isSourceNoteChapterHeadingText,
+  normalizeEditorialText,
+} from "./editorialDraft.domain";
 
 export const EDITORIAL_STRUCTURAL_CHECK_VERSION =
   "workspace-editorial-structural-check-v1" as const;
@@ -93,10 +97,41 @@ function isSourceNote(value: string) {
  * normalization the shape checks use — no contains/startsWith/broad regex.
  * Every other source-note spelling keeps the existing blocking behavior.
  */
-export const EXACT_ACCEPTED_SOURCE_NOTE_TEXT = "หมายเหตุจากต้นฉบับ";
+export const EXACT_ACCEPTED_SOURCE_NOTE_TEXT = EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE;
 
 export function isExactAcceptedSourceNote(value: string) {
   return normalizeForShape(value) === EXACT_ACCEPTED_SOURCE_NOTE_TEXT;
+}
+
+/**
+ * IPE-064R4B review round 17: a tab is an intentional source-note chapter
+ * only when its identity is the exact canonical note (title or
+ * chapterTitle) AND every meaningful row is genuinely note content — a
+ * note row, a note-chapter heading (บทที่ NN หมายเหตุจากต้นฉบับ), or an
+ * end marker. Canonical metadata over narrative content is an ordinary
+ * narrative chapter and stays billable/marker-bearing.
+ */
+export function isAcceptedSourceNoteChapterTab(tab: {
+  title?: string | null;
+  chapterTitle?: string | null;
+  paragraphs?: ReadonlyArray<{ text: string }>;
+}): boolean {
+  if (
+    !isExactAcceptedSourceNote(tab.title ?? '') &&
+    !isExactAcceptedSourceNote(tab.chapterTitle ?? '')
+  ) {
+    return false;
+  }
+  const meaningful = (tab.paragraphs ?? [])
+    .map(paragraph => normalizeForShape(paragraph.text))
+    .filter(text => text && !isSeparator(text));
+  if (!meaningful.length) return false;
+  return meaningful.every(
+    text =>
+      isExactAcceptedSourceNote(text) ||
+      isSourceNoteChapterHeadingText(text) ||
+      isEndMarker(text),
+  );
 }
 
 function parseIntegerChapterNumber(value: string | null | undefined) {
@@ -220,10 +255,18 @@ function classifyTab(tab: EditorialStructuralTabInput) {
     // IPE-060B: a tab identified by the exact canonical source note whose
     // content is only that note (optionally plus an end marker) is an
     // intentional non-narrative tab — accepted as-is, not an anomaly.
+    // IPE-064R3: the chapter-heading line itself in the form "บทที่ 45
+    // หมายเหตุจากต้นฉบับ" is part of the intentional note tab — the note
+    // body lines follow the heading and must not block QC.
     if (
       (isExactAcceptedSourceNote(tab.tabTitle) ||
         isExactAcceptedSourceNote(tab.chapterTitle ?? "")) &&
-      meaningful.every(text => isExactAcceptedSourceNote(text) || isEndMarker(text))
+      meaningful.every(
+        text =>
+          isExactAcceptedSourceNote(text) ||
+          isEndMarker(text) ||
+          isSourceNoteChapterHeadingText(text)
+      )
     ) {
       return null;
     }
@@ -330,8 +373,12 @@ export function evaluateEditorialStructuralAnomalies(input: {
         buildAnomaly({
           anomalyType: "tab_count_mismatch",
           severity: "error",
-          sourceTabId: null,
-          tabTitle: null,
+          // IPE-064R4B review round 25 (P1): anchor the pack-level anomaly to
+          // the pack's first tab — a null sourceTabId matches no tab in the
+          // chapter-scoped issue surfaces (finding card, tree issue counts),
+          // so the defect was invisible outside aggregate counts.
+          sourceTabId: tabs[0]?.sourceTabId ?? null,
+          tabTitle: tabs[0]?.tabTitle ?? null,
           chapterNumber: null,
           relatedSourceTabIds: [],
           message: `จำนวนแท็บ ${tabs.length} ไม่ตรงช่วงตอน ${input.episodeNumber} ที่ควรมี ${range.count} แท็บ`,
@@ -345,12 +392,23 @@ export function evaluateEditorialStructuralAnomalies(input: {
       );
     }
     for (const chapter of missingChapterNumbers) {
+      // Round 25 (P1): anchor a missing chapter to the nearest PRECEDING
+      // existing chapter tab (fall back to the pack's first tab) — the gap
+      // sits right after that tab, so the finding card opens where the fix
+      // belongs.
+      const precedingChapters = Array.from(chapterToTabs.keys())
+        .filter(existing => existing < chapter)
+        .sort((a, b) => b - a);
+      const anchorTab =
+        precedingChapters.length > 0
+          ? chapterToTabs.get(precedingChapters[0]!)?.[0]
+          : tabs[0];
       anomalies.push(
         buildAnomaly({
           anomalyType: "missing_expected_chapter",
           severity: "error",
-          sourceTabId: null,
-          tabTitle: null,
+          sourceTabId: anchorTab?.sourceTabId ?? null,
+          tabTitle: anchorTab?.tabTitle ?? null,
           chapterNumber: String(chapter),
           relatedSourceTabIds: [],
           message: `ไม่พบหัวข้อบทที่ ${chapter} ใน Episode Pack`,

@@ -8,6 +8,15 @@ export const EDITORIAL_DRAFT_PRESENTATION = {
   spacingAfterPt: 10,
 } as const;
 
+/**
+ * IPE-064R3: the single canonical source-note chapter title. A chapter whose
+ * heading resolves to exactly this title (e.g. "บทที่ 45 หมายเหตุจากต้นฉบับ")
+ * is an intentional non-narrative chapter — it never receives the generated
+ * "จบตอน" ending marker and is accepted by the structural shape checks
+ * instead of blocking QC.
+ */
+export const EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE = "หมายเหตุจากต้นฉบับ";
+
 const INVISIBLE_RE = /[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0\u2060]/g;
 const THAI_DIGITS: Record<string, string> = {
   "๐": "0",
@@ -163,6 +172,19 @@ export function normalizeChapterHeading(text: string) {
   return `บทที่ ${info.number}${info.title ? " " + info.title : ""}`;
 }
 
+/**
+ * IPE-064R3: true when the line is a chapter heading whose extracted title is
+ * exactly the canonical source note — e.g. "บทที่ 45 หมายเหตุจากต้นฉบับ".
+ * Near-miss spellings keep the existing blocking behavior (same philosophy as
+ * the structural side's exact-match acceptance).
+ */
+export function isSourceNoteChapterHeadingText(value: string) {
+  const info = chapterInfo(String(value ?? ""));
+  if (!info) return false;
+  const title = normalizeEditorialText(info.title).replace(/\s+/g, " ").trim();
+  return title === EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE;
+}
+
 function parseEnglishHeading(text: string) {
   const normalized = normalizeEditorialText(text);
   const match = normalized.match(/^chapter\s*([0-9]+(?:\.[0-9]+)?)\b/i);
@@ -303,21 +325,66 @@ export function cleanupEnding(
     }
   }
   if (!markerSeen) {
-    const generatedFingerprint = paragraphFingerprint("จบตอน");
-    withoutDuplicateMarkers.push({
-      paragraphKey: sha256(
-        "workspace-editorial-generated-end-v1\0" + sourceTabId
-      ),
-      sourceParagraphIndex: 0,
-      paragraphOrder: withoutDuplicateMarkers.length + 1,
-      text: "จบตอน",
-      sourceParagraphFingerprint: generatedFingerprint,
-      sourceOccurrenceCount: 1,
-      sourceOccurrenceOrdinal: 1,
-      paragraphFingerprint: generatedFingerprint,
-      occurrenceCount: 1,
-      occurrenceOrdinal: 1,
-    });
+    // IPE-064R3: a source-note chapter (e.g. "บทที่ 45 หมายเหตุจากต้นฉบับ"
+    // as the first line) is an intentional non-narrative chapter — it must
+    // NOT receive a generated "จบตอน" ending marker.
+    // IPE-064R4B review round 15 (P2): the suppression requires the tab to
+    // be GENUINELY note-only — the canonical heading followed by narrative
+    // content is an ordinary narrative chapter (the structural classifier
+    // treats it as narrative too) and keeps its end marker.
+    // IPE-064R4B review round 27 (P2): a canonical note-only tab may open
+    // with separator paragraphs before the note heading — probing the raw
+    // first three rows misses the heading and wrongly appends จบตอน to a
+    // tab the structural classifier accepts as a non-billable source note.
+    // Probe the first three MEANINGFUL rows instead; separators and blanks
+    // are already accepted by the every-row predicate below.
+    const meaningfulHeadRows = kept
+      .map(paragraph =>
+        normalizeEditorialText(String(paragraph.text ?? ""))
+          .replace(/\s+/g, " ")
+          .trim()
+      )
+      .filter(text => {
+        if (!text) return false;
+        return !/^[_\-=*#~•·.]{3,}$/.test(text.replace(/\s+/g, ""));
+      })
+      .slice(0, 3);
+    const sourceNoteChapter =
+      meaningfulHeadRows.some(text => {
+        return (
+          isSourceNoteChapterHeadingText(text) ||
+          text === EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE
+        );
+      }) &&
+      kept.every(paragraph => {
+        const text = normalizeEditorialText(String(paragraph.text ?? ""))
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!text) return true;
+        if (/^[_\-=*#~•·.]{3,}$/.test(text.replace(/\s+/g, ""))) return true;
+        return (
+          text === EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE ||
+          isSourceNoteChapterHeadingText(text) ||
+          /^จบตอน[.!…]*$/i.test(text)
+        );
+      });
+    if (!sourceNoteChapter) {
+      const generatedFingerprint = paragraphFingerprint("จบตอน");
+      withoutDuplicateMarkers.push({
+        paragraphKey: sha256(
+          "workspace-editorial-generated-end-v1\0" + sourceTabId
+        ),
+        sourceParagraphIndex: 0,
+        paragraphOrder: withoutDuplicateMarkers.length + 1,
+        text: "จบตอน",
+        sourceParagraphFingerprint: generatedFingerprint,
+        sourceOccurrenceCount: 1,
+        sourceOccurrenceOrdinal: 1,
+        paragraphFingerprint: generatedFingerprint,
+        occurrenceCount: 1,
+        occurrenceOrdinal: 1,
+      });
+    }
   }
   return withoutDuplicateMarkers;
 }

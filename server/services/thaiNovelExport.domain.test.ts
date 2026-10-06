@@ -15,6 +15,7 @@ import {
   NovelExportPackage,
 } from "./novelExport.domain";
 import {
+  assertNoCrossPackChapterCollisions,
   buildThaiNovelExportEntries,
   buildThaiNovelExportZip,
   buildThaiNovelPreviewRows,
@@ -294,5 +295,153 @@ describe("limits", () => {
 
   it("never emits unsafe path separators from the heading-derived filename", () => {
     expect(resolveThaiNovelFilename('บทที่ 1 ชื่อ: ทดสอบ?')).toBe("บทที่ 1 ชื่อ ทดสอบ.txt");
+  });
+});
+
+describe("IPE-064R3 range-pack over-run", () => {
+  const makeOverRunContent = (declaredEnd: number, actualEnd: number, start = 141) => {
+    const chapters = Array.from({ length: actualEnd - start + 1 }, (_, index) => {
+      const chapter = start + index;
+      return `บทที่ ${chapter} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท ${chapter} 🐉`;
+    });
+    return `แพ็กตอน ${start} - ${declaredEnd} 001\n\n${chapters.join("\n\n")}\n`;
+  };
+
+  it("includes sequential extra chapters beyond the declared range (พบ 52 คาด 50)", () => {
+    // Pack declares 141-190 but the content genuinely contains 141-192.
+    const item = makeItem({ episodeNumber: "141 - 190", content: makeOverRunContent(190, 192) });
+    const rows = buildThaiNovelPreviewRows(buildThaiNovelExportEntries(makePackage({ items: [item] })));
+    expect(rows).toHaveLength(52);
+    expect(rows.at(-1)).toMatchObject({ sourceChapterNumber: "192" });
+  });
+
+  it("still rejects fewer headings than the declared range", () => {
+    const item = makeItem({ episodeNumber: "141 - 190", content: makeOverRunContent(190, 189) });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [item] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+
+  it("still rejects a duplicate/out-of-order heading in the extra chapters", () => {
+    const chapters = [
+      ...Array.from({ length: 50 }, (_, index) => `บทที่ ${141 + index} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหาบท ${141 + index} 🐉`),
+      "บทที่ 190 ซ้ำ\n\nเนื้อหาซ้ำ",
+    ];
+    const item = makeItem({
+      episodeNumber: "141 - 190",
+      content: `แพ็กตอน 141 - 190 001\n\n${chapters.join("\n\n")}\n`,
+    });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [item] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+});
+
+describe("IPE-064R4B cross-pack duplicate guard", () => {
+  it("rejects an overrun that overlaps the next pack instead of double-expanding", () => {
+    const overrun = makeItem({
+      episodeId: 1,
+      episodeNumber: "141 - 190",
+      content: makePackContent(141, 192),
+    });
+    const normal = makeItem({
+      episodeId: 2,
+      episodeNumber: "191 - 240",
+      content: makePackContent(191, 240),
+    });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [overrun, normal] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+
+  it("still accepts non-overlapping sequential packs", () => {
+    const first = makeItem({
+      episodeId: 1,
+      episodeNumber: "141 - 190",
+      content: makePackContent(141, 190),
+    });
+    const second = makeItem({
+      episodeId: 2,
+      episodeNumber: "191 - 240",
+      content: makePackContent(191, 240),
+    });
+    const rows = buildThaiNovelPreviewRows(
+      buildThaiNovelExportEntries(makePackage({ items: [first, second] }))
+    );
+    expect(rows).toHaveLength(100);
+  });
+});
+
+describe("IPE-064R4B numeric chapter collision identity", () => {
+  it("treats zero-padded and unpadded headings of the same chapter as one chapter", () => {
+    const rangePack = makeItem({
+      episodeId: 1,
+      episodeNumber: "1",
+      content: `แพ็กตอน 1 - 1 001\n\nบทที่ 001 จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหา 001`,
+    });
+    const single = makeItem({
+      episodeId: 2,
+      episodeNumber: "1",
+      content: `บทที่ 1 จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหา 1`,
+    });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [rangePack, single] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+});
+
+describe("IPE-064R4B review rounds 13-15 collision refinements", () => {
+  const NOTE_FIXTURE = (start: number, end: number) => {
+    const chapters = Array.from({ length: end - start + 1 }, (_, index) => {
+      const chapter = start + index;
+      return `บทที่ ${chapter} จ้าวกลยุทธ์โปเกมอน\n\nเนื้อหา ${chapter}`;
+    });
+    return `แพ็กตอน ${start} - ${end} 001\n\n${chapters.join("\n\n")}`;
+  };
+
+  it("round 13: an unrelated malformed unselected pack does not block a valid subset", () => {
+    // The unselected 1-50 pack is malformed (49 headings for 50 declared).
+    // It must not block exporting the valid 51-100 subset.
+    const malformed = makeItem({
+      episodeId: 1,
+      episodeNumber: "1 - 50",
+      content: NOTE_FIXTURE(1, 49),
+    });
+    const valid = makeItem({
+      episodeId: 2,
+      episodeNumber: "51 - 100",
+      content: makePackContent(51, 100),
+    });
+    assertNoCrossPackChapterCollisions(
+      [malformed, valid],
+      new Set([2]),
+    );
+  });
+
+  it("round 13: collisions wholly between two unselected packs do not block a valid subset", () => {
+    const overlappingA = makeItem({
+      episodeId: 1,
+      episodeNumber: "1 - 50",
+      content: makePackContent(1, 50),
+    });
+    const overlappingB = makeItem({
+      episodeId: 2,
+      episodeNumber: "40 - 80",
+      content: makePackContent(40, 80),
+    });
+    const valid = makeItem({
+      episodeId: 3,
+      episodeNumber: "500 - 520",
+      content: makePackContent(500, 520),
+    });
+    // Both colliding packs are unselected — the valid subset still exports.
+    assertNoCrossPackChapterCollisions(
+      [overlappingA, overlappingB, valid],
+      new Set([3]),
+    );
   });
 });

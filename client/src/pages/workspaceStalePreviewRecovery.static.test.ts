@@ -1,7 +1,8 @@
 // IPE-061R1 — STALE_PREVIEW UX recovery: static UI contract tests.
-// Per repo convention (no jsdom/RTL), these read WorkspacePage.tsx and the
-// router as text and pin the recovery flow: typed detection, single refetch,
-// preview replacement, actionable toast, and the no-auto-sync guarantee.
+// Per repo convention (no jsdom/RTL), these read WorkspaceIntakePage.tsx
+// (the Master Intake UI moved there in IPE-064) and the router as text and
+// pin the recovery flow: typed detection, single refetch, preview
+// replacement, actionable toast, and the no-auto-sync guarantee.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -10,7 +11,7 @@ const root = new URL("../../../", import.meta.url);
 const source = (path: string) => readFileSync(new URL(path, root), "utf8").replace(/\r\n/g, "\n");
 
 describe("IPE-061R1 stale-preview recovery contract", () => {
-  const page = source("client/src/pages/WorkspacePage.tsx");
+  const page = source("client/src/pages/WorkspaceIntakePage.tsx");
   const router = source("server/workspace/router.ts");
 
   it("detects stale previews via the structured tRPC data.code, not message strings", () => {

@@ -97,7 +97,8 @@ describe("IPE-062R4D — pack/chapter tree navigation", () => {
 
   it("M. selected pack + selected chapter state stay wired", () => {
     expect(page).toContain("activeChapterTabId={chapterEditorTarget?.sourceTabId ?? null}");
-    expect(page).toContain("chapters={filteredChapterEditorTabs.map((tab: any) => {");
+    // IPE-064R3: the tree renders from the light outline rows.
+    expect(page).toContain("chapters={packTreeChapters}");
   });
 
   it("M2. the outer master-detail grid keeps exactly THREE direct columns (no 4th child spill)", () => {
@@ -134,9 +135,10 @@ describe("IPE-062R4D — guards and invariants (R3/R4A preserved)", () => {
     expect(page).toContain("ต้องการทิ้งการแก้ไขแล้วเปลี่ยนเรื่องหรือไม่?");
   });
 
-  it("J. save/autosave identity invariant enforced in both paths", () => {
-    expect((page.match(/editorDraftBelongsToSelectedPack\(/g) ?? []).length).toBe(2);
-    expect(page).toContain('submitEditorEdit("autosave")');
+  it("J. save identity invariant enforced in the canvas save path", () => {
+    // IPE-064: the finding quick-editor (and its autosave path) retired —
+    // the canvas save is the single guarded submit.
+    expect((page.match(/editorDraftBelongsToSelectedPack\(/g) ?? []).length).toBe(1);
     expect(page).toContain("Editor นี้เปิดจากแพ็กอื่น");
   });
 });
@@ -199,27 +201,30 @@ describe("IPE-062R4E — highlight visibility + go-to-issue CTA", () => {
 describe("IPE-062R4D — right rail is the single workflow authority", () => {
   const sidePanel = page.slice(page.indexOf('data-testid="workspace-side-panel"'));
 
-  it("K. QC/checker, Issue Queue, Full Checker and Safe Transform live in the right rail only", () => {
-    expect(sidePanel).toContain('data-testid="workspace-checker-section"');
-    expect(sidePanel).toContain("3. ตรวจ / ตรวจซ้ำ (QC)");
-    expect(sidePanel).toContain("editorTarget && editorTarget.findingId === finding.id");
-    expect(sidePanel).toContain("Issue Queue · {chapterEditorIssueItems.length}");
-    expect(sidePanel).toContain("Full Checker vNext");
-    expect(sidePanel).toContain("Safe Transform Preview");
+  it("K. the finding workflow card lives in the right rail; the retired preview cards are gone", () => {
+    // IPE-064: Issue Queue / Full Checker / Safe Transform previews were
+    // retired; the rail hosts the compact summary + finding actions card.
+    expect(sidePanel).toContain("<WorkspaceFindingActions");
+    expect(sidePanel).toContain("<WorkspaceReviewSummaryPanel");
+    expect(page).not.toContain("Issue Queue");
+    expect(page).not.toContain("Full Checker vNext");
+    expect(page).not.toContain("Safe Transform Preview");
   });
 
-  it("L. Stage/Publish have no duplicate primary controls in the center", () => {
-    expect(sidePanel).toContain('data-testid="workspace-stage-section"');
-    expect(sidePanel).toContain('data-testid="workspace-publish-section"');
-    // Center secondary block never carries workflow actions.
+  it("L. Stage/Publish primary controls live in the action bar, not duplicated in the rail", () => {
+    // IPE-064: the numbered workflow bar (3.ตรวจ / 4.ยืนยัน / 5.Stage /
+    // 6.Publish) sits above the center editor and replaces the old rail
+    // sections; the center secondary block never carries workflow actions.
+    const actionBar = source("client/src/pages/WorkspaceActionBar.tsx");
+    expect(actionBar).toContain("5. Stage");
+    expect(actionBar).toContain("6. Publish");
+    expect(page).not.toContain('data-testid="workspace-stage-section"');
+    expect(page).not.toContain('data-testid="workspace-publish-section"');
     const center = page.slice(
       page.indexOf('data-testid="workspace-main-editor"'),
       page.indexOf('data-testid="workspace-side-panel"')
     );
-    expect(center).not.toContain("requestEditorialPublish");
+    expect(center).not.toContain("bulkRequestEditorialPublish");
     expect(center).not.toContain("stageEditorialEpisode.mutate");
-    // ไป Stage / Publish scroll to the rail sections instead of switching tabs.
-    expect(page).toContain('document.getElementById("workspace-stage-section")');
-    expect(page).toContain('document.getElementById("workspace-publish-section")');
   });
 });

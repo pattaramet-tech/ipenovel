@@ -24,6 +24,7 @@ import {
 import {
   EDITORIAL_STRUCTURAL_CHECK_VERSION,
   evaluateEditorialStructuralAnomalies,
+  isAcceptedSourceNoteChapterTab,
   isExactAcceptedSourceNote,
   type EditorialStructuralTabInput,
 } from "./editorialStructuralAnomaly.domain";
@@ -506,7 +507,14 @@ function expandSplitParagraph(
 }
 
 function hasNarrativeEvidence(tab: EditorialDraftDocument["tabs"][number]) {
-  if (classifyEditorialChapterNumber(tab.chapterNumber).kind !== "single") {
+  // IPE-064R4B round 21: only pack-range identity blocks the ending cleanup.
+  // reindexEditorialDraftDocument derives chapterNumber from the tab CONTENT,
+  // so canonical-note heading tabs and unnumbered narrative chapters carry
+  // null here — they are ordinary chapters and keep the จบตอน marker.
+  // Genuinely note-only tabs never reach this point (the
+  // isAcceptedSourceNoteChapterTab guard above) and table-of-contents-like
+  // tabs fail the row scan below.
+  if (classifyEditorialChapterNumber(tab.chapterNumber).kind === "range") {
     return false;
   }
   return tab.paragraphs.some(paragraph => {
@@ -642,15 +650,22 @@ function applySingleTransform(input: {
 
   const beforeSha = editorialDraftSha256(next);
   for (const tab of next.tabs) {
-    if (!hasNarrativeEvidence(tab)) continue;
-    // IPE-060B: a tab identified by the exact canonical source note is an
-    // intentional non-narrative tab — never receive an ending marker.
-    if (
-      isExactAcceptedSourceNote(tab.title) ||
-      isExactAcceptedSourceNote(tab.chapterTitle ?? "")
-    ) {
+    // IPE-064R4B round 20: source-note classification runs BEFORE the
+    // narrative guard — a genuinely note-only tab (canonical identity +
+    // note-only rows) has its legacy generated จบตอน stripped even though
+    // it contains no narrative evidence (which would otherwise skip the
+    // cleanup entirely and strand the marker).
+    if (isAcceptedSourceNoteChapterTab(tab)) {
+      tab.paragraphs = tab.paragraphs.filter(
+        paragraph =>
+          !(
+            paragraph.sourceParagraphIndex === 0 &&
+            /^จบตอน[.!…]*$/i.test(normalizeEditorialText(paragraph.text))
+          )
+      );
       continue;
     }
+    if (!hasNarrativeEvidence(tab)) continue;
     const hadMarker = tab.paragraphs.some(paragraph =>
       /^จบตอน[.!…]*$/i.test(normalizeEditorialText(paragraph.text))
     );

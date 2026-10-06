@@ -57,11 +57,14 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
   });
 
   it("exposes explicit admin-only Editorial publish controls without direct Control Center execution", () => {
+    // IPE-064: Publish runs through the bulk action bar endpoint; the
+    // per-pack requestPublish mutation moved off the workspace page.
     const router = source("server/workspace/router.ts");
     const page = source("client/src/pages/WorkspacePage.tsx");
+    const actionBar = source("client/src/pages/WorkspaceActionBar.tsx");
     expect(router).toMatch(/publish: adminProcedure[\s\S]*requestPublish: adminProcedure/);
-    expect(page).toContain("trpc.workspace.editorial.requestPublish.useMutation");
-    expect(page).toContain("Publish (Controlled)");
+    expect(page).toContain("bulkRequestEditorialPublish.mutate");
+    expect(actionBar).toContain("6. Publish");
     expect(page).not.toContain("publishExecution.execute.useMutation");
   });
 });

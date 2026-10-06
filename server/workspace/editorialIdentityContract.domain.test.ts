@@ -89,7 +89,7 @@ describe("Editorial identity contract", () => {
     const base = {
       runId: 7,
       draftId: 42,
-      engineVersion: "workspace-editorial-foreign-checker-v8",
+      engineVersion: "workspace-editorial-foreign-checker-v9",
       allowListSha256: "a".repeat(64),
     };
     const current = editorialCheckerRunIdentity(base);

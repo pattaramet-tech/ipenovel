@@ -34,7 +34,7 @@ describe("M12D.7 sale metadata contract", () => {
   it("makes Workspace intake package-only and keeps sale metadata in idempotency", () => {
     const board = source("server/workspace/editorialBoard.service.ts");
     const router = source("server/workspace/router.ts");
-    const page = source("client/src/pages/WorkspacePage.tsx");
+    const page = source("client/src/pages/WorkspaceIntakePage.tsx");
     expect(board).toContain("Workspace Episode Pack intake supports package commerce only.");
     expect(board).toContain('saleMode: "package"');
     expect(router).toContain('saleMode: z.literal("package").default("package")');
@@ -51,13 +51,13 @@ describe("M12D.7 sale metadata contract", () => {
   it("allows sale correction only through the pre-Draft editable Episode Pack guard", () => {
     const board = source("server/workspace/editorialBoard.service.ts");
     const router = source("server/workspace/router.ts");
-    const page = source("client/src/pages/WorkspacePage.tsx");
+    const menu = source("client/src/pages/EditorialPackRowActionsMenu.tsx");
     expect(board).toContain("updateEditorialEpisodeSaleMetadata");
     expect(board).toContain("requireSaleEditableEpisodePack(tx, input.workspaceId, input.workItemId)");
     expect(board).toContain("Episode Pack sale metadata is immutable after Stage evidence exists.");
     expect(router).toContain("updateEpisodeSale: adminProcedure");
-    expect(page).toContain("แก้การขาย");
-    expect(page).toContain(
+    expect(menu).toContain("แก้การขาย");
+    expect(menu).toContain(
       '!card.evidence?.published || card.evidence?.publishedSource === "published_episode"'
     );
   });

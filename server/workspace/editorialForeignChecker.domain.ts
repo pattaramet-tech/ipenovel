@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 
+// IPE-064R4B (P2): v9 — the structural source-note classification changed
+// (exact canonical note headings are accepted instead of flagged), so all
+// persisted v8 runs are stale: the run idempotency key includes this version
+// and without the bump a rerun would return the pre-classification run with
+// its old source_note_only blocking anomaly.
 export const EDITORIAL_FOREIGN_CHECKER_ENGINE_VERSION =
-  "workspace-editorial-foreign-checker-v8" as const;
+  "workspace-editorial-foreign-checker-v9" as const;
 
 export const EDITORIAL_FOREIGN_CHECKER_RULES = {
   foreignScript: "foreign_script",

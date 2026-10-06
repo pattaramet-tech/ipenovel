@@ -214,7 +214,12 @@ function expandRangePack(item: NovelExportItem, start: number, end: number): Tha
   }
 
   const expectedCount = end - start + 1;
-  if (matches.length !== expectedCount) {
+  // IPE-064R3: headings FEWER than the declared range stay a defect (missing
+  // chapters). Headings BEYOND the declared end are allowed — the pack
+  // genuinely contains extra chapters (พบ 52, คาด 50) — as long as the
+  // sequence check below proves they continue 141, 142, … without gaps or
+  // duplicates; any sequence break still blocks.
+  if (matches.length < expectedCount) {
     return invalidPack(item, `จำนวนหัวบทในแพ็กไม่ตรงช่วงที่ประกาศ (พบ ${matches.length}, คาด ${expectedCount})`);
   }
 
@@ -266,20 +271,14 @@ function expandSingleEpisode(item: NovelExportItem, sourceNumber: number): ThaiN
 
 /**
  * Expand canonical source Episodes into logical Thai-Novel chapters.
- * Range identities MUST split exactly to every declared chapter.
+ * Range identities must split to every declared chapter — fewer headings
+ * than declared is a defect; sequential extras beyond the declared end are
+ * included (IPE-064R3).
  */
 export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNovelLogicalChapter[] {
   validateExportPackage(pkg);
 
-  const chapters = sortExportItemsCanonical(pkg.items).flatMap((item) => {
-    const identity = parseExportEpisodeIdentity(item.episodeNumber);
-    if (!identity) {
-      return invalidPack(item, "episodeNumber ไม่มีเลขตอนที่อ่านได้");
-    }
-    return identity.kind === "range"
-      ? expandRangePack(item, identity.start, identity.end)
-      : expandSingleEpisode(item, identity.start);
-  });
+  const chapters = expandItemsToLogicalChapters(pkg.items);
 
   if (chapters.length > MAX_EXPORT_ITEMS) {
     throw new NovelExportError(
@@ -289,7 +288,140 @@ export function expandThaiNovelLogicalChapters(pkg: NovelExportPackage): ThaiNov
     );
   }
 
+  assertNoCrossItemChapterCollisions(chapters);
+
   return chapters;
+}
+
+function expandItemsToLogicalChapters(items: NovelExportItem[]): ThaiNovelLogicalChapter[] {
+  return sortExportItemsCanonical(items).flatMap((item) => {
+    const identity = parseExportEpisodeIdentity(item.episodeNumber);
+    if (!identity) {
+      return invalidPack(item, "episodeNumber ไม่มีเลขตอนที่อ่านได้");
+    }
+    return identity.kind === "range"
+      ? expandRangePack(item, identity.start, identity.end)
+      : expandSingleEpisode(item, identity.start);
+  });
+}
+
+/**
+ * IPE-064R4B (P2): a sequential overrun must never silently overlap ANOTHER
+ * pack — e.g. declared 141-190 with headings through 192 while a normal
+ * 191-240 pack also exists would expand the same chapter twice (duplicate
+ * filenames, or duplicated renumbered content). Fail closed on any
+ * cross-item chapter-number collision; within one item the sequence check
+ * already rejects duplicates. Collision identity is the NUMERIC chapter
+ * number — raw heading strings like "001" and "1" are the same chapter.
+ */
+export function assertNoCrossItemChapterCollisions(chapters: ThaiNovelLogicalChapter[]): void {
+  const seenByChapterNumber = new Map<string, NovelExportItem>();
+  for (const chapter of chapters) {
+    const collisionKey = /^\d+$/.test(chapter.sourceChapterNumber)
+      ? String(Number(chapter.sourceChapterNumber))
+      : chapter.sourceChapterNumber;
+    const previous = seenByChapterNumber.get(collisionKey);
+    if (previous && previous.episodeId !== chapter.item.episodeId) {
+      throw new NovelExportError(
+        "EXPORT_INVALID_EPISODE_IDENTITY",
+        `พบบทที่ ${chapter.sourceChapterNumber} ซ้ำข้ามแพ็ก (${previous.episodeNumber} และ ${chapter.item.episodeNumber})`,
+        { sourceChapterNumber: chapter.sourceChapterNumber }
+      );
+    }
+    seenByChapterNumber.set(collisionKey, chapter.item);
+  }
+}
+
+/**
+ * IPE-064R4B (P2): per-pack subset exports must not silently double-export
+ * chapters that an overrunning pack shares with a following pack — the
+ * selected-subset collision loop cannot see outside its selection. Validates
+ * the FULL published episode list of the novel (no MAX_EXPORT_ITEMS count
+ * limit here; subsets stay under it and whole-scope keeps its own check).
+ */
+export function assertNoCrossPackChapterCollisions(
+  items: NovelExportItem[],
+  selectedItemIds: ReadonlySet<number> | null
+): void {
+  // IPE-064R4B review rounds 9-15: collision evidence via LENIENT extraction
+  // — every line-anchored บทที่ N heading of a range pack occupies its
+  // number even when the pack fails strict count/sequence validation, and a
+  // single episode occupies its DECLARED identity number even without a
+  // heading line. Every parseable range ALSO occupies its full declared
+  // interval, so headingless/malformed packs still fence their territory
+  // (round 13/15). Scope rule: whole-novel (selectedItemIds === null) fails
+  // closed on ANY overlap; explicit subsets fail closed only when the
+  // overlap involves a selected pack — unrelated unselected defects are
+  // skipped. Unparseable legacy identities are skipped: they cannot be
+  // numerically validated, and the selected-item path still fail-closes on
+  // them.
+  const declared: Array<{ item: NovelExportItem; start: number; end: number }> = [];
+  const holdersByNumber = new Map<
+    number,
+    Array<{ item: NovelExportItem; sourceChapterNumber: string }>
+  >();
+  for (const item of sortExportItemsCanonical(items)) {
+    const identity = parseExportEpisodeIdentity(item.episodeNumber);
+    if (!identity) continue;
+    if (identity.kind === "range") {
+      declared.push({ item, start: Number(identity.start), end: Number(identity.end) });
+      const content = normalizeExportText(String(item.content ?? ""));
+      const headingRe = /^บทที่[ \t]+(\d+)(?:[ \t]+[^\n]*)?$/gm;
+      let match: RegExpExecArray | null;
+      while ((match = headingRe.exec(content)) !== null) {
+        const number = Number(match[1]);
+        const holders = holdersByNumber.get(number);
+        if (holders) holders.push({ item, sourceChapterNumber: match[1] });
+        else holdersByNumber.set(number, [{ item, sourceChapterNumber: match[1] }]);
+      }
+    } else {
+      declared.push({ item, start: Number(identity.start), end: Number(identity.start) });
+      const number = Number(identity.start);
+      const holders = holdersByNumber.get(number);
+      if (holders) holders.push({ item, sourceChapterNumber: String(identity.start) });
+      else holdersByNumber.set(number, [{ item, sourceChapterNumber: String(identity.start) }]);
+    }
+  }
+  const isBlocked = (participant: number) =>
+    selectedItemIds === null || selectedItemIds.has(participant);
+  // Cross-item evidence duplicates at the same normalized number.
+  const evidenceEntries = Array.from(holdersByNumber.entries());
+  for (const [, holders] of evidenceEntries) {
+    if (holders.length < 2) continue;
+    if (holders.some((holder) => isBlocked(holder.item.episodeId))) {
+      const sample = holders[0];
+      throw new NovelExportError(
+        "EXPORT_INVALID_EPISODE_IDENTITY",
+        `พบบทที่ ${sample.sourceChapterNumber} ซ้ำข้ามแพ็ก (${holders
+          .map((holder) => holder.item.episodeNumber)
+          .join(" และ ")})`,
+        { sourceChapterNumber: sample.sourceChapterNumber }
+      );
+    }
+  }
+  // Evidence numbers inside ANOTHER pack's declared interval (a headingless
+  // or malformed neighbour still fences its declared territory).
+  // IPE-064R4B review round 16 (P2): interval containment applies only to
+  // INTEGER chapter evidence — strict range expansion produces only integer
+  // chapters, so a decimal single (e.g. 1.5) is a distinct logical chapter,
+  // not an occupant of the range.
+  for (const [number, holders] of evidenceEntries) {
+    if (!Number.isInteger(number)) continue;
+    for (const range of declared) {
+      if (holders.some((holder) => holder.item.episodeId === range.item.episodeId)) {
+        continue;
+      }
+      if (number < range.start || number > range.end) continue;
+      if (isBlocked(range.item.episodeId) || holders.some((holder) => isBlocked(holder.item.episodeId))) {
+        const sample = holders[0];
+        throw new NovelExportError(
+          "EXPORT_INVALID_EPISODE_IDENTITY",
+          `พบบทที่ ${sample.sourceChapterNumber} ซ้ำข้ามแพ็กที่ประกาศช่วง ${range.start}-${range.end} (${range.item.episodeNumber})`,
+          { sourceChapterNumber: sample.sourceChapterNumber }
+        );
+      }
+    }
+  }
 }
 
 /**

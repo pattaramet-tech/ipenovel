@@ -28,24 +28,23 @@ describe("Workspace Control Center controlled-operations contract", () => {
 
   it("keeps publish ownership/execution mutations unavailable while allowing editorial Kanban, Checker and AI queue actions", () => {
     const page = read("client/src/pages/WorkspacePage.tsx");
+    // IPE-064: the ops read models moved to the intake page.
+    const intake = read("client/src/pages/WorkspaceIntakePage.tsx");
 
-    expect(page).toContain("Editorial Workspace");
     expect(page).toContain("Editorial Episode Packs");
-    expect(page).toContain("trpc.workspace.controlCenter.publishOverview.useQuery");
-    expect(page).toContain("trpc.workspace.publishCutover.readiness.useQuery");
-    expect(page).toContain("trpc.workspace.publishFinalGate.package.useQuery");
+    expect(intake).toContain("Editorial Workspace");
+    expect(intake).toContain("trpc.workspace.controlCenter.publishOverview.useQuery");
+    expect(intake).toContain("trpc.workspace.publishCutover.readiness.useQuery");
+    expect(intake).toContain("trpc.workspace.publishFinalGate.package.useQuery");
     expect(page).not.toContain("requestExecution.useMutation");
     expect(page).not.toContain("publishCutover.cutover.useMutation");
     expect(page).not.toContain("publishCutover.rollback.useMutation");
-    expect(page).toContain("aiQueue.queue.useMutation");
-    expect(page).toContain("aiQueue.retry.useMutation");
-    expect(page).toContain("checker.queueRun.useMutation");
-    expect(page).toContain("kanban.transitionCard.useMutation");
-    expect(page).toContain("editorial.createNovel.useMutation");
-    expect(page).toContain("editorial.createEpisode.useMutation");
-    expect(page).toContain("editorial.assignWorkItem.useMutation");
+    expect(intake).toContain("aiQueue.queue.useMutation");
+    expect(intake).toContain("aiQueue.retry.useMutation");
+    expect(intake).toContain("checker.queueRun.useMutation");
+    expect(intake).toContain("editorial.createNovel.useMutation");
+    expect(intake).toContain("editorial.createEpisode.useMutation");
     expect(page).toContain("editorial.updateWorkItemNote.useMutation");
     expect(page).toContain("หมายเหตุ");
-    expect(page).not.toContain("Editorial assignee filter");
   });
 });

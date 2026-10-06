@@ -67,7 +67,7 @@ describe("M29 Workspace Master Intake safety", () => {
     expect(service).toContain("const preparedSourceDocUrl = preparedSourceDocumentId ? preparedSourceRaw : \"\"");
     expect(service).toContain("preparedSourceDocUrl: preparedSourceDocUrl || null");
     expect(service).not.toContain("PREPARED_SOURCE_DOC_INVALID");
-    const page = read("client/src/pages/WorkspacePage.tsx");
+    const page = read("client/src/pages/WorkspaceIntakePage.tsx");
     expect(page).toContain('href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">O</a>');
     expect(page).not.toContain('href={row.preparedSourceDocUrl} target="_blank" rel="noreferrer">K</a>');
     const migration = read("drizzle/0056_workspace_master_intake_optional_prepared_source.sql");
@@ -86,7 +86,7 @@ describe("M29 Workspace Master Intake safety", () => {
 
   it("makes an unlinked-but-otherwise-unchanged intake row actionable for rebind", () => {
     const service = read("server/workspace/masterIntake.service.ts");
-    const page = read("client/src/pages/WorkspacePage.tsx");
+    const page = read("client/src/pages/WorkspaceIntakePage.tsx");
     expect(service).toContain("masterIntakeProvenancePreviewStatus");
     expect(service).toContain('workspaceNovelActive: provenanceWorkspaceNovel?.status === "active"');
     expect(service).toContain("bindPublicationNovel");

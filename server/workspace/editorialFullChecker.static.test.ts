@@ -41,14 +41,15 @@ describe("IPE-058-D Full Checker static boundaries", () => {
     expect(router).toContain('"all_safe"');
   });
 
-  it("renders bounded findings, preview diff and explicit Draft-revision apply in the single editor surface", () => {
+  it("keeps Full Checker bounded findings and explicit apply OUT of the workspace UI (IPE-064)", () => {
+    // IPE-064: the Full Checker vNext card and Safe Transform Preview card
+    // were retired from the workspace page — the service boundaries above
+    // remain, but the UI no longer renders preview/apply surfaces.
     const page = source("client/src/pages/WorkspacePage.tsx");
-    expect(page).toContain("Full Checker vNext");
-    expect(page).toContain("Safe Transform Preview");
-    expect(page).toContain("Preview เท่านั้น · ไม่มีการ apply อัตโนมัติ");
-    expect(page).toContain("ก่อน:");
-    expect(page).toContain("หลัง:");
-    expect(page).toContain("Apply เป็น Draft revision ใหม่");
-    expect(page).toContain("expectedTransformId: preview.transformId");
+    expect(page).not.toContain("Full Checker vNext");
+    expect(page).not.toContain("Safe Transform Preview");
+    expect(page).not.toContain("Apply เป็น Draft revision ใหม่");
+    expect(page).not.toContain("fullCheckerApply");
+    expect(page).not.toContain("editorial.fullChecker");
   });
 });

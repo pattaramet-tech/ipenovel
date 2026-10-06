@@ -30,6 +30,8 @@ import {
   sortExportItemsCanonical,
 } from "./novelExport.domain";
 import {
+  assertNoCrossPackChapterCollisions,
+  ThaiNovelExportEntry,
   ThaiNovelExportOptions,
   ThaiNovelPreviewEntry,
   buildThaiNovelExportEntries,
@@ -127,6 +129,9 @@ export async function buildNovelExportPackage(selection: ExportSelection): Promi
   pkg: NovelExportPackage;
   skippedItems: ExportSkippedItem[];
   publishedEpisodeSummaries: ExportPublishedEpisodeSummary[];
+  /** IPE-064R4B: every published episode with content (subset collision
+   * validation must see outside the selected subset). */
+  allPublishedItems: NovelExportItem[];
 }> {
   const novel = await db.getNovelById(selection.novelId, false);
   if (!novel) {
@@ -211,12 +216,24 @@ export async function buildNovelExportPackage(selection: ExportSelection): Promi
     exportable.push(mapEpisodeToExportItem(episode));
   }
 
+  // IPE-064R4B (P2): every published episode — content or not — the collision
+  // identity for chapter exports is validated against the WHOLE novel, not
+  // just the selected subset, so an overrunning pack cannot double-export
+  // chapters of a following pack through a per-pack subset. A legacy
+  // contentless row still occupies its DECLARED episodeNumber here (the
+  // round-22 review): the MISSING_CONTENT skip policy keeps it out of the
+  // ZIP output, but its declared identity must fence the collision check.
+  const allPublishedItems = publishedEpisodes.map((episode) =>
+    mapEpisodeToExportItem(episode)
+  );
+
   return {
     pkg: {
       novelId: selection.novelId,
       novelTitle: String(novel.title ?? ""),
       items: exportable,
     },
+    allPublishedItems,
     skippedItems,
     publishedEpisodeSummaries: publishedEpisodes.map((episode) => ({
       episodeId: episode.id,
@@ -292,6 +309,15 @@ export interface ThaiNovelExportPreview {
   sourceEpisodes: ExportPublishedEpisodeSummary[];
   entries: ThaiNovelPreviewEntry[];
   skippedItems: ExportSkippedItem[];
+  /**
+   * IPE-064R3: set when a WHOLE-novel selection expands past
+   * MAX_EXPORT_ITEMS. The preview still returns sourceEpisodes so the
+   * operator can pick a per-pack subset (the old behavior threw and made
+   * over-500-chapter novels un-exportable); the ZIP download keeps failing
+   * closed for over-limit selections.
+   */
+  overLimit: { itemCount: number; maxItems: number } | null;
+  validationError: { code: string; message: string } | null;
   limits: {
     maxItems: number;
     maxPerItemBytes: number;
@@ -299,20 +325,136 @@ export interface ThaiNovelExportPreview {
   };
 }
 
+// IPE-064R4B review round 26 (P2): picker-preserving metadata for an explicit
+// preview that failed on its own selected defect — novel title + every
+// published episode so the dialog can render the checkbox list and the
+// operator can deselect the bad item.
+async function loadExportPreviewFallback(novelId: number): Promise<{
+  novelTitle: string;
+  sourceEpisodes: ExportPublishedEpisodeSummary[];
+}> {
+  const novel = await db.getNovelById(novelId, false);
+  if (!novel) {
+    throw new NovelExportError("EXPORT_NOVEL_NOT_FOUND", `ไม่พบนิยาย id ${novelId}`, {
+      novelId,
+    });
+  }
+  const allEpisodes = (await db.getEpisodesByNovelId(novelId)) as ExportableEpisodeRow[];
+  return {
+    novelTitle: String(novel.title ?? ""),
+    sourceEpisodes: allEpisodes
+      .filter((episode) => episode.isPublished === true)
+      .map((episode) => ({
+        episodeId: episode.id,
+        episodeNumber: String(episode.episodeNumber ?? ""),
+        title: String(episode.title ?? ""),
+      })),
+  };
+}
+
 export async function buildThaiNovelExportPreview(
   selection: ExportSelection,
   options?: ThaiNovelExportOptions
 ): Promise<ThaiNovelExportPreview> {
-  const { pkg, skippedItems, publishedEpisodeSummaries } = await buildNovelExportPackage(selection);
-  const entries = buildThaiNovelExportEntries(pkg, options);
+  let pkg: NovelExportPackage;
+  let skippedItems: ExportSkippedItem[];
+  let publishedEpisodeSummaries: ExportPublishedEpisodeSummary[];
+  let allPublishedItems: NovelExportItem[];
+  try {
+    ({ pkg, skippedItems, publishedEpisodeSummaries, allPublishedItems } =
+      await buildNovelExportPackage(selection));
+  } catch (error) {
+    // IPE-064R4B review round 26 (P2) + round 32 (P2): an explicit subset that
+    // names a defective episode is the RECOVERY path after the whole-novel
+    // guidance — the dialog renders its picker from sourceEpisodes, so
+    // rejecting here leaves the operator stuck with a stale selection. This
+    // branch is EXPLICIT-SUBSET ONLY (a whole-novel request has no selection
+    // to reconcile): both a hard-DELETEd selected episode (EXPORT_UNKNOWN_EPISODE)
+    // and an unpublished/contentless one (EXPORT_EPISODE_MISSING_CONTENT) are
+    // reported as validationError with the current picker catalog intact —
+    // the client's R28 pruning removes the stale ID; the ZIP download path
+    // stays fail-closed.
+    const isExplicitSubset =
+      Array.isArray(selection.episodeIds) && selection.episodeIds.length > 0;
+    const recoverable =
+      error instanceof NovelExportError &&
+      (error.code === "EXPORT_EPISODE_MISSING_CONTENT" ||
+        error.code === "EXPORT_UNKNOWN_EPISODE");
+    if (isExplicitSubset && recoverable) {
+      const fallback = await loadExportPreviewFallback(selection.novelId);
+      return {
+        novelId: selection.novelId,
+        novelTitle: fallback.novelTitle,
+        mode: "explicit_subset",
+        sourceEpisodes: fallback.sourceEpisodes,
+        entries: [],
+        skippedItems: [],
+        overLimit: null,
+        validationError: { code: error.code, message: error.message },
+        limits: {
+          maxItems: MAX_EXPORT_ITEMS,
+          maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,
+          maxTotalBytes: MAX_EXPORT_TOTAL_BYTES,
+        },
+      };
+    }
+    throw error;
+  }
+  const isWholeSelection = !selection.episodeIds || selection.episodeIds.length === 0;
+  // IPE-064R4B (P2): validation scope — whole-novel requests fail closed on
+  // ANY published defect (surfaced as flags so sourceEpisodes still loads);
+  // explicit subsets are validated against their own selected items only,
+  // so unrelated unselected defects never block a valid per-pack export.
+  const selectedItemIds = isWholeSelection
+    ? null
+    : new Set(selection.episodeIds ?? []);
+  let entries: ThaiNovelExportEntry[];
+  let overLimit: { itemCount: number; maxItems: number } | null = null;
+  let validationError: { code: string; message: string } | null = null;
+  try {
+    // IPE-064R4B (P2): the full-set collision check runs here (not just in
+    // the ZIP) so the preview can SURFACE defects — and for a whole-novel
+    // request it must NOT hard-fail the response, or the subset selector
+    // (sourceEpisodes) never loads and the operator cannot export any
+    // per-pack subset around the defect.
+    assertNoCrossPackChapterCollisions(allPublishedItems, selectedItemIds);
+    entries = buildThaiNovelExportEntries(pkg, options);
+  } catch (error) {
+    // IPE-064R4B review round 26 (P2): recovery is no longer whole-selection
+    // only — an explicit subset whose OWN items carry an identity/sale/size
+    // defect also returns validationError so the picker stays alive; unrelated
+    // unselected defects still throw (the subset scope rule above).
+    if (
+      error instanceof NovelExportError &&
+      (error.code === "EXPORT_LIMIT_ITEMS" ||
+        error.code === "EXPORT_INVALID_EPISODE_IDENTITY" ||
+        error.code === "EXPORT_INVALID_SALE_METADATA" ||
+        error.code === "EXPORT_LIMIT_ENTRY_BYTES" ||
+        error.code === "EXPORT_LIMIT_TOTAL_BYTES")
+    ) {
+      overLimit =
+        error.code === "EXPORT_LIMIT_ITEMS"
+          ? {
+              itemCount: Number(error.details?.itemCount ?? 0),
+              maxItems: Number(error.details?.maxItems ?? MAX_EXPORT_ITEMS),
+            }
+          : null;
+      validationError = { code: error.code, message: error.message };
+      entries = [];
+    } else {
+      throw error;
+    }
+  }
 
   return {
     novelId: pkg.novelId,
     novelTitle: pkg.novelTitle,
-    mode: selection.episodeIds && selection.episodeIds.length > 0 ? "explicit_subset" : "whole_novel",
+    mode: isWholeSelection ? "whole_novel" : "explicit_subset",
     sourceEpisodes: publishedEpisodeSummaries,
-    entries: buildThaiNovelPreviewRows(entries),
+    entries: overLimit ? [] : buildThaiNovelPreviewRows(entries),
     skippedItems,
+    overLimit,
+    validationError,
     limits: {
       maxItems: MAX_EXPORT_ITEMS,
       maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,
@@ -325,7 +467,11 @@ export async function buildThaiNovelZipExport(
   selection: ExportSelection,
   options?: ThaiNovelExportOptions
 ): Promise<ReturnType<typeof buildThaiNovelExportZip> & { novelTitle: string; skippedItems: ExportSkippedItem[] }> {
-  const { pkg, skippedItems } = await buildNovelExportPackage(selection);
+  const { pkg, skippedItems, allPublishedItems } = await buildNovelExportPackage(selection);
+  assertNoCrossPackChapterCollisions(
+    allPublishedItems,
+    selection.episodeIds && selection.episodeIds.length > 0 ? new Set(selection.episodeIds) : null
+  );
   const serialized = buildThaiNovelExportZip(pkg, options);
   logExportAudit("thainovel-zip", selection.novelId, serialized.itemCount, serialized.content.length);
   return {

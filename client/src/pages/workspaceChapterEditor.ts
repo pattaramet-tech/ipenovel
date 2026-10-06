@@ -11,6 +11,12 @@ export type ChapterEditorTabStatusInput = {
     sourceParagraphFingerprint: string;
     paragraphFingerprint: string;
   }[];
+  /**
+   * IPE-064R3: precomputed divergence flag (e.g. from the server-side draft
+   * outline) — when present it replaces the paragraph scan, letting the
+   * pack/chapter tree render without paragraph payloads.
+   */
+  edited?: boolean;
   checkerCurrent?: boolean;
   findings?: readonly {
     sourceTabId: string;
@@ -121,12 +127,14 @@ export function chapterEditorStructuralRepairGuidance(anomalyType: string) {
 }
 
 export function chapterEditorTabStatus(input: ChapterEditorTabStatusInput) {
-  const edited = input.paragraphs.some(
-    paragraph =>
-      paragraph.sourceParagraphIndex < 0 ||
-      (paragraph.sourceParagraphIndex > 0 &&
-        paragraph.paragraphFingerprint !== paragraph.sourceParagraphFingerprint)
-  );
+  const edited =
+    input.edited ??
+    input.paragraphs.some(
+      paragraph =>
+        paragraph.sourceParagraphIndex < 0 ||
+        (paragraph.sourceParagraphIndex > 0 &&
+          paragraph.paragraphFingerprint !== paragraph.sourceParagraphFingerprint)
+    );
   const foreignFindingCount = (input.findings ?? []).filter(
     finding =>
       finding.sourceTabId === input.sourceTabId &&

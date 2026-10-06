@@ -54,6 +54,7 @@ import Navbar from "./components/Navbar";
 import MigrationGate from "./components/MigrationGate";
 import MaintenanceAnnouncementBanner from "./components/MaintenanceAnnouncementBanner";
 import WorkspacePage from "./pages/WorkspacePage";
+import WorkspaceIntakePage from "./pages/WorkspaceIntakePage";
 
 function Router() {
   return (
@@ -93,6 +94,7 @@ function Router() {
         <Route path={"/payment/:orderId"} component={PaymentPage} />
         <Route path={"/sports-votes"} component={SportsVotesPage} />
         <Route path={"/workspace"} component={WorkspacePage} />
+        <Route path={"/workspace/intake"} component={WorkspaceIntakePage} />
         <Route path={"/admin"} component={AdminDashboard} />
         <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />
         <Route path={"/admin/novels"} component={AdminNovelsPage} />

@@ -26,10 +26,7 @@ import {
   importEditorialSource,
 } from "./editorialDraft.service";
 import { applyEditorialEditorEdit } from "./editorialEditor.service";
-import {
-  runEditorialForeignChecker,
-  setEditorialStructuralConfirmation,
-} from "./editorialForeignChecker.service";
+import { runEditorialForeignChecker } from "./editorialForeignChecker.service";
 import { bindPublicationNovel, createWorkspace } from "./service";
 import type { EditorialSourcePayload } from "./editorialDraft.domain";
 
@@ -745,18 +742,13 @@ describe.sequential(
           workItemId,
           expectedDraftId: imported.latestDraftId!,
         });
-        const sourceNote = checker.anomalies.find(
-          (row: any) => row.anomalyType === "source_note_only" && row.sourceTabId === "range-note-138"
-        );
-        expect(sourceNote).toBeTruthy();
-        await setEditorialStructuralConfirmation({
-          actorUserId: owner.id,
-          workspaceId: workspace.workspaceId,
-          workItemId,
-          anomalyId: sourceNote.id,
-          confirmed: true,
-          expectedVersion: sourceNote.confirmationVersion ?? 0,
-        });
+        // IPE-063R7 reconciliation: under the exact-marker source-note
+        // semantics, the "บทที่ 138 หมายเหตุจากต้นฉบับ" tab is accepted by
+        // the shape layer WITHOUT becoming a source_note_only anomaly — no
+        // manual confirmation step is needed anymore.
+        expect(
+          checker.anomalies.filter((row: any) => row.anomalyType === "source_note_only")
+        ).toHaveLength(0);
 
         const ready = await getEditorialApprovalReadModel({
           actorUserId: owner.id,

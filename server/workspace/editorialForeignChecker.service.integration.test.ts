@@ -329,7 +329,7 @@ describe.sequential(
         });
 
         expect(checked.run.engineVersion).toBe(
-          "workspace-editorial-foreign-checker-v8"
+          "workspace-editorial-foreign-checker-v9"
         );
         const devanagari = checked.findings.find(
           (finding: any) => finding.token === "\u093E\u0907\u091F"

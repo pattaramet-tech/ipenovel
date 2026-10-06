@@ -18,8 +18,11 @@ import {
   workspaceGoogleDocsTokenCipher,
 } from "./googleDocs.runtime";
 
-const SUCCESS_REDIRECT = "/workspace?googleDocsConnect=success";
-const ERROR_REDIRECT = "/workspace?googleDocsConnect=error";
+// IPE-064: the Google Docs connect UI (and its googleDocsConnect status
+// message) lives on the intake page — the OAuth callback must land there,
+// not on the story-gated editorial workspace.
+const SUCCESS_REDIRECT = "/workspace/intake?googleDocsConnect=success";
+const ERROR_REDIRECT = "/workspace/intake?googleDocsConnect=error";
 const SESSION_EXPIRED_REDIRECT = "/login?googleDocsConnect=session_expired";
 
 function queryParam(req: Request, name: string) {

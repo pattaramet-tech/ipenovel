@@ -49,6 +49,13 @@ import {
   evaluateEditorialCheckerState,
 } from "./editorialForeignChecker.domain";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import {
+  isExactAcceptedSourceNote,
+} from "./editorialStructuralAnomaly.domain";
+import {
+  isSourceNoteChapterHeadingText,
+  normalizeEditorialText,
+} from "./editorialDraft.domain";
 
 export class WorkspaceEditorialApprovalError extends Error {
   constructor(
@@ -444,6 +451,69 @@ function confirmedSourceNoteTabIds(qc: Awaited<ReturnType<typeof currentQcEviden
     .map((anomaly: any) => String(anomaly.sourceTabId));
 }
 
+/**
+ * IPE-063R7/IPE-064R3 reconciliation: under the exact-marker source-note
+ * semantics, a chapter whose heading is the EXACT canonical note is accepted
+ * by the shape layer without ever becoming an anomaly — so there is nothing
+ * to confirm. Non-billable pricing therefore unions the legacy
+ * confirmed_source_note dispositions (near-miss spellings keep their manual
+ * confirm path) with tabs detected by the same exact-match rule.
+ */
+function resolveNonBillableSourceNoteTabIds(
+  qc: Awaited<ReturnType<typeof currentQcEvidence>>,
+  tabs: ReadonlyArray<{
+    sourceTabId: string;
+    title?: string | null;
+    chapterTitle?: string | null;
+    paragraphs?: ReadonlyArray<{ text: string }>;
+  }>
+): string[] {
+  const confirmed = confirmedSourceNoteTabIds(qc);
+  const detected = tabs
+    .filter((tab) => isAcceptedSourceNoteChapterTab(tab))
+    .map((tab) => String(tab.sourceTabId));
+  return Array.from(new Set([...confirmed, ...detected]));
+}
+
+/**
+ * IPE-064R4B review round 8 (P2): the pricing exclusion must verify CONTENT,
+ * not just metadata — a tab with the canonical note title that also carries
+ * real narrative stays billable. Mirrors the structural classifier's
+ * acceptance: exact canonical note title AND every meaningful row is a note
+ * row / note-chapter heading / end marker.
+ */
+function isAcceptedSourceNoteChapterTab(tab: {
+  title?: string | null;
+  chapterTitle?: string | null;
+  paragraphs?: ReadonlyArray<{ text: string }>;
+}): boolean {
+  if (
+    !isExactAcceptedSourceNote(tab.title ?? "") &&
+    !isExactAcceptedSourceNote(tab.chapterTitle ?? "")
+  ) {
+    return false;
+  }
+  const meaningful = (tab.paragraphs ?? [])
+    .map((paragraph) =>
+      normalizeEditorialText(paragraph.text).replace(/\s+/g, " ").trim()
+    )
+    .filter(
+      (text) =>
+        text &&
+        // IPE-064R4B review round 10 (P2): strip whitespace BEFORE the
+        // separator predicate — spaced separators like * * * must classify
+        // exactly like the structural classifier does.
+        !/^[_\-=*#~•·.]{3,}$/.test(text.replace(/\s+/g, ""))
+    );
+  if (!meaningful.length) return false;
+  return meaningful.every(
+    (text) =>
+      isExactAcceptedSourceNote(text) ||
+      isSourceNoteChapterHeadingText(text) ||
+      /^จบตอน[.!…]*$/i.test(text)
+  );
+}
+
 function resolveEditorialEpisodePackSale(
   plan: EditorialEpisodeDraftBatchPlan,
   sale?: {
@@ -767,7 +837,7 @@ export async function getEditorialApprovalReadModel(input: {
     workItemType: context.workItem.workItemType,
     episodeNumber: context.workItem.episodeNumber,
     episodeTitle: context.workItem.episodeTitle,
-    confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc),
+    confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs),
     tabs,
   });
   const stages = await stagesForApproval(
@@ -1076,7 +1146,7 @@ export async function stageEditorialEpisodeDraft(input: {
       workItemType: context.workItem.workItemType,
       episodeNumber: context.workItem.episodeNumber,
       episodeTitle: context.workItem.episodeTitle,
-      confirmedSourceNoteTabIds: confirmedSourceNoteTabIds(qc),
+      confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs),
       tabs,
     });
     if (!batchPlan.ready) {

@@ -10,6 +10,35 @@ import {
 } from "./workspaceChapterEditor";
 
 describe("workspace Chapter Editor paragraph helpers", () => {
+  it("IPE-064R3: honors the precomputed edited flag instead of scanning paragraphs", () => {
+    const base = {
+      sourceTabId: "tab-1",
+      checkerCurrent: true,
+      findings: [],
+      anomalies: [],
+    };
+    // Outline-driven: no paragraphs shipped, edited comes from the server.
+    expect(
+      chapterEditorTabStatus({ ...base, paragraphs: [], edited: true }).edited
+    ).toBe(true);
+    expect(
+      chapterEditorTabStatus({ ...base, paragraphs: [], edited: false }).edited
+    ).toBe(false);
+    // No override: falls back to the paragraph fingerprint scan.
+    expect(
+      chapterEditorTabStatus({
+        ...base,
+        paragraphs: [
+          {
+            sourceParagraphIndex: 1,
+            sourceParagraphFingerprint: "aaa",
+            paragraphFingerprint: "bbb",
+          },
+        ],
+      }).edited
+    ).toBe(true);
+  });
+
   it("normalizes pasted blank rows into paragraph blocks", () => {
     expect(
       parseChapterEditorPasteText(
