@@ -13,10 +13,14 @@ import {
   filterPacksByQuery,
   groupStoriesByNovel,
   mergeEvidenceRowsSkippingInvalidated,
+  invalidatedIdsForWorkspace,
   nextEvidenceWorkspaceIdentity,
+  pruneEvidenceRegistryForLifecycle,
+  recordInvalidEvidenceForWorkspace,
   reconcilableEvidenceIds,
   releaseOwnedReconciliationEntry,
   resolveStoryUiState,
+  rotateEvidenceLifecycleState,
   sameEvidenceWorkspaceLifecycle,
   scopeNeedsReconciliation,
   sortPacksByEpisode,
@@ -635,5 +639,103 @@ describe("workspaceMultiStory — workspace ABA epoch fence (IPE-065R4)", () => 
     );
     expect(accepted).toEqual([101]);
     expect(acceptedReconciliationRows([staleRow], new Set(accepted))).toEqual([staleRow]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPE-065R5 — lifecycle-tagged evidence state. The workspace-transition
+// cleanup can never erase CURRENT-lifecycle work: the container is rotated
+// synchronously with the identity, and the delayed cleanup is reduced to a
+// lifecycle-selective registry prune.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — lifecycle-tagged evidence state (IPE-065R5)", () => {
+  const passRow = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+
+  it("test A: rotation is once-per-transition — NEW-lifecycle work survives a repeated rotate", () => {
+    // Old lifecycle state (epoch 2) with a stale PASS row.
+    let state = rotateEvidenceLifecycleState(
+      { epoch: 2, rows: new Map([[101, passRow]]), invalidatedIds: new Set(), generations: new Map([[101, 9]]) },
+      3 // A -> B -> A(new epoch 3)
+    );
+    expect(state.epoch).toBe(3);
+    expect(state.rows.size).toBe(0);
+    // Mutation success in the NEW lifecycle: gen 1 + tombstone 101.
+    state.generations = bumpEvidenceGenerations(state.generations, [101]);
+    state.invalidatedIds.add(101);
+    state.rows.delete(101);
+    // The DELAYED cleanup re-runs rotation for epoch 3 → no-op: gen 1 and
+    // the tombstone SURVIVE (the old "unconditional reset" would have wiped
+    // both).
+    state = rotateEvidenceLifecycleState(state, 3);
+    expect(state.generations.get(101)).toBe(1);
+    expect(state.invalidatedIds.has(101)).toBe(true);
+    // Stale cached PASS remains fenced in the generic merge.
+    expect(mergeEvidenceRowsSkippingInvalidated(new Map(), [passRow], state.invalidatedIds)).toBeNull();
+  });
+
+  it("test B: OLD rows are invisible from the FIRST new-lifecycle render (rotation is synchronous)", () => {
+    const oldState: EvidenceLifecycleState = {
+      epoch: 2,
+      rows: new Map([[101, passRow]]),
+      invalidatedIds: new Set(),
+      generations: new Map(),
+    };
+    // Transition render: the container is replaced in the same pass.
+    const newState = rotateEvidenceLifecycleState(oldState, 3);
+    expect(newState.rows.has(101)).toBe(false);
+    // Card authority for the new lifecycle: unknown/unloaded, never PASS.
+    expect(derivePackCardStatus({ evidence: newState.rows.get(101) ?? null, evidenceState: "unavailable" })).toBe("unknown");
+  });
+
+  it("test C: NEW generation survives cleanup and stays 1 (not undefined/0)", () => {
+    let state = rotateEvidenceLifecycleState(
+      { epoch: 2, rows: new Map(), invalidatedIds: new Set(), generations: new Map() },
+      3
+    );
+    state.generations = bumpEvidenceGenerations(state.generations, [101]); // gen 1
+    state = rotateEvidenceLifecycleState(state, 3); // delayed cleanup no-op
+    expect(state.generations.get(101)).toBe(1);
+  });
+
+  it("test D/E: registry prune keeps CURRENT-lifecycle entries and drops everything else", () => {
+    const registry = new Map<string, Promise<unknown>>();
+    const newEntry = Promise.resolve();
+    registry.set("7@3:101@1", newEntry); // CURRENT lifecycle (7, epoch 3)
+    registry.set("7@1:101@1", Promise.resolve()); // OLD epoch of 7
+    registry.set("8@2:202@1", Promise.resolve()); // other workspace
+    const removed = pruneEvidenceRegistryForLifecycle(registry, 7, 3);
+    expect(removed).toBe(2);
+    expect(registry.get("7@3:101@1")).toBe(newEntry);
+    expect(registry.has("7@1:101@1")).toBe(false);
+    expect(registry.has("8@2:202@1")).toBe(false);
+  });
+
+  it("test F: rotation removes old tombstones/generations — no cross-lifecycle contamination", () => {
+    const oldState: EvidenceLifecycleState = {
+      epoch: 1,
+      rows: new Map(),
+      invalidatedIds: new Set([101, 999]),
+      generations: new Map([[101, 4], [999, 2]]),
+    };
+    const newState = rotateEvidenceLifecycleState(oldState, 2);
+    expect(newState.invalidatedIds.has(101)).toBe(false);
+    expect(newState.invalidatedIds.has(999)).toBe(false);
+    expect(newState.generations.has(101)).toBe(false);
+    expect(newState.generations.has(999)).toBe(false);
+    // Same-epoch rotation is a no-op (same object) — no churn.
+    expect(rotateEvidenceLifecycleState(newState, 2)).toBe(newState);
+  });
+
+  it("away-mutation tombstones are recorded per workspace and re-seeded on re-entry", () => {
+    const byWorkspace = new Map<number, Set<number>>();
+    recordInvalidEvidenceForWorkspace(byWorkspace, 7, [101, 102]);
+    recordInvalidEvidenceForWorkspace(byWorkspace, 7, [102]); // dedupe
+    expect(invalidatedIdsForWorkspace(byWorkspace, 7)).toEqual(new Set([101, 102]));
+    expect(invalidatedIdsForWorkspace(byWorkspace, 8).size).toBe(0);
+    // Seeding consumes the record.
+    const seeded = invalidatedIdsForWorkspace(byWorkspace, 7);
+    byWorkspace.delete(7);
+    expect(invalidatedIdsForWorkspace(byWorkspace, 7).size).toBe(0);
+    expect(seeded.has(101)).toBe(true);
   });
 });

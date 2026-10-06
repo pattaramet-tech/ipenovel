@@ -450,6 +450,90 @@ export function releaseOwnedReconciliationEntry(
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// IPE-065R5 — lifecycle-tagged evidence state.
+//
+// The workspace-transition cleanup must never erase CURRENT-lifecycle work:
+// a delayed passive reset running after a new-lifecycle mutation once wiped
+// fresh tombstones/generations and let staleTime-fresh cached PASS become
+// authoritative again. All mutable evidence authority now lives in ONE
+// container tagged with its workspace epoch; the container is rotated
+// SYNCHRONOUSLY with the workspace identity (so old rows are non-
+// authoritative from the very first new-lifecycle render), and the delayed
+// cleanup is reduced to a lifecycle-selective registry prune that cannot
+// touch current-epoch entries.
+// ---------------------------------------------------------------------------
+
+export interface EvidenceLifecycleState {
+  epoch: number;
+  rows: Map<number, any>;
+  invalidatedIds: Set<number>;
+  generations: Map<number, number>;
+}
+
+/**
+ * Lifecycle rotation: the state tagged with the CURRENT epoch is returned
+ * unchanged (new-lifecycle work survives); anything from an older epoch is
+ * replaced by a fresh empty container for the new epoch. This replaces the
+ * old unconditional passive reset — it runs synchronously with the identity
+ * rotation, leaving no delayed authority that could wipe newer work.
+ */
+export function rotateEvidenceLifecycleState(
+  state: EvidenceLifecycleState,
+  epoch: number
+): EvidenceLifecycleState {
+  if (state.epoch === epoch) return state;
+  return { epoch, rows: new Map(), invalidatedIds: new Set(), generations: new Map() };
+}
+
+/**
+ * Record evidence-invalidating mutations that completed for a workspace the
+ * operator has ALREADY left — those stale identities stay fenced when that
+ * workspace is re-entered (they seed the new lifecycle's tombstones).
+ */
+export function recordInvalidEvidenceForWorkspace(
+  byWorkspace: Map<number, Set<number>>,
+  workspaceId: number,
+  ids: readonly number[]
+): Map<number, Set<number>> {
+  if (!ids.length) return byWorkspace;
+  const bucket = new Set(byWorkspace.get(workspaceId) ?? []);
+  for (const id of ids) bucket.add(id);
+  byWorkspace.set(workspaceId, bucket);
+  return byWorkspace;
+}
+
+/** Tombstones recorded for a workspace while it was away (empty if none). */
+export function invalidatedIdsForWorkspace(
+  byWorkspace: Map<number, Set<number>>,
+  workspaceId: number
+): Set<number> {
+  return byWorkspace.get(workspaceId) ?? new Set();
+}
+
+/**
+ * Lifecycle-selective registry prune: drop coalescing entries whose key does
+ * not belong to the CURRENT lifecycle (`workspaceId@epoch:...`). Current-
+ * lifecycle entries (registered by a fast mutation racing the transition)
+ * SURVIVE; old-epoch and other-workspace entries cannot coalesce with new
+ * requests and are removed. Returns the number of removed entries.
+ */
+export function pruneEvidenceRegistryForLifecycle(
+  registry: Map<string, Promise<unknown>>,
+  workspaceId: number,
+  epoch: number
+): number {
+  const currentPrefix = `${workspaceId}@${epoch}:`;
+  let removed = 0;
+  for (const key of Array.from(registry.keys())) {
+    if (!key.startsWith(currentPrefix)) {
+      registry.delete(key);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(
   cards: T[],
   rawQuery: string
