@@ -224,6 +224,80 @@ export function storyOverviewFooterLine(input: {
   return "กำลังดำเนินการ";
 }
 
+// ---------------------------------------------------------------------------
+// IPE-065R2 — invalidation tombstone fence (pure, testable).
+//
+// Once an evidence-changing mutation succeeds for workItem X, NO evidence row
+// obtained before that mutation may become authoritative again — even when
+// X's story is inactive, an old request finishes late, React Query still
+// holds fresh cached data under staleTime, or the post-mutation refetch
+// fails. The fence is a per-workItemId tombstone set; the generic cache merge
+// skips tombstoned ids, scope activation with tombstoned ids forces a network
+// reconciliation, and only a SUCCESSFUL post-fence fetch that RETURNS the id
+// may merge the fresh row and release the tombstone.
+// ---------------------------------------------------------------------------
+
+export interface EvidenceRowLike {
+  workItemId?: number | null;
+}
+
+function evidenceRowId(row: EvidenceRowLike): number | null {
+  const id = Number(row?.workItemId);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * Generic cache merge behind the fence: rows whose workItemId is tombstoned
+ * are NEVER merged (their cached values predate a mutation), while unrelated
+ * rows — including other stories' cached evidence — merge normally and are
+ * never removed. Returns null when nothing changed so callers can bail out
+ * of the state update (no render churn).
+ */
+export function mergeEvidenceRowsSkippingInvalidated<TRow extends EvidenceRowLike>(
+  current: ReadonlyMap<number, TRow>,
+  queryRows: readonly TRow[] | null | undefined,
+  invalidatedIds: ReadonlySet<number>
+): Map<number, TRow> | null {
+  if (!queryRows?.length) return null;
+  let next: Map<number, TRow> | null = null;
+  for (const row of queryRows) {
+    const id = evidenceRowId(row);
+    if (id == null || invalidatedIds.has(id)) continue;
+    if (!next) next = new Map(current);
+    next.set(id, row);
+  }
+  return next;
+}
+
+/**
+ * Tombstoned ids present in a POST-fence successful fetch result — exactly
+ * those may be merged as fresh server authority and released from the fence.
+ * An id absent from the result keeps its tombstone (fail closed).
+ */
+export function reconcilableEvidenceIds(
+  invalidatedIds: ReadonlySet<number>,
+  queryRows: readonly EvidenceRowLike[] | null | undefined
+): number[] {
+  if (!invalidatedIds.size || !queryRows?.length) return [];
+  const present: number[] = [];
+  for (const row of queryRows) {
+    const id = evidenceRowId(row);
+    if (id != null && invalidatedIds.has(id)) present.push(id);
+  }
+  return present;
+}
+
+/**
+ * Whether an activated scope contains tombstoned ids — staleTime must not
+ * suppress reconciliation for those.
+ */
+export function scopeNeedsReconciliation(
+  scopeIds: readonly number[],
+  invalidatedIds: ReadonlySet<number>
+): boolean {
+  return scopeIds.some((id) => invalidatedIds.has(id));
+}
+
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(
   cards: T[],
   rawQuery: string

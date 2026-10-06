@@ -178,6 +178,34 @@ describe("IPE-064 — intake separation", () => {
     expect(overview).toContain("storyOverviewFooterLine(story)");
     expect(overview).not.toContain(": STORY_PACK_STATUS_LABEL.passed}");
   });
+
+  it("fences invalidated evidence against inactive-scope cache resurrection (IPE-065R2)", () => {
+    // Tombstones are recorded per workItemId on every invalidation, alongside
+    // the fence timestamp.
+    expect(page).toContain("const [invalidatedEvidenceIds, setInvalidatedEvidenceIds] = useState<Set<number>>(");
+    expect(page).toContain("evidenceInvalidatedAtRef.current = Date.now();");
+    expect(page).toContain("setInvalidatedEvidenceIds((current) => {");
+    // Workspace switch clears the fence together with the row map (no
+    // cross-workspace contamination).
+    expect(page).toContain("setEditorialEvidenceRows(new Map());\n    setInvalidatedEvidenceIds(new Set());");
+    // Generic merge is fenced: a data change completed AFTER the latest
+    // invalidation is post-fence authority (merge + release tombstones for
+    // returned ids atomically); anything else (cache observation on scope
+    // re-activation, late pre-mutation response) SKIPS tombstoned ids.
+    expect(page).toContain(
+      "const postFence =\n      editorialEvidenceStatuses.dataUpdatedAt > evidenceInvalidatedAtRef.current;"
+    );
+    expect(page).toContain("mergeEvidenceRowsSkippingInvalidated(current, data, invalidatedEvidenceIds) ?? current");
+    expect(page).toContain("const reconciled = reconcilableEvidenceIds(current, data);");
+    // Scope activation with tombstoned ids forces a network refetch even
+    // when staleTime considers the cache fresh.
+    expect(page).toContain("scopeNeedsReconciliation(activeEvidenceScopeIds, invalidatedEvidenceIds)");
+    expect(page).toContain('editorialEvidenceStatuses.refetch({ cancelRefetch: true })');
+    // Performance contract intact: scoped input, no polling.
+    expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
+    expect(page).not.toContain("refetchInterval: 30_000");
+    expect(page).not.toContain('refetchOnMount: "always"');
+  });
 });
 
 describe("IPE-064 — story gate", () => {

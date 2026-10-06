@@ -17,7 +17,10 @@ import {
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
   groupStoriesByNovel,
+  mergeEvidenceRowsSkippingInvalidated,
+  reconcilableEvidenceIds,
   resolveStoryUiState,
+  scopeNeedsReconciliation,
   sortPacksByEpisode,
   storyKeyFor,
   storyOverallStatus,
@@ -322,19 +325,51 @@ export default function WorkspacePage() {
   const [editorialEvidenceRows, setEditorialEvidenceRows] = useState(
     () => new Map<number, any>()
   );
+  // IPE-065R2: invalidation tombstones — workItemIds whose cached/accumulated
+  // evidence predates a successful evidence-changing mutation. A tombstoned
+  // id is fenced out of EVERY cache merge (active story, re-activated story,
+  // staleTime-fresh cache, late pre-mutation response alike) until a
+  // SUCCESSFUL post-invalidation scoped fetch returns its row, which
+  // atomically merges the fresh row and releases the tombstone. Cleared on a
+  // workspace switch (the query namespace and board identity change with it).
+  const [invalidatedEvidenceIds, setInvalidatedEvidenceIds] = useState<Set<number>>(
+    () => new Set()
+  );
+  // IPE-065R2: fence timestamp — a data change whose fetch completed at/before
+  // the latest invalidation is PRE-fence and must not release tombstones.
+  const evidenceInvalidatedAtRef = useRef(0);
   useEffect(() => {
     setEditorialEvidenceRows(new Map());
+    setInvalidatedEvidenceIds(new Set());
   }, [selectedWorkspaceId]);
   useEffect(() => {
     const data = editorialEvidenceStatuses.data;
     if (!Array.isArray(data) || !data.length) return;
-    setEditorialEvidenceRows((current) => {
-      const next = new Map(current);
-      for (const row of data) {
-        if (row && Number.isInteger(row.workItemId)) next.set(row.workItemId, row);
-      }
-      return next;
-    });
+    // IPE-065R2 fence: a fetch that completed AFTER the latest invalidation
+    // is post-mutation server authority — merge it and release the tombstones
+    // of the ids it returned (atomically with merging them, so old cache can
+    // never render between clear and fresh). Any OTHER data change (a cached
+    // observation on scope re-activation, a late pre-mutation response) is
+    // FENCED: tombstoned ids are skipped — a stale PASS cannot resurrect —
+    // while unrelated rows (other stories/packs) merge normally and survive.
+    const postFence =
+      editorialEvidenceStatuses.dataUpdatedAt > evidenceInvalidatedAtRef.current;
+    if (postFence) {
+      setEditorialEvidenceRows((current) =>
+        mergeEvidenceRowsSkippingInvalidated(current, data, new Set()) ?? current
+      );
+      setInvalidatedEvidenceIds((current) => {
+        const reconciled = reconcilableEvidenceIds(current, data);
+        if (!reconciled.length) return current;
+        const next = new Set(current);
+        for (const id of reconciled) next.delete(id);
+        return next;
+      });
+    } else {
+      setEditorialEvidenceRows((current) =>
+        mergeEvidenceRowsSkippingInvalidated(current, data, invalidatedEvidenceIds) ?? current
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorialEvidenceStatuses.data]);
   // IPE-065R1 (P1): ONE centralized invalidation authority for every
@@ -356,6 +391,21 @@ export default function WorkspacePage() {
       )
     );
     if (!ids.length) return;
+    // IPE-065R2: tombstone the affected ids FIRST — from this moment no
+    // cached/pre-mutation row for them can be merged back, no matter which
+    // story is active when the mutation lands.
+    evidenceInvalidatedAtRef.current = Date.now();
+    setInvalidatedEvidenceIds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const id of ids) {
+        if (!next.has(id)) {
+          next.add(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
     setEditorialEvidenceRows((current) => {
       let changed = false;
       const next = new Map(current);
@@ -1852,6 +1902,19 @@ export default function WorkspacePage() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStoryKey, activeStoryGroup?.cards.length, editorialBoard.data]);
+
+  // IPE-065R2: scope activation reconciles tombstoned ids even when React
+  // Query still considers cached data fresh — staleTime never overrides the
+  // fence. refetch() always hits the network and its cancelRefetch coalesces
+  // to at most one in-flight forced reconciliation per scope (no render
+  // loop: a successful reconciliation releases the tombstones, so the next
+  // run finds nothing to reconcile; a FAILED one leaves them and may retry
+  // on the next legitimate activation).
+  useEffect(() => {
+    if (!scopeNeedsReconciliation(activeEvidenceScopeIds, invalidatedEvidenceIds)) return;
+    void editorialEvidenceStatuses.refetch({ cancelRefetch: true }).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeEvidenceScopeIds, invalidatedEvidenceIds]);
 
   // Persist the live pack/chapter/tab/filter into the active story's record.
   useEffect(() => {

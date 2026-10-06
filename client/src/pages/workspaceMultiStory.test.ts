@@ -7,7 +7,10 @@ import {
   editorDraftBelongsToSelectedPack,
   filterPacksByQuery,
   groupStoriesByNovel,
+  mergeEvidenceRowsSkippingInvalidated,
+  reconcilableEvidenceIds,
   resolveStoryUiState,
+  scopeNeedsReconciliation,
   sortPacksByEpisode,
   storyKeyFor,
   storyOverviewFooterLine,
@@ -339,5 +342,84 @@ describe("workspaceMultiStory — editor save identity invariant (IPE-062R3 P2-B
     expect(editorDraftBelongsToSelectedPack(501, undefined)).toBe(false);
     expect(editorDraftBelongsToSelectedPack(null, null)).toBe(false);
     expect(editorDraftBelongsToSelectedPack("501", 501)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPE-065R2 — invalidation tombstone fence. Once an evidence-changing
+// mutation succeeds for workItem X, no pre-mutation evidence row may become
+// authoritative again until a successful post-fence fetch returns X — even
+// when X's story is inactive, the cache is staleTime-fresh, or the post-
+// mutation refetch fails.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — evidence tombstone fence (IPE-065R2)", () => {
+  const rowA = { workItemId: 101, checker: true, approval: true, stage: true, readyToPublish: true, published: false };
+  const rowAStale = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+  const rowB = { workItemId: 202, checker: true, checkerRan: true, published: true };
+  const cachedPass = new Map<number, any>([[101, rowA]]);
+
+  it("scenario A: a tombstoned id is NEVER merged from cache — even staleTime-fresh story re-activation", () => {
+    // Story A's old PASS arrives through the generic merge (cache observation
+    // on scope re-activation) while A is tombstoned → skipped entirely.
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), [rowA], new Set([101]));
+    expect(merged).toBeNull();
+    // And it cannot re-enter an existing map either.
+    const mergedIntoExisting = mergeEvidenceRowsSkippingInvalidated(
+      new Map([[202, rowB]]),
+      [rowA],
+      new Set([101])
+    );
+    // Nothing merged → null (bail out): the CURRENT map survives untouched,
+    // so B's row stays and A's stale PASS never re-enters.
+    expect(mergedIntoExisting).toBeNull();
+    // Scope activation with a tombstoned id demands forced reconciliation —
+    // staleTime must not suppress it.
+    expect(scopeNeedsReconciliation([101, 202], new Set([101]))).toBe(true);
+  });
+
+  it("scenario B: a FAILED reconciliation keeps the tombstone — old PASS never returns", () => {
+    // A failed refetch returns no rows → nothing is reconcilable → the
+    // tombstone stays and the generic merge keeps skipping the cached PASS.
+    expect(reconcilableEvidenceIds(new Set([101]), [])).toEqual([]);
+    expect(reconcilableEvidenceIds(new Set([101]), undefined)).toEqual([]);
+    const stillFenced = mergeEvidenceRowsSkippingInvalidated(new Map(), [rowA], new Set([101]));
+    expect(stillFenced).toBeNull();
+    // The only card-visible status for that pack remains fail-closed.
+    expect(derivePackCardStatus({ evidence: null, evidenceState: "unavailable" })).toBe("unknown");
+  });
+
+  it("scenario C: invalidating A never clears or blocks unrelated B evidence", () => {
+    const current = new Map<number, any>([[202, rowB]]);
+    const merged = mergeEvidenceRowsSkippingInvalidated(current, [rowAStale, rowB], new Set([101]));
+    expect(merged?.get(202)).toBe(rowB);
+    expect(merged?.has(101)).toBe(false);
+    // B needs no reconciliation.
+    expect(scopeNeedsReconciliation([202], new Set([101]))).toBe(false);
+  });
+
+  it("scenario D: a successful post-fence fetch merges the fresh row and releases the tombstone", () => {
+    const freshRow = { workItemId: 101, checker: false, checkerRan: true, approval: false };
+    // The post-fence result contains A → exactly A is reconcilable.
+    expect(reconcilableEvidenceIds(new Set([101]), [freshRow, rowB])).toEqual([101]);
+    // Fresh row merges (empty fence on the post-fence branch)…
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), [freshRow], new Set());
+    expect(merged?.get(101)).toBe(freshRow);
+    // …and once released, ordinary cache reuse is allowed again — the same
+    // fresh row merges freely with an empty fence.
+    const ordinaryReuse = mergeEvidenceRowsSkippingInvalidated(new Map([[101, freshRow]]), [freshRow], new Set());
+    expect(ordinaryReuse?.get(101)).toBe(freshRow);
+  });
+
+  it("tombstones fence by id — an id absent from the fresh result stays fenced", () => {
+    // A mutation may remove the pack: the fresh scope result lacks 101, so
+    // nothing releases it and no stale row can come back for it.
+    expect(reconcilableEvidenceIds(new Set([101, 303]), [rowB])).toEqual([]);
+  });
+
+  it("merge bails out (null) when rows are absent so no render churn occurs", () => {
+    expect(mergeEvidenceRowsSkippingInvalidated(cachedPass, undefined, new Set())).toBeNull();
+    expect(mergeEvidenceRowsSkippingInvalidated(cachedPass, [], new Set())).toBeNull();
+    // Rows without a valid workItemId are never merged.
+    expect(mergeEvidenceRowsSkippingInvalidated(new Map(), [{ workItemId: null, checker: true }], new Set())).toBeNull();
   });
 });
