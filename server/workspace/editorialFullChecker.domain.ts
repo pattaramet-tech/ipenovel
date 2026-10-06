@@ -649,6 +649,16 @@ function applySingleTransform(input: {
     // content is genuinely note-only — canonical metadata over narrative
     // content is an ordinary chapter and receives the standard marker.
     if (isAcceptedSourceNoteChapterTab(tab)) {
+      // IPE-064R4B round 18: note-only tabs never RECEIVE an ending marker —
+      // and legacy v8-era generated markers (sourceParagraphIndex === 0) are
+      // stripped so pre-round-15 drafts migrate to the marker-less contract.
+      tab.paragraphs = tab.paragraphs.filter(
+        paragraph =>
+          !(
+            paragraph.sourceParagraphIndex === 0 &&
+            /^จบตอน[.!…]*$/i.test(normalizeEditorialText(paragraph.text))
+          )
+      );
       continue;
     }
     const hadMarker = tab.paragraphs.some(paragraph =>
