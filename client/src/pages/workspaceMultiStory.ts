@@ -381,6 +381,75 @@ export function acceptedReconciliationRows<TRow extends EvidenceRowLike>(
   });
 }
 
+// ---------------------------------------------------------------------------
+// IPE-065R4 — workspace ABA lifecycle epoch.
+//
+// workspaceId + reused generation value do NOT prove the same workspace
+// LIFECYCLE (leave A → return A → generation restarts from 1). Every
+// workspace identity transition rotates a monotonic EPOCH that never resets;
+// a reconciliation captures the epoch at creation and its response is
+// accepted only when BOTH the workspace id AND the epoch still match.
+// ---------------------------------------------------------------------------
+
+export interface EvidenceWorkspaceIdentity {
+  workspaceId: number | null | undefined;
+  epoch: number;
+}
+
+/**
+ * Deterministic epoch rotation: the same workspace keeps its identity object
+ * (and epoch); ANY workspace identity change advances the epoch by exactly
+ * one, synchronously with the rendered selection — an async acceptance can
+ * never observe a returned-to-A workspace carrying A's old epoch.
+ */
+export function nextEvidenceWorkspaceIdentity(
+  current: EvidenceWorkspaceIdentity,
+  workspaceId: number | null | undefined
+): EvidenceWorkspaceIdentity {
+  if (current.workspaceId === workspaceId) return current;
+  return { workspaceId, epoch: current.epoch + 1 };
+}
+
+/** Lifecycle acceptance: id AND epoch must both match — A(epoch1) != A(epoch3). */
+export function sameEvidenceWorkspaceLifecycle(
+  identity: EvidenceWorkspaceIdentity,
+  workspaceId: number,
+  epoch: number
+): boolean {
+  return identity.workspaceId === workspaceId && identity.epoch === epoch;
+}
+
+/**
+ * Coalescing identity — the epoch is part of the key, so an old lifecycle can
+ * never collide with a new one merely because generation counters restarted:
+ * 7@1:101@1 != 7@3:101@1.
+ */
+export function buildEvidenceReconciliationKey(
+  workspaceId: number,
+  epoch: number,
+  targets: readonly number[],
+  generations: ReadonlyMap<number, number>
+): string {
+  const pairs = targets.map((id) => `${id}@${generations.get(id) ?? 0}`);
+  return `${workspaceId}@${epoch}:${pairs.join(",")}`;
+}
+
+/**
+ * Ownership-safe registry cleanup: a settling promise may remove its registry
+ * entry ONLY while the registry still points at THAT exact promise — an old
+ * promise settling late must never delete a newer reconciliation's entry.
+ * Returns true when the entry was removed.
+ */
+export function releaseOwnedReconciliationEntry(
+  registry: Map<string, Promise<unknown>>,
+  key: string,
+  promise: Promise<unknown>
+): boolean {
+  if (registry.get(key) !== promise) return false;
+  registry.delete(key);
+  return true;
+}
+
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(
   cards: T[],
   rawQuery: string

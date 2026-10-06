@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   acceptedReconciliationIds,
   acceptedReconciliationRows,
+  buildEvidenceReconciliationKey,
   bumpEvidenceGenerations,
   captureEvidenceGenerations,
   createStoryUiState,
@@ -12,8 +13,11 @@ import {
   filterPacksByQuery,
   groupStoriesByNovel,
   mergeEvidenceRowsSkippingInvalidated,
+  nextEvidenceWorkspaceIdentity,
   reconcilableEvidenceIds,
+  releaseOwnedReconciliationEntry,
   resolveStoryUiState,
+  sameEvidenceWorkspaceLifecycle,
   scopeNeedsReconciliation,
   sortPacksByEpisode,
   storyKeyFor,
@@ -23,6 +27,7 @@ import {
   STORY_OVERALL_LABEL,
   summarizeStoryPacks,
   updateStoryUiState,
+  type EvidenceWorkspaceIdentity,
 } from "./workspaceMultiStory";
 
 describe("workspaceMultiStory — per-story UI state", () => {
@@ -533,3 +538,102 @@ describe("workspaceMultiStory — generation-bound reconciliation (IPE-065R3)", 
 });
 
 const rowBFresh = { workItemId: 202, checker: true, checkerRan: true, published: true };
+
+// ---------------------------------------------------------------------------
+// IPE-065R4 — workspace ABA lifecycle epoch. workspaceId + reused generation
+// value do NOT prove the same workspace lifecycle; every identity transition
+// rotates a monotonic epoch and reconciliation acceptance requires BOTH.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — workspace ABA epoch fence (IPE-065R4)", () => {
+  const passRow = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+  const staleRow = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+
+  it("epoch rotation is identity-driven and monotonic: A(1) -> B(2) -> A(3)", () => {
+    let identity: EvidenceWorkspaceIdentity = { workspaceId: 7, epoch: 0 };
+    identity = nextEvidenceWorkspaceIdentity(identity, 7); // same id → same object
+    expect(identity).toEqual({ workspaceId: 7, epoch: 0 });
+    identity = nextEvidenceWorkspaceIdentity(identity, 8); // A -> B
+    expect(identity).toEqual({ workspaceId: 8, epoch: 1 });
+    identity = nextEvidenceWorkspaceIdentity(identity, 7); // B -> A: NEW lifecycle
+    expect(identity).toEqual({ workspaceId: 7, epoch: 2 });
+  });
+
+  it("scenario A: an OLD lifecycle response (A/epoch1/gen1) is rejected after A -> B -> A(epoch3)", () => {
+    // OLD reconciliation captured {A, epoch 1} with generation 1.
+    const oldIdentity: EvidenceWorkspaceIdentity = { workspaceId: 7, epoch: 1 };
+    const oldGenerations = bumpEvidenceGenerations(new Map(), [101]);
+    const oldCaptured = captureEvidenceGenerations(oldGenerations, [101]);
+    // Lifecycle moved on: epoch is now 3 (A again), and the NEW lifecycle's
+    // mutation restarted generation 101 back to 1 with a fresh tombstone.
+    const newIdentity: EvidenceWorkspaceIdentity = { workspaceId: 7, epoch: 3 };
+    const newGenerations = bumpEvidenceGenerations(new Map(), [101]);
+    const tombstones = new Set([101]);
+    // Workspace id matches (7 === 7) but the EPOCH does not (1 != 3):
+    // sameEvidenceWorkspaceLifecycle rejects the old response outright.
+    expect(sameEvidenceWorkspaceLifecycle(newIdentity, 7, 1)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle(newIdentity, oldIdentity.workspaceId as number, oldIdentity.epoch)).toBe(false);
+    // And even a direct generation comparison cannot rescue it — the NEW
+    // lifecycle's acceptance path is keyed to the NEW captured identity.
+    const newCaptured = captureEvidenceGenerations(newGenerations, [101]);
+    expect(acceptedReconciliationIds(oldCaptured, newGenerations, tombstones, [passRow])).toEqual([101]); // generation alone is NOT acceptance
+    // …the authority gate is the lifecycle check, which failed above. The NEW
+    // reconciliation (A/epoch3/gen1) accepts normally.
+    expect(
+      sameEvidenceWorkspaceLifecycle(newIdentity, 7, newIdentity.epoch)
+    ).toBe(true);
+    expect(acceptedReconciliationIds(newCaptured, newGenerations, tombstones, [passRow])).toEqual([101]);
+  });
+
+  it("scenario B: same workspace id with different epochs are DIFFERENT lifecycles", () => {
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 7, epoch: 1 }, 7, 1)).toBe(true);
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 7, epoch: 1 }, 7, 3)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 7, epoch: 3 }, 7, 1)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 8, epoch: 1 }, 7, 1)).toBe(false);
+  });
+
+  it("scenario C: registry keys differ across lifecycles (7@1:101@1 != 7@3:101@1)", () => {
+    const generations = new Map([[101, 1]]);
+    const keyEpoch1 = buildEvidenceReconciliationKey(7, 1, [101], generations);
+    const keyEpoch3 = buildEvidenceReconciliationKey(7, 3, [101], generations);
+    expect(keyEpoch1).toBe("7@1:101@1");
+    expect(keyEpoch3).toBe("7@3:101@1");
+    expect(keyEpoch1).not.toBe(keyEpoch3);
+  });
+
+  it("scenario D/E: registry cleanup is ownership-safe (old settle never deletes a newer entry)", () => {
+    const registry = new Map<string, Promise<unknown>>();
+    const oldPromise = Promise.resolve();
+    const newPromise = Promise.resolve();
+    const key = "7@3:101@1";
+    registry.set(key, newPromise);
+    // An OLD promise settling against a key now owned by the NEW promise:
+    expect(releaseOwnedReconciliationEntry(registry, key, oldPromise)).toBe(false);
+    expect(registry.get(key)).toBe(newPromise);
+    // Normal cleanup: the owner settles and removes its own entry.
+    expect(releaseOwnedReconciliationEntry(registry, key, newPromise)).toBe(true);
+    expect(registry.has(key)).toBe(false);
+  });
+
+  it("scenario F: A -> B without return still rejects the A response (workspace id mismatch)", () => {
+    const identity: EvidenceWorkspaceIdentity = { workspaceId: 8, epoch: 2 };
+    expect(sameEvidenceWorkspaceLifecycle(identity, 7, 1)).toBe(false);
+  });
+
+  it("scenario G/H: within one epoch the R3 generation race and structural-sharing acceptance are unchanged", () => {
+    let generations = bumpEvidenceGenerations(new Map(), [101]); // gen 1
+    const gen1Captured = captureEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [101]); // gen 2 in flight
+    const tombstones = new Set([101]);
+    // Gen-1 response rejected within the same epoch.
+    expect(acceptedReconciliationIds(gen1Captured, generations, tombstones, [passRow])).toEqual([]);
+    // Gen-2 response accepted even when structurally identical (content read).
+    const accepted = acceptedReconciliationIds(
+      captureEvidenceGenerations(generations, [101]),
+      generations,
+      tombstones,
+      [staleRow]
+    );
+    expect(accepted).toEqual([101]);
+    expect(acceptedReconciliationRows([staleRow], new Set(accepted))).toEqual([staleRow]);
+  });
+});

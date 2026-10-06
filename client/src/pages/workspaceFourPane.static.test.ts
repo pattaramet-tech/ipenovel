@@ -204,14 +204,23 @@ describe("IPE-064 — intake separation", () => {
     expect(page).toContain("const freshRows = result.data;");
     expect(page).toContain("acceptedReconciliationIds(\n          captured,");
     expect(page).toContain("const rows = acceptedReconciliationRows(freshRows, acceptedSet);");
-    // Workspace identity fence: an old workspace's reconciliation response
-    // cannot touch the new workspace's state.
-    expect(page).toContain("capturedWorkspaceId !== selectedWorkspaceIdRef.current");
+    // IPE-065R4: workspace LIFECYCLE fence — the response is authoritative
+    // only while the page lives in the captured id AND epoch.
+    expect(page).toContain("evidenceWorkspaceIdentityRef.current = nextEvidenceWorkspaceIdentity(");
+    expect(page).toContain(
+      "sameEvidenceWorkspaceLifecycle(\n            evidenceWorkspaceIdentityRef.current,\n            capturedWorkspaceId,\n            capturedIdentity.epoch\n          )"
+    );
+    // The epoch rotates synchronously during render — no effect-lag gap.
+    expect(page).not.toContain("capturedWorkspaceId !== selectedWorkspaceIdRef.current");
     // Coalescing registry — one in-flight reconciliation per
-    // workspace+scope+generation key.
+    // workspace lifecycle+scope+generation key, with OWNERSHIP-SAFE cleanup.
+    expect(page).toContain("buildEvidenceReconciliationKey(\n      capturedWorkspaceId,\n      capturedIdentity.epoch,\n      targets,\n      captured\n    )");
     expect(page).toContain("evidenceReconciliationInFlightRef.current.get(key)");
     expect(page).toContain("evidenceReconciliationInFlightRef.current.set(key, promise);");
-    expect(page).toContain("evidenceReconciliationInFlightRef.current.delete(key);");
+    expect(page).toContain(
+      "releaseOwnedReconciliationEntry(\n          evidenceReconciliationInFlightRef.current,\n          key,\n          promise\n        )"
+    );
+    expect(page).not.toContain("evidenceReconciliationInFlightRef.current.delete(key);");
     // Scope activation routes through the centralized generation-bound
     // reconciliation — never an unbound refetch.
     expect(page).toContain("scopeNeedsReconciliation(activeEvidenceScopeIds, invalidatedEvidenceIds)");

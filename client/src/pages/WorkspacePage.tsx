@@ -16,19 +16,24 @@ import { WorkspaceFindingActions } from "./WorkspaceFindingActions";
 import {
   acceptedReconciliationIds,
   acceptedReconciliationRows,
+  buildEvidenceReconciliationKey,
   bumpEvidenceGenerations,
   captureEvidenceGenerations,
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
   groupStoriesByNovel,
   mergeEvidenceRowsSkippingInvalidated,
+  nextEvidenceWorkspaceIdentity,
+  releaseOwnedReconciliationEntry,
   resolveStoryUiState,
+  sameEvidenceWorkspaceLifecycle,
   scopeNeedsReconciliation,
   sortPacksByEpisode,
   storyKeyFor,
   storyOverallStatus,
   summarizeStoryPacks,
   updateStoryUiState,
+  type EvidenceWorkspaceIdentity,
   type StoryPackTab,
   type StoryUiState,
 } from "./workspaceMultiStory";
@@ -346,43 +351,79 @@ export default function WorkspacePage() {
   invalidatedEvidenceIdsRef.current = invalidatedEvidenceIds;
   const selectedWorkspaceIdRef = useRef(selectedWorkspaceId);
   selectedWorkspaceIdRef.current = selectedWorkspaceId;
-  // IPE-065R3: coalescing registry — at most one in-flight reconciliation per
-  // workspace+scope+generation-snapshot identity; a newer generation starts a
-  // new one, the older response is rejected by the generation fence.
+  // IPE-065R4: workspace LIFECYCLE identity — a monotonic epoch rotated
+  // SYNCHRONOUSLY during render whenever the selected workspace changes, so
+  // the epoch can never lag behind the workspace identity visible to async
+  // acceptance (no render/effect gap: A→B→A makes A(epoch1) != A(epoch3)
+  // even though generation counters restart). The epoch itself never resets.
+  const evidenceWorkspaceIdentityRef = useRef<EvidenceWorkspaceIdentity>({
+    workspaceId: selectedWorkspaceId,
+    epoch: 0,
+  });
+  evidenceWorkspaceIdentityRef.current = nextEvidenceWorkspaceIdentity(
+    evidenceWorkspaceIdentityRef.current,
+    selectedWorkspaceId
+  );
+  // IPE-065R3/R4: coalescing registry — at most one in-flight reconciliation
+  // per workspace LIFECYCLE (id@epoch) + scope + generation-snapshot identity.
   const evidenceReconciliationInFlightRef = useRef(new Map<string, Promise<void>>());
   useEffect(() => {
     // IPE-065R3 (§13): a workspace switch invalidates rows, tombstones,
     // generations and the reconciliation bookkeeping — query namespace and
-    // board identity change with it. An old reconciliation promise that
-    // resolves later is rejected by the workspace identity fence below.
+    // board identity change with it. The EPOCH itself was already rotated
+    // synchronously during the render above (never resets), so an old
+    // reconciliation promise resolving later is rejected by the
+    // lifecycle fence below no matter whether the operator returned to the
+    // same workspace id.
     setEditorialEvidenceRows(new Map());
     setInvalidatedEvidenceIds(new Set());
     evidenceGenerationRef.current = new Map();
     evidenceReconciliationInFlightRef.current.clear();
   }, [selectedWorkspaceId]);
-  // IPE-065R3 (§5): THE centralized reconciliation authority. It captures the
-  // generation snapshot BEFORE the request, starts the explicit network fetch
-  // after that capture (cancelRefetch supersedes any in-flight request for
-  // the scoped query), and consumes the refetch RESULT DIRECTLY — never
-  // dataUpdatedAt, never a React effect noticing `.data`, never a structural
-  // reference change (structural sharing cannot block a tombstone release).
+  // IPE-065R3/R4 (§5): THE centralized reconciliation authority. It captures
+  // the workspace lifecycle (id + epoch) and the generation snapshot BEFORE
+  // the request, starts the explicit network fetch after that capture
+  // (cancelRefetch supersedes any in-flight request for the scoped query),
+  // and consumes the refetch RESULT DIRECTLY — never dataUpdatedAt, never a
+  // React effect noticing `.data`, never a structural reference change
+  // (structural sharing cannot block a tombstone release).
   const reconcileInvalidatedEvidence = (scopeIds: readonly number[]) => {
     const capturedWorkspaceId = selectedWorkspaceId;
     if (!capturedWorkspaceId) return Promise.resolve();
+    // IPE-065R4 (§4): capture BOTH the workspace id and its lifecycle epoch —
+    // a response is authoritative only while the page still lives in that
+    // exact lifecycle (A(epoch1) != A(epoch3)).
+    const capturedIdentity = evidenceWorkspaceIdentityRef.current;
     const targets = scopeIds.filter((id) => invalidatedEvidenceIdsRef.current.has(id));
     if (!targets.length) return Promise.resolve();
     const captured = captureEvidenceGenerations(evidenceGenerationRef.current, targets);
-    const key = `${capturedWorkspaceId}:${targets
-      .map((id) => `${id}@${captured.get(id) ?? 0}`)
-      .join(",")}`;
+    const key = buildEvidenceReconciliationKey(
+      capturedWorkspaceId,
+      capturedIdentity.epoch,
+      targets,
+      captured
+    );
     const inFlight = evidenceReconciliationInFlightRef.current.get(key);
     if (inFlight) return inFlight;
-    const promise = (async () => {
+    // IPE-065R4 (§7): the cleanup closure references `promise` — declare it
+    // before assignment so the ownership check reads the settled instance.
+    let promise!: Promise<void>;
+    promise = (async () => {
       try {
         const result = await editorialEvidenceStatuses.refetch({ cancelRefetch: true });
-        // Workspace identity fence: a reconciliation for a workspace the
-        // operator already left must not touch the new workspace's state.
-        if (capturedWorkspaceId !== selectedWorkspaceIdRef.current) return;
+        // Lifecycle fence: the response is authoritative only while the page
+        // still lives in the captured workspace AND the captured epoch — a
+        // returned-to-A workspace with a restarted lifecycle is a DIFFERENT
+        // lifecycle and rejects the old response outright.
+        if (
+          !sameEvidenceWorkspaceLifecycle(
+            evidenceWorkspaceIdentityRef.current,
+            capturedWorkspaceId,
+            capturedIdentity.epoch
+          )
+        ) {
+          return;
+        }
         const freshRows = result.data;
         // Unsuccessful/empty result → keep every tombstone (fail closed).
         if (!Array.isArray(freshRows) || !freshRows.length) return;
@@ -411,7 +452,15 @@ export default function WorkspacePage() {
         // fail-closed (loading/unknown); the next legitimate scope activation
         // retries. The pre-mutation PASS is never a fallback.
       } finally {
-        evidenceReconciliationInFlightRef.current.delete(key);
+        // IPE-065R4 (§6): ownership-safe cleanup — remove the registry entry
+        // only while it still points at THIS promise; an old lifecycle's
+        // promise settling late must never delete a newer reconciliation's
+        // coalescing entry.
+        releaseOwnedReconciliationEntry(
+          evidenceReconciliationInFlightRef.current,
+          key,
+          promise
+        );
       }
     })();
     evidenceReconciliationInFlightRef.current.set(key, promise);
