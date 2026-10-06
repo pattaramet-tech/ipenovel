@@ -358,6 +358,35 @@ describe("IPE-058-D Full Checker parity core", () => {
     expect(texts).toContain("หมายเหตุจากต้นฉบับ");
   });
 
+  // IPE-064R4B review round 27 (P2): leading separator paragraphs must not
+  // push the note heading out of the heading-probe window — the raw
+  // first-three-rows check missed it and appended จบตอน to a tab the
+  // structural classifier accepts as a non-billable source note.
+  it("IPE-064R4B round 27. separators before the note heading do not restore the marker", () => {
+    const draft = documentFromTabs([
+      {
+        sourceTabId: "note-tab",
+        tabOrder: 1,
+        title: "หมายเหตุจากต้นฉบับ",
+        chapterNumber: "205",
+        chapterTitle: "หมายเหตุจากต้นฉบับ",
+        paragraphs: [
+          "---",
+          "***",
+          "===",
+          "หมายเหตุจากต้นฉบับ",
+          "หมายเหตุจากต้นฉบับ",
+        ],
+      },
+    ]);
+    const preview = previewEditorialFullCheckerTransform({
+      document: draft,
+      transformCode: "ending_cleanup",
+    });
+    const texts = preview.document.tabs[0]!.paragraphs.map(row => row.text);
+    expect(texts).not.toContain("จบตอน");
+  });
+
   it("IPE-060B E. ordinary narrative chapters still get the ending marker", () => {
     const preview = previewEditorialFullCheckerTransform({
       document: documentFromTabs([

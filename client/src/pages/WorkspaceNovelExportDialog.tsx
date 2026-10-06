@@ -349,6 +349,17 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                 <p className="text-xs">{thaiValidationError.message} — เลือกโหมด "เลือกบางตอน" แล้วติ๊กรายแพ็กที่ถูกต้องเพื่อส่งออกเป็นชุด</p>
               </div>
             )}
+            {/* IPE-064R4B review round 27 (P2): subset recovery must surface
+                its OWN validation failure — the preview returns
+                validationError with the picker intact, so hiding this banner
+                left only the generic empty message and the operator could not
+                tell which selected pack failed or why. */}
+            {mode === "thainovel" && thaiValidationError && scope === "subset" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-subset-validation-error-banner">
+                <p className="font-medium">ตรวจพบปัญหาข้อมูลในรายการที่เลือก — ส่งออกชุดนี้ไม่ได้</p>
+                <p className="text-xs">{thaiValidationError.message} — ตรวจแพ็กที่เกี่ยวข้องใน Workspace หรือถอนติ๊กรายการที่มีปัญหาออก แล้วลองใหม่</p>
+              </div>
+            )}
 
             {mode === "thainovel" && thaiOverLimit && scope === "whole" && (
               <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-over-limit-banner">
@@ -357,6 +368,17 @@ export function WorkspaceNovelExportDialog({ open, onOpenChange, novels }: Works
                 </p>
                 <p className="text-xs">
                   ส่งออกแบบ "ทั้งเรื่อง" ไม่ได้ — เลือกโหมด "เลือกบางตอน" แล้วติ๊กเลือกรายแพ็กที่ต้องการ (ต่อไฟล์ไม่เกิน {thaiOverLimit.maxItems} บท) แล้วส่งออกเป็นชุด
+                </p>
+              </div>
+            )}
+            {/* Round 27 (P2): same for an oversized subset selection. */}
+            {mode === "thainovel" && thaiOverLimit && scope === "subset" && (
+              <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="export-subset-over-limit-banner">
+                <p className="font-medium">
+                  รายการที่เลือกแยกแพ็กได้ {thaiOverLimit.itemCount.toLocaleString()} บท — เกินลิมิตต่อไฟล์ ({thaiOverLimit.maxItems} บท)
+                </p>
+                <p className="text-xs">
+                  ถอนติ๊กรายการออกจนไม่เกิน {thaiOverLimit.maxItems} บท แล้วส่งออกเป็นชุด (ส่งออกหลายรอบได้)
                 </p>
               </div>
             )}

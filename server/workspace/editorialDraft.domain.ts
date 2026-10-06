@@ -332,18 +332,30 @@ export function cleanupEnding(
     // be GENUINELY note-only — the canonical heading followed by narrative
     // content is an ordinary narrative chapter (the structural classifier
     // treats it as narrative too) and keeps its end marker.
+    // IPE-064R4B review round 27 (P2): a canonical note-only tab may open
+    // with separator paragraphs before the note heading — probing the raw
+    // first three rows misses the heading and wrongly appends จบตอน to a
+    // tab the structural classifier accepts as a non-billable source note.
+    // Probe the first three MEANINGFUL rows instead; separators and blanks
+    // are already accepted by the every-row predicate below.
+    const meaningfulHeadRows = kept
+      .map(paragraph =>
+        normalizeEditorialText(String(paragraph.text ?? ""))
+          .replace(/\s+/g, " ")
+          .trim()
+      )
+      .filter(text => {
+        if (!text) return false;
+        return !/^[_\-=*#~•·.]{3,}$/.test(text.replace(/\s+/g, ""));
+      })
+      .slice(0, 3);
     const sourceNoteChapter =
-      kept
-        .slice(0, 3)
-        .some(paragraph => {
-          const text = normalizeEditorialText(String(paragraph.text ?? ""))
-            .replace(/\s+/g, " ")
-            .trim();
-          return (
-            isSourceNoteChapterHeadingText(text) ||
-            text === EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE
-          );
-        }) &&
+      meaningfulHeadRows.some(text => {
+        return (
+          isSourceNoteChapterHeadingText(text) ||
+          text === EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE
+        );
+      }) &&
       kept.every(paragraph => {
         const text = normalizeEditorialText(String(paragraph.text ?? ""))
           .replace(/\s+/g, " ")
