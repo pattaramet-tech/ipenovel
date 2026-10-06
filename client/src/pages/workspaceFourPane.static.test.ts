@@ -203,6 +203,45 @@ describe("IPE-064R3 — workspace context & navigation", () => {
     expect(page).toContain("if (!urlRestoreAppliedRef.current) return;");
   });
 
+  it("routes both intake links through the canonical dirty-editor boundary (IPE-064R4B R31)", () => {
+    // One handler owns the intake navigation: it prompts with the
+    // leaving-for-intake message, cancels the in-app Wouter navigation on
+    // Cancel (link preventDefault — beforeunload never fires for Wouter),
+    // and on Confirm runs the SAME discard authority as story/pack switches
+    // before navigating to the unchanged intake URL contract.
+    expect(page).toContain('const [, navigateIntake] = useLocation();');
+    expect(page).toContain("const navigateToWorkspaceIntake = (event: { preventDefault(): void }) => {");
+    expect(page).toContain("event.preventDefault();");
+    expect(page).toContain(
+      'discardChapterEditorForContextSwitch(\n        "มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วไปหน้าตั้งค่า / นำเข้าหรือไม่?"\n      )'
+    );
+    expect(page).toContain(
+      'navigateIntake(\n      `/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`\n    );'
+    );
+    // A. Clean editor: the boundary returns true without prompting — no
+    // confirmation stands between a clean editor and the intake navigation.
+    expect(page).toContain("if (!chapterEditorTarget) return true;");
+    // B. Dirty + Cancel: the shared authority returns false on Cancel and
+    // the handler aborts before navigating (navigation blocked, editor kept).
+    expect(page).not.toMatch(/navigateToWorkspaceIntake[\s\S]{0,200}navigateIntake\([^)]*\)[\s\S]{0,40}setChapterEditorTarget/);
+
+    // D. BOTH intake entry points are guarded — no unguarded
+    // /workspace/intake Link may remain inside WorkspacePage.
+    const guardedLinks = page.match(/data-intake-guarded-link="1"/g) ?? [];
+    expect(guardedLinks.length).toBe(2);
+    const intakeHrefs = page.match(/href=\{`\/workspace\/intake/g) ?? [];
+    expect(intakeHrefs.length).toBe(2);
+    // Every intake href sits on a guarded link.
+    for (const match of page.matchAll(/href=\{`\/workspace\/intake[\s\S]{0,300}?onClick={navigateToWorkspaceIntake}/g)) {
+      expect(match[0]).toContain('data-intake-guarded-link="1"');
+    }
+    // The global dirty click-guard skips only these self-guarded links —
+    // every OTHER anchor keeps the capture-phase confirmation (E: the
+    // browser/tab-close beforeunload guard is untouched in this effect).
+    expect(page).toContain('if (anchor.closest("[data-intake-guarded-link]")) return;');
+    expect(page).toContain('window.addEventListener("beforeunload", beforeUnload);');
+  });
+
   it("offers a quick story switcher in the header (guarded by the dirty check)", () => {
     expect(page).toContain('data-testid="workspace-story-switcher"');
     expect(page).toContain("if (selectStory(event.target.value)) setStoryEntered(true);");

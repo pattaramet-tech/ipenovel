@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useAdminGuard } from "@/hooks/useAdminGuard";
@@ -251,6 +251,9 @@ export default function WorkspacePage() {
   const [chapterEditorHighlight, setChapterEditorHighlight] = useState(true);
   const ensuredEditorialWorkspaces = useRef(new Set<number>());
   const { isAdmin, loading: adminLoading } = useAdminGuard();
+  // IPE-064R4B round 31 (P1): programmatic intake navigation after the
+  // dirty-editor boundary (Wouter's existing navigation API).
+  const [, navigateIntake] = useLocation();
 
   const workspaces = trpc.workspace.list.useQuery(undefined, { enabled: isAdmin });
   const detail = trpc.workspace.detail.useQuery(
@@ -852,6 +855,11 @@ export default function WorkspacePage() {
       const element = event.target instanceof Element ? event.target : null;
       const anchor = element?.closest("a[href]") as HTMLAnchorElement | null;
       if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      // IPE-064R4B round 31 (P1): intake links guard themselves via
+      // navigateToWorkspaceIntake (the canonical dirty-editor boundary, with
+      // its own confirmation + discard cleanup) — a capture-phase double
+      // confirm would be two prompts for the same decision.
+      if (anchor.closest("[data-intake-guarded-link]")) return;
       const destination = new URL(anchor.href, window.location.href);
       if (
         destination.href === window.location.href ||
@@ -1627,6 +1635,28 @@ export default function WorkspacePage() {
     setSelectedSourceWorkItemId(workItemId);
     return true;
   };
+  // IPE-064R4B review round 31 (P1): /workspace/intake is in-app Wouter
+  // navigation — the global dirty click-guard alone lets the confirmed
+  // navigation unmount the page WITHOUT running the canonical
+  // discardChapterEditorForContextSwitch cleanup. Both intake entry points
+  // (header link + empty-pack guidance link) route through this single
+  // handler: Cancel (or an unexpectedly still-dirty state) prevents the
+  // navigation and leaves the editor fully intact; Confirm runs the same
+  // discard authority used by story/pack switches, then navigates to the
+  // unchanged intake URL contract.
+  const navigateToWorkspaceIntake = (event: { preventDefault(): void }) => {
+    event.preventDefault();
+    if (
+      !discardChapterEditorForContextSwitch(
+        "มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการทิ้งการแก้ไขแล้วไปหน้าตั้งค่า / นำเข้าหรือไม่?"
+      )
+    ) {
+      return;
+    }
+    navigateIntake(
+      `/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`
+    );
+  };
   const storyOverviewStories = editorialNovelGroups.map((group: any) => {
     const key = storyKeyFor(group.workspaceNovelId, group.novel?.id);
     const summary = summarizeStoryPacks(group.cards);
@@ -2020,6 +2050,8 @@ export default function WorkspacePage() {
           href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}
           className="text-sm text-primary underline"
           data-testid="workspace-intake-link"
+          data-intake-guarded-link="1"
+          onClick={navigateToWorkspaceIntake}
         >
           ตั้งค่า / นำเข้า
         </Link>
@@ -2093,7 +2125,14 @@ export default function WorkspacePage() {
             {storyEntered && activeStoryPacks.length === 0 ? (
               <Card className="p-4 text-sm text-muted-foreground">
                 เรื่องนี้ยังไม่มีแพ็ก — เพิ่มตอนผ่านหน้า{" "}
-                <Link href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}>ตั้งค่า / นำเข้า</Link> ก่อน
+                <Link
+                  href={`/workspace/intake${selectedWorkspaceId ? `?workspace=${selectedWorkspaceId}` : ""}`}
+                  data-intake-guarded-link="1"
+                  onClick={navigateToWorkspaceIntake}
+                >
+                  ตั้งค่า / นำเข้า
+                </Link>{" "}
+                ก่อน
               </Card>
             ) : null}
             {storyEntered && activeStoryGroup ? (
