@@ -298,6 +298,89 @@ export function scopeNeedsReconciliation(
   return scopeIds.some((id) => invalidatedIds.has(id));
 }
 
+// ---------------------------------------------------------------------------
+// IPE-065R3 — generation-bound reconciliation authority.
+//
+// A wall-clock "data completed after invalidation" comparison is NOT a
+// freshness authority (a pre-mutation request may complete after the
+// mutation). Freshness is: EXPLICIT PER-WORKITEM INVALIDATION GENERATION +
+// an explicit reconciliation request whose captured generation snapshot still
+// matches at completion. Completion timestamps and React Query `.data`
+// references are never authority.
+// ---------------------------------------------------------------------------
+
+/**
+ * Monotonic per-workItem generation bump on every evidence-changing
+ * invalidation of that id.
+ */
+export function bumpEvidenceGenerations(
+  generations: ReadonlyMap<number, number>,
+  ids: readonly number[]
+): Map<number, number> {
+  const next = new Map(generations);
+  for (const id of ids) {
+    next.set(id, (next.get(id) ?? 0) + 1);
+  }
+  return next;
+}
+
+/** Snapshot the captured generations for the reconciliation targets. */
+export function captureEvidenceGenerations(
+  generations: ReadonlyMap<number, number>,
+  ids: readonly number[]
+): Map<number, number> {
+  const snapshot = new Map<number, number>();
+  for (const id of ids) {
+    snapshot.set(id, generations.get(id) ?? 0);
+  }
+  return snapshot;
+}
+
+/**
+ * Which tombstoned target ids may be reconciled by a successful reconciliation
+ * response, under the generation fence:
+ * 1. the id was one of the captured targets,
+ * 2. its CURRENT generation still equals the captured generation (no newer
+ *    mutation happened while the request was in flight),
+ * 3. it is still tombstoned,
+ * 4. the fresh result actually contains it.
+ * Everything else — including a generation-bumped id — is rejected: its row
+ * is not applied and its (newer) tombstone is not cleared.
+ */
+export function acceptedReconciliationIds(
+  capturedGenerations: ReadonlyMap<number, number>,
+  currentGenerations: ReadonlyMap<number, number>,
+  stillInvalidated: ReadonlySet<number>,
+  freshRows: readonly EvidenceRowLike[] | null | undefined
+): number[] {
+  if (!capturedGenerations.size || !freshRows?.length) return [];
+  const present = new Set<number>();
+  for (const row of freshRows) {
+    const id = evidenceRowId(row);
+    if (id != null) present.add(id);
+  }
+  const accepted: number[] = [];
+  for (const [id, capturedGeneration] of Array.from(capturedGenerations.entries())) {
+    if (currentGenerations.get(id) !== capturedGeneration) continue;
+    if (!stillInvalidated.has(id)) continue;
+    if (!present.has(id)) continue;
+    accepted.push(id);
+  }
+  return accepted;
+}
+
+/** The fresh rows belonging exactly to the accepted reconciliation ids. */
+export function acceptedReconciliationRows<TRow extends EvidenceRowLike>(
+  freshRows: readonly TRow[] | null | undefined,
+  acceptedIds: ReadonlySet<number>
+): TRow[] {
+  if (!freshRows?.length || !acceptedIds.size) return [];
+  return freshRows.filter((row) => {
+    const id = evidenceRowId(row);
+    return id != null && acceptedIds.has(id);
+  });
+}
+
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(
   cards: T[],
   rawQuery: string

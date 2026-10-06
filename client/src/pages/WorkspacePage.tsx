@@ -14,11 +14,14 @@ import { WorkspaceReviewSummaryPanel } from "./WorkspaceReviewSummaryPanel";
 import { WorkspaceActionBar } from "./WorkspaceActionBar";
 import { WorkspaceFindingActions } from "./WorkspaceFindingActions";
 import {
+  acceptedReconciliationIds,
+  acceptedReconciliationRows,
+  bumpEvidenceGenerations,
+  captureEvidenceGenerations,
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
   groupStoriesByNovel,
   mergeEvidenceRowsSkippingInvalidated,
-  reconcilableEvidenceIds,
   resolveStoryUiState,
   scopeNeedsReconciliation,
   sortPacksByEpisode,
@@ -325,60 +328,101 @@ export default function WorkspacePage() {
   const [editorialEvidenceRows, setEditorialEvidenceRows] = useState(
     () => new Map<number, any>()
   );
-  // IPE-065R2: invalidation tombstones — workItemIds whose cached/accumulated
-  // evidence predates a successful evidence-changing mutation. A tombstoned
-  // id is fenced out of EVERY cache merge (active story, re-activated story,
-  // staleTime-fresh cache, late pre-mutation response alike) until a
-  // SUCCESSFUL post-invalidation scoped fetch returns its row, which
-  // atomically merges the fresh row and releases the tombstone. Cleared on a
-  // workspace switch (the query namespace and board identity change with it).
+  // IPE-065R2/R3: invalidation tombstones — workItemIds whose cached/
+  // accumulated evidence predates a successful evidence-changing mutation. A
+  // tombstoned id is fenced out of EVERY generic cache merge until an
+  // EXPLICIT generation-bound reconciliation returns its row.
   const [invalidatedEvidenceIds, setInvalidatedEvidenceIds] = useState<Set<number>>(
     () => new Set()
   );
-  // IPE-065R2: fence timestamp — a data change whose fetch completed at/before
-  // the latest invalidation is PRE-fence and must not release tombstones.
-  const evidenceInvalidatedAtRef = useRef(0);
+  // IPE-065R3: per-workItem invalidation GENERATION — the freshness authority.
+  // Completion timestamps are not authority (a pre-mutation request can
+  // complete after the mutation); only an explicit reconciliation request
+  // whose captured generation still matches may release a tombstone.
+  const evidenceGenerationRef = useRef(new Map<number, number>());
+  // Latest-render mirrors for async reconciliation closures (repo ref-mirror
+  // pattern) — the promise resolves long after the capturing render.
+  const invalidatedEvidenceIdsRef = useRef(invalidatedEvidenceIds);
+  invalidatedEvidenceIdsRef.current = invalidatedEvidenceIds;
+  const selectedWorkspaceIdRef = useRef(selectedWorkspaceId);
+  selectedWorkspaceIdRef.current = selectedWorkspaceId;
+  // IPE-065R3: coalescing registry — at most one in-flight reconciliation per
+  // workspace+scope+generation-snapshot identity; a newer generation starts a
+  // new one, the older response is rejected by the generation fence.
+  const evidenceReconciliationInFlightRef = useRef(new Map<string, Promise<void>>());
   useEffect(() => {
+    // IPE-065R3 (§13): a workspace switch invalidates rows, tombstones,
+    // generations and the reconciliation bookkeeping — query namespace and
+    // board identity change with it. An old reconciliation promise that
+    // resolves later is rejected by the workspace identity fence below.
     setEditorialEvidenceRows(new Map());
     setInvalidatedEvidenceIds(new Set());
+    evidenceGenerationRef.current = new Map();
+    evidenceReconciliationInFlightRef.current.clear();
   }, [selectedWorkspaceId]);
-  useEffect(() => {
-    const data = editorialEvidenceStatuses.data;
-    if (!Array.isArray(data) || !data.length) return;
-    // IPE-065R2 fence: a fetch that completed AFTER the latest invalidation
-    // is post-mutation server authority — merge it and release the tombstones
-    // of the ids it returned (atomically with merging them, so old cache can
-    // never render between clear and fresh). Any OTHER data change (a cached
-    // observation on scope re-activation, a late pre-mutation response) is
-    // FENCED: tombstoned ids are skipped — a stale PASS cannot resurrect —
-    // while unrelated rows (other stories/packs) merge normally and survive.
-    const postFence =
-      editorialEvidenceStatuses.dataUpdatedAt > evidenceInvalidatedAtRef.current;
-    if (postFence) {
-      setEditorialEvidenceRows((current) =>
-        mergeEvidenceRowsSkippingInvalidated(current, data, new Set()) ?? current
-      );
-      setInvalidatedEvidenceIds((current) => {
-        const reconciled = reconcilableEvidenceIds(current, data);
-        if (!reconciled.length) return current;
-        const next = new Set(current);
-        for (const id of reconciled) next.delete(id);
-        return next;
-      });
-    } else {
-      setEditorialEvidenceRows((current) =>
-        mergeEvidenceRowsSkippingInvalidated(current, data, invalidatedEvidenceIds) ?? current
-      );
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorialEvidenceStatuses.data]);
-  // IPE-065R1 (P1): ONE centralized invalidation authority for every
-  // evidence-changing mutation. Steps: (A) drop the affected rows from the
-  // accumulated map IMMEDIATELY — those cards fail closed to loading/unknown
-  // instead of keep presenting a known-stale ผ่าน/พร้อม Publish/ลงแล้ว; (C)
-  // reconcile from server authority by refetching the SCOPED evidence query,
-  // and only when an affected id belongs to the active scope — never a
-  // page-wide projection, never a timer. D: untouched workItemIds survive.
+  // IPE-065R3 (§5): THE centralized reconciliation authority. It captures the
+  // generation snapshot BEFORE the request, starts the explicit network fetch
+  // after that capture (cancelRefetch supersedes any in-flight request for
+  // the scoped query), and consumes the refetch RESULT DIRECTLY — never
+  // dataUpdatedAt, never a React effect noticing `.data`, never a structural
+  // reference change (structural sharing cannot block a tombstone release).
+  const reconcileInvalidatedEvidence = (scopeIds: readonly number[]) => {
+    const capturedWorkspaceId = selectedWorkspaceId;
+    if (!capturedWorkspaceId) return Promise.resolve();
+    const targets = scopeIds.filter((id) => invalidatedEvidenceIdsRef.current.has(id));
+    if (!targets.length) return Promise.resolve();
+    const captured = captureEvidenceGenerations(evidenceGenerationRef.current, targets);
+    const key = `${capturedWorkspaceId}:${targets
+      .map((id) => `${id}@${captured.get(id) ?? 0}`)
+      .join(",")}`;
+    const inFlight = evidenceReconciliationInFlightRef.current.get(key);
+    if (inFlight) return inFlight;
+    const promise = (async () => {
+      try {
+        const result = await editorialEvidenceStatuses.refetch({ cancelRefetch: true });
+        // Workspace identity fence: a reconciliation for a workspace the
+        // operator already left must not touch the new workspace's state.
+        if (capturedWorkspaceId !== selectedWorkspaceIdRef.current) return;
+        const freshRows = result.data;
+        // Unsuccessful/empty result → keep every tombstone (fail closed).
+        if (!Array.isArray(freshRows) || !freshRows.length) return;
+        const accepted = acceptedReconciliationIds(
+          captured,
+          evidenceGenerationRef.current,
+          invalidatedEvidenceIdsRef.current,
+          freshRows
+        );
+        if (!accepted.length) return;
+        const acceptedSet = new Set(accepted);
+        const rows = acceptedReconciliationRows(freshRows, acceptedSet);
+        setEditorialEvidenceRows((current) =>
+          mergeEvidenceRowsSkippingInvalidated(current, rows, new Set()) ?? current
+        );
+        setInvalidatedEvidenceIds((current) => {
+          const next = new Set(current);
+          let changed = false;
+          for (const id of accepted) {
+            if (next.delete(id)) changed = true;
+          }
+          return changed ? next : current;
+        });
+      } catch {
+        // Failed reconciliation keeps every tombstone — the UI stays
+        // fail-closed (loading/unknown); the next legitimate scope activation
+        // retries. The pre-mutation PASS is never a fallback.
+      } finally {
+        evidenceReconciliationInFlightRef.current.delete(key);
+      }
+    })();
+    evidenceReconciliationInFlightRef.current.set(key, promise);
+    return promise;
+  };
+  // IPE-065R1/R3 (P1): ONE centralized invalidation authority for every
+  // evidence-changing mutation — deterministic work only: (1) normalize the
+  // affected ids, (2) bump each id's invalidation generation, (3) tombstone
+  // them, (4) prune their accumulated rows, (5) start the explicit
+  // generation-bound reconciliation when an affected id belongs to the
+  // current active scope. No timestamps, no timers.
   const invalidateEvidenceRows = (
     workItemIds: ReadonlyArray<number | null | undefined>,
     options?: { refetch?: boolean }
@@ -391,10 +435,10 @@ export default function WorkspacePage() {
       )
     );
     if (!ids.length) return;
-    // IPE-065R2: tombstone the affected ids FIRST — from this moment no
-    // cached/pre-mutation row for them can be merged back, no matter which
-    // story is active when the mutation lands.
-    evidenceInvalidatedAtRef.current = Date.now();
+    evidenceGenerationRef.current = bumpEvidenceGenerations(
+      evidenceGenerationRef.current,
+      ids
+    );
     setInvalidatedEvidenceIds((current) => {
       const next = new Set(current);
       let changed = false;
@@ -414,13 +458,54 @@ export default function WorkspacePage() {
       }
       return changed ? next : current;
     });
-    // Race protection: refetch with cancelRefetch aborts any pre-mutation
-    // in-flight evidence request, so a response that started before the
-    // mutation can never reinsert stale positive rows after it lands.
     if (options?.refetch !== false && ids.some((id) => activeEvidenceScopeSet.has(id))) {
-      void editorialEvidenceStatuses.refetch({ cancelRefetch: true }).catch(() => undefined);
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
     }
   };
+  // IPE-065R3 (§4): generic query/cache observation is NEVER a freshness
+  // authority — no completion-timestamp comparison exists. The merge is
+  // ALWAYS fenced: non-tombstoned ids merge normally (progressive cache
+  // behavior for untouched evidence), tombstoned ids NEVER merge here, and
+  // tombstones are NEVER cleared by this path — only the explicit
+  // generation-bound reconciliation above may release them.
+  useEffect(() => {
+    const data = editorialEvidenceStatuses.data;
+    if (!Array.isArray(data) || !data.length) return;
+    setEditorialEvidenceRows((current) =>
+      mergeEvidenceRowsSkippingInvalidated(
+        current,
+        data,
+        invalidatedEvidenceIdsRef.current
+      ) ?? current
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorialEvidenceStatuses.data]);
+  // IPE-065R3 (§12): the board is server truth — once a successful board
+  // fetch proves a workItem no longer exists (e.g. the pack was removed),
+  // its tombstone/generation identity can be dropped deterministically (the
+  // evidence row was already pruned and no card references it). Prevents
+  // unbounded fence growth during the page's lifetime while keeping any
+  // still-present pack's fence fully intact.
+  useEffect(() => {
+    if (!editorialBoard.isSuccess) return;
+    const present = new Set(editorialEvidenceWorkItemIds);
+    setInvalidatedEvidenceIds((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const id of Array.from(current)) {
+        if (!present.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    const generations = evidenceGenerationRef.current;
+    for (const id of Array.from(generations.keys())) {
+      if (!present.has(id)) generations.delete(id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorialBoard.data]);
   const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
     {
       workspaceId: selectedWorkspaceId ?? 0,
@@ -521,8 +606,12 @@ export default function WorkspacePage() {
     ensureEditorialBoard.mutate({ workspaceId });
   }, [editorialBoard.data, editorialBoard.isLoading, isAdmin, selectedWorkspaceId]);
 
+  // IPE-065R3 (§11): board/approval refresh only — the evidence projection is
+  // reconciled EXCLUSIVELY through the generation-bound authority, never by an
+  // ordinary unbound refetch (which could supersede an in-flight
+  // reconciliation request).
   const refreshBulkEditorial = async () => {
-    await Promise.all([editorialBoard.refetch(), editorialEvidenceStatuses.refetch(), editorialApproval.refetch()]);
+    await Promise.all([editorialBoard.refetch(), editorialApproval.refetch()]);
   };
   const bulkApproveEditorialDrafts = trpc.workspace.editorial.bulkApproveDrafts.useMutation({
     onSuccess: async (results) => {
@@ -534,6 +623,9 @@ export default function WorkspacePage() {
         { refetch: false }
       );
       await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
       const failed = results.filter((result) => !result.ok);
       const firstError = failed.find((result: any) => result.error)?.error;
       toast[failed.length ? "error" : "success"](
@@ -549,6 +641,9 @@ export default function WorkspacePage() {
         { refetch: false }
       );
       await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
       const failed = results.filter((result) => !result.ok);
       toast[failed.length ? "error" : "success"](`Stage ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`);
     },
@@ -561,6 +656,9 @@ export default function WorkspacePage() {
         { refetch: false }
       );
       await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
       // IPE-064R4B (P2): the open pack's finding card / chapter issue counts /
       // stale indicator derive from this query — refresh it after bulk Check
       // or they keep showing the previous run.
@@ -580,6 +678,9 @@ export default function WorkspacePage() {
         { refetch: false }
       );
       await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
       const failed = results.filter((result) => !result.ok);
       const firstError = failed.find((result: any) => result.error)?.error;
       toast[failed.length ? "error" : "success"](
@@ -1903,16 +2004,15 @@ export default function WorkspacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStoryKey, activeStoryGroup?.cards.length, editorialBoard.data]);
 
-  // IPE-065R2: scope activation reconciles tombstoned ids even when React
+  // IPE-065R2/R3: scope activation reconciles tombstoned ids even when React
   // Query still considers cached data fresh — staleTime never overrides the
-  // fence. refetch() always hits the network and its cancelRefetch coalesces
-  // to at most one in-flight forced reconciliation per scope (no render
-  // loop: a successful reconciliation releases the tombstones, so the next
-  // run finds nothing to reconcile; a FAILED one leaves them and may retry
-  // on the next legitimate activation).
+  // fence. Activation routes through the centralized generation-bound
+  // reconciliation (no render loop: a successful reconciliation releases the
+  // tombstones, so the next run finds nothing to reconcile; a FAILED one
+  // leaves them and may retry on the next legitimate activation).
   useEffect(() => {
     if (!scopeNeedsReconciliation(activeEvidenceScopeIds, invalidatedEvidenceIds)) return;
-    void editorialEvidenceStatuses.refetch({ cancelRefetch: true }).catch(() => undefined);
+    void reconcileInvalidatedEvidence(activeEvidenceScopeIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEvidenceScopeIds, invalidatedEvidenceIds]);
 

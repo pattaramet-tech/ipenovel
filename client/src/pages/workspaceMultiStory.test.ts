@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  acceptedReconciliationIds,
+  acceptedReconciliationRows,
+  bumpEvidenceGenerations,
+  captureEvidenceGenerations,
   createStoryUiState,
   derivePackCardStatus,
   derivePackStatus,
@@ -423,3 +427,109 @@ describe("workspaceMultiStory — evidence tombstone fence (IPE-065R2)", () => {
     expect(mergeEvidenceRowsSkippingInvalidated(new Map(), [{ workItemId: null, checker: true }], new Set())).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// IPE-065R3 — generation-bound evidence reconciliation. Freshness authority =
+// per-workItem invalidation GENERATION + an explicit reconciliation request
+// whose captured generation still matches at completion. Completion
+// timestamps and React Query `.data` references are never authority.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — generation-bound reconciliation (IPE-065R3)", () => {
+  const passRow = { workItemId: 101, checker: true, approval: true, stage: true, readyToPublish: true, published: false };
+  const failedRow = { workItemId: 101, checker: false, checkerRan: true, approval: false, readyToPublish: false, published: false };
+
+  it("generations are monotonic per workItemId and snapshots are frozen at capture time", () => {
+    let generations = new Map<number, number>();
+    generations = bumpEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [202]);
+    expect(generations.get(101)).toBe(2);
+    expect(generations.get(202)).toBe(1);
+    // Snapshot BEFORE a newer bump stays at the captured value.
+    const snapshot = captureEvidenceGenerations(generations, [101, 202]);
+    expect(snapshot.get(101)).toBe(2);
+    generations = bumpEvidenceGenerations(generations, [101]);
+    expect(snapshot.get(101)).toBe(2);
+    expect(generations.get(101)).toBe(3);
+  });
+
+  it("scenario A: a pre-mutation request completing after the mutation can never release the tombstone", () => {
+    // mutation succeeds → generation 1 + tombstone. The OLD request's PASS
+    // row then lands in the generic merge: it is skipped (no timestamp
+    // involved anywhere — the fence is the tombstone set itself).
+    const generations = bumpEvidenceGenerations(new Map(), [101]);
+    const tombstones = new Set([101]);
+    const genericMerge = mergeEvidenceRowsSkippingInvalidated(new Map(), [passRow], tombstones);
+    expect(genericMerge).toBeNull();
+    // And the old request is not a reconciliation at all: with no captured
+    // generation it has no path to acceptance.
+    expect(acceptedReconciliationIds(new Map(), generations, tombstones, [passRow])).toEqual([]);
+  });
+
+  it("scenario B: a generation-1 reconciliation response cannot clear a generation-2 tombstone", () => {
+    // Reconciliation A captures generation 1, then mutation 2 bumps to 2.
+    let generations = bumpEvidenceGenerations(new Map(), [101]); // gen 1
+    const captured = captureEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [101]); // gen 2 in flight
+    const tombstones = new Set([101]);
+    // The generation-1 response arrives: rejected entirely.
+    expect(
+      acceptedReconciliationIds(captured, generations, tombstones, [passRow])
+    ).toEqual([]);
+    // The gen-2 reconciliation succeeds: fresh row merges, tombstone clears.
+    const accepted = acceptedReconciliationIds(
+      captureEvidenceGenerations(generations, [101]),
+      generations,
+      tombstones,
+      [failedRow]
+    );
+    expect(accepted).toEqual([101]);
+    const rows = acceptedReconciliationRows([failedRow], new Set(accepted));
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), rows, new Set());
+    expect(merged?.get(101)).toBe(failedRow);
+  });
+
+  it("scenario C: structural sharing cannot block a tombstone release — acceptance reads the result content", () => {
+    // The reconciliation succeeded with a row logically identical to the
+    // cached data: acceptance is decided from the returned rows themselves.
+    const generations = bumpEvidenceGenerations(new Map(), [101]);
+    const captured = captureEvidenceGenerations(generations, [101]);
+    const accepted = acceptedReconciliationIds(captured, generations, new Set([101]), [passRow]);
+    expect(accepted).toEqual([101]);
+    expect(acceptedReconciliationRows([passRow], new Set(accepted))).toEqual([passRow]);
+  });
+
+  it("scenario E: failed reconciliation (no rows) accepts nothing — tombstones stay", () => {
+    const generations = bumpEvidenceGenerations(new Map(), [101]);
+    const captured = captureEvidenceGenerations(generations, [101]);
+    expect(acceptedReconciliationIds(captured, generations, new Set([101]), [])).toEqual([]);
+    expect(acceptedReconciliationIds(captured, generations, new Set([101]), undefined)).toEqual([]);
+  });
+
+  it("scenario F: acceptance is id-scoped — an unrelated tombstoned id in the same response stays fenced", () => {
+    const generations = bumpEvidenceGenerations(new Map(), [101, 303]);
+    const captured = captureEvidenceGenerations(generations, [101]); // only 101 targeted
+    const accepted = acceptedReconciliationIds(captured, generations, new Set([101, 303]), [passRow, rowBFresh]);
+    expect(accepted).toEqual([101]);
+    // The accepted rows projection contains ONLY the accepted id's row.
+    expect(acceptedReconciliationRows([passRow, rowBFresh], new Set(accepted))).toEqual([passRow]);
+  });
+
+  it("scenario H: coalescing identity = workspace + target@generation pairs (pure key contract)", () => {
+    const keyFor = (workspaceId: number, targets: number[], generations: Map<number, number>) =>
+      `${workspaceId}:${targets
+        .map((id) => `${id}@${captureEvidenceGenerations(generations, targets).get(id) ?? 0}`)
+        .join(",")}`;
+    const gen = bumpEvidenceGenerations(new Map(), [101, 102]);
+    expect(keyFor(7, [101, 102], gen)).toBe("7:101@1,102@1");
+    // Same scope + same generations → identical key (one in-flight identity).
+    expect(keyFor(7, [101, 102], gen)).toBe(keyFor(7, [101, 102], gen));
+    // A newer generation → a different key → a new reconciliation is allowed.
+    const gen2 = bumpEvidenceGenerations(gen, [101]);
+    expect(keyFor(7, [101, 102], gen2)).toBe("7:101@2,102@1");
+    // A different workspace never shares an identity.
+    expect(keyFor(8, [101, 102], gen)).toBe("8:101@1,102@1");
+  });
+});
+
+const rowBFresh = { workItemId: 202, checker: true, checkerRan: true, published: true };

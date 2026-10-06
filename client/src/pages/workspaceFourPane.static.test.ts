@@ -179,28 +179,47 @@ describe("IPE-064 — intake separation", () => {
     expect(overview).not.toContain(": STORY_PACK_STATUS_LABEL.passed}");
   });
 
-  it("fences invalidated evidence against inactive-scope cache resurrection (IPE-065R2)", () => {
-    // Tombstones are recorded per workItemId on every invalidation, alongside
-    // the fence timestamp.
+  it("binds evidence refresh to the invalidation generation fence (IPE-065R2/R3)", () => {
+    // Tombstones are recorded per workItemId on every invalidation, together
+    // with a monotonic GENERATION bump — the freshness authority. No
+    // wall-clock comparison may remain.
     expect(page).toContain("const [invalidatedEvidenceIds, setInvalidatedEvidenceIds] = useState<Set<number>>(");
-    expect(page).toContain("evidenceInvalidatedAtRef.current = Date.now();");
+    expect(page).toContain("evidenceGenerationRef.current = bumpEvidenceGenerations(");
     expect(page).toContain("setInvalidatedEvidenceIds((current) => {");
-    // Workspace switch clears the fence together with the row map (no
-    // cross-workspace contamination).
+    expect(page).not.toContain("evidenceInvalidatedAtRef");
+    expect(page).not.toContain("dataUpdatedAt >");
+    // Workspace switch clears rows, tombstones, generations and the
+    // reconciliation bookkeeping (no cross-workspace contamination).
     expect(page).toContain("setEditorialEvidenceRows(new Map());\n    setInvalidatedEvidenceIds(new Set());");
-    // Generic merge is fenced: a data change completed AFTER the latest
-    // invalidation is post-fence authority (merge + release tombstones for
-    // returned ids atomically); anything else (cache observation on scope
-    // re-activation, late pre-mutation response) SKIPS tombstoned ids.
+    expect(page).toContain("evidenceGenerationRef.current = new Map();");
+    // Generic merge is ALWAYS fenced — tombstoned ids are skipped
+    // unconditionally and tombstones are never cleared by this path.
     expect(page).toContain(
-      "const postFence =\n      editorialEvidenceStatuses.dataUpdatedAt > evidenceInvalidatedAtRef.current;"
+      "mergeEvidenceRowsSkippingInvalidated(\n        current,\n        data,\n        invalidatedEvidenceIdsRef.current\n      ) ?? current"
     );
-    expect(page).toContain("mergeEvidenceRowsSkippingInvalidated(current, data, invalidatedEvidenceIds) ?? current");
-    expect(page).toContain("const reconciled = reconcilableEvidenceIds(current, data);");
-    // Scope activation with tombstoned ids forces a network refetch even
-    // when staleTime considers the cache fresh.
+    // Explicit reconciliation consumes the refetch RESULT directly (never
+    // `.data` observation / dataUpdatedAt / structural references) and only
+    // accepts rows whose captured generation still matches.
+    expect(page).toContain("const result = await editorialEvidenceStatuses.refetch({ cancelRefetch: true });");
+    expect(page).toContain("const freshRows = result.data;");
+    expect(page).toContain("acceptedReconciliationIds(\n          captured,");
+    expect(page).toContain("const rows = acceptedReconciliationRows(freshRows, acceptedSet);");
+    // Workspace identity fence: an old workspace's reconciliation response
+    // cannot touch the new workspace's state.
+    expect(page).toContain("capturedWorkspaceId !== selectedWorkspaceIdRef.current");
+    // Coalescing registry — one in-flight reconciliation per
+    // workspace+scope+generation key.
+    expect(page).toContain("evidenceReconciliationInFlightRef.current.get(key)");
+    expect(page).toContain("evidenceReconciliationInFlightRef.current.set(key, promise);");
+    expect(page).toContain("evidenceReconciliationInFlightRef.current.delete(key);");
+    // Scope activation routes through the centralized generation-bound
+    // reconciliation — never an unbound refetch.
     expect(page).toContain("scopeNeedsReconciliation(activeEvidenceScopeIds, invalidatedEvidenceIds)");
-    expect(page).toContain('editorialEvidenceStatuses.refetch({ cancelRefetch: true })');
+    expect(page).toContain("void reconcileInvalidatedEvidence(activeEvidenceScopeIds);");
+    // Bulk flow: refreshBulkEditorial no longer touches the evidence query;
+    // affected active-scope ids reconcile explicitly.
+    expect(page).not.toContain("editorialEvidenceStatuses.refetch(), editorialApproval");
+    expect(page).toContain("await Promise.all([editorialBoard.refetch(), editorialApproval.refetch()]);");
     // Performance contract intact: scoped input, no polling.
     expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
     expect(page).not.toContain("refetchInterval: 30_000");
