@@ -373,8 +373,12 @@ export function evaluateEditorialStructuralAnomalies(input: {
         buildAnomaly({
           anomalyType: "tab_count_mismatch",
           severity: "error",
-          sourceTabId: null,
-          tabTitle: null,
+          // IPE-064R4B review round 25 (P1): anchor the pack-level anomaly to
+          // the pack's first tab — a null sourceTabId matches no tab in the
+          // chapter-scoped issue surfaces (finding card, tree issue counts),
+          // so the defect was invisible outside aggregate counts.
+          sourceTabId: tabs[0]?.sourceTabId ?? null,
+          tabTitle: tabs[0]?.tabTitle ?? null,
           chapterNumber: null,
           relatedSourceTabIds: [],
           message: `จำนวนแท็บ ${tabs.length} ไม่ตรงช่วงตอน ${input.episodeNumber} ที่ควรมี ${range.count} แท็บ`,
@@ -388,12 +392,23 @@ export function evaluateEditorialStructuralAnomalies(input: {
       );
     }
     for (const chapter of missingChapterNumbers) {
+      // Round 25 (P1): anchor a missing chapter to the nearest PRECEDING
+      // existing chapter tab (fall back to the pack's first tab) — the gap
+      // sits right after that tab, so the finding card opens where the fix
+      // belongs.
+      const precedingChapters = Array.from(chapterToTabs.keys())
+        .filter(existing => existing < chapter)
+        .sort((a, b) => b - a);
+      const anchorTab =
+        precedingChapters.length > 0
+          ? chapterToTabs.get(precedingChapters[0]!)?.[0]
+          : tabs[0];
       anomalies.push(
         buildAnomaly({
           anomalyType: "missing_expected_chapter",
           severity: "error",
-          sourceTabId: null,
-          tabTitle: null,
+          sourceTabId: anchorTab?.sourceTabId ?? null,
+          tabTitle: anchorTab?.tabTitle ?? null,
           chapterNumber: String(chapter),
           relatedSourceTabIds: [],
           message: `ไม่พบหัวข้อบทที่ ${chapter} ใน Episode Pack`,
