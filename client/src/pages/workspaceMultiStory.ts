@@ -74,8 +74,29 @@ export interface StoryEvidence {
   error?: string | null;
 }
 
-export type StoryPackStatus = "published" | "passed" | "needs_fix" | "anomalous" | "not_checked";
+/**
+ * IPE-065: distinguishes "the evidence row is loaded from a successful
+ * server projection" from "the projection has not produced a row (yet)".
+ * A card WITHOUT a row is never treated as a genuine not_checked — it is
+ * either still loading (query in flight for its scope) or unknown
+ * (unavailable: query error / scope never fetched), both fail-closed.
+ */
+export type StoryEvidenceState = "loaded" | "loading" | "unavailable";
 
+export type StoryPackStatus =
+  | "published"
+  | "passed"
+  | "needs_fix"
+  | "anomalous"
+  | "not_checked"
+  | "loading"
+  | "unknown";
+
+/**
+ * IPE-065: success-path status mapping — UNCHANGED. Only a loaded evidence
+ * row may map to published/passed/needs_fix/anomalous/not_checked; a query
+ * error inside the row itself keeps the anomalous (fail-closed) branch.
+ */
 export function derivePackStatus(evidence: StoryEvidence | null | undefined): StoryPackStatus {
   if (!evidence) return "not_checked";
   if (evidence.available === false) return "anomalous";
@@ -85,12 +106,29 @@ export function derivePackStatus(evidence: StoryEvidence | null | undefined): St
   return "not_checked";
 }
 
+/**
+ * IPE-065: card-level status — wraps the success-path mapper with the
+ * progressive-loading contract. Without a loaded evidence row the status is
+ * neutral (loading/unknown) and NEVER a positive/checked state; an absent
+ * evidenceState signal is treated as unavailable (fail closed), never PASS.
+ */
+export function derivePackCardStatus(card: {
+  evidence?: StoryEvidence | null;
+  evidenceState?: StoryEvidenceState;
+}): StoryPackStatus {
+  if (card.evidence) return derivePackStatus(card.evidence);
+  if (card.evidenceState === "loading") return "loading";
+  return "unknown";
+}
+
 export const STORY_PACK_STATUS_LABEL: Record<StoryPackStatus, string> = {
   published: "ลงแล้ว",
   passed: "ผ่าน",
   needs_fix: "ต้องแก้",
   anomalous: "ผิดปกติ",
   not_checked: "ยังไม่ตรวจ",
+  loading: "กำลังโหลด",
+  unknown: "ไม่ทราบสถานะ",
 };
 
 export interface StoryPackSummary {
@@ -99,11 +137,14 @@ export interface StoryPackSummary {
   passed: number;
   needsFix: number;
   anomalous: number;
+  /** Success-path only: the row loaded and the checker genuinely never ran. */
   notChecked: number;
+  /** IPE-065: neutral bucket — no loaded row (loading or unavailable). */
+  unknown: number;
 }
 
 export function summarizeStoryPacks(
-  cards: Array<{ evidence: StoryEvidence | null }>
+  cards: Array<{ evidence?: StoryEvidence | null; evidenceState?: StoryEvidenceState }>
 ): StoryPackSummary {
   const summary: StoryPackSummary = {
     total: cards.length,
@@ -112,9 +153,10 @@ export function summarizeStoryPacks(
     needsFix: 0,
     anomalous: 0,
     notChecked: 0,
+    unknown: 0,
   };
   for (const card of cards) {
-    switch (derivePackStatus(card.evidence)) {
+    switch (derivePackCardStatus(card)) {
       case "published":
         summary.published += 1;
         break;
@@ -127,8 +169,12 @@ export function summarizeStoryPacks(
       case "anomalous":
         summary.anomalous += 1;
         break;
-      default:
+      case "not_checked":
         summary.notChecked += 1;
+        break;
+      default:
+        // loading/unknown — neutral, never counted toward any checked state.
+        summary.unknown += 1;
     }
   }
   return summary;
@@ -149,9 +195,343 @@ export function storyOverallStatus(summary: StoryPackSummary): StoryOverallStatu
   if (summary.total === 0) return "in_progress";
   if (summary.anomalous > 0) return "anomalous";
   if (summary.needsFix > 0) return "needs_fix";
+  // IPE-065: unknown/loading packs keep the story neutral in-progress — an
+  // unloaded or unavailable projection can never roll up to passed/published.
+  if (summary.unknown > 0) return "in_progress";
   if (summary.notChecked > 0) return "in_progress";
   if (summary.published === summary.total) return "published";
   return "passed";
+}
+
+/**
+ * IPE-065R1 (P2): the story-card footer must never say "ผ่าน" while any pack's
+ * status projection is still loading/unavailable — a genuine PASS/PUBLISHED
+ * line requires the rollup to BE passed/published with zero neutral packs.
+ */
+export function storyOverviewFooterLine(input: {
+  focused: boolean;
+  summary: StoryPackSummary;
+  overall: StoryOverallStatus;
+}): string {
+  if (input.focused) return "กำลังทำงานอยู่ — state ของเรื่องนี้ถูกจำไว้";
+  if (input.summary.needsFix + input.summary.anomalous > 0) {
+    return `มีงานรอแก้ ${input.summary.needsFix + input.summary.anomalous} แพ็ก`;
+  }
+  if (input.summary.unknown > 0) return `รอสถานะ ${input.summary.unknown} แพ็ก`;
+  if (input.summary.notChecked > 0) return `ยังไม่ตรวจ ${input.summary.notChecked} แพ็ก`;
+  if (input.overall === "published") return STORY_PACK_STATUS_LABEL.published;
+  if (input.overall === "passed") return STORY_PACK_STATUS_LABEL.passed;
+  return "กำลังดำเนินการ";
+}
+
+// ---------------------------------------------------------------------------
+// IPE-065R2 — invalidation tombstone fence (pure, testable).
+//
+// Once an evidence-changing mutation succeeds for workItem X, NO evidence row
+// obtained before that mutation may become authoritative again — even when
+// X's story is inactive, an old request finishes late, React Query still
+// holds fresh cached data under staleTime, or the post-mutation refetch
+// fails. The fence is a per-workItemId tombstone set; the generic cache merge
+// skips tombstoned ids, scope activation with tombstoned ids forces a network
+// reconciliation, and only a SUCCESSFUL post-fence fetch that RETURNS the id
+// may merge the fresh row and release the tombstone.
+// ---------------------------------------------------------------------------
+
+export interface EvidenceRowLike {
+  workItemId?: number | null;
+}
+
+function evidenceRowId(row: EvidenceRowLike): number | null {
+  const id = Number(row?.workItemId);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * Generic cache merge behind the fence: rows whose workItemId is tombstoned
+ * are NEVER merged (their cached values predate a mutation), while unrelated
+ * rows — including other stories' cached evidence — merge normally and are
+ * never removed. Returns null when nothing changed so callers can bail out
+ * of the state update (no render churn).
+ */
+export function mergeEvidenceRowsSkippingInvalidated<TRow extends EvidenceRowLike>(
+  current: ReadonlyMap<number, TRow>,
+  queryRows: readonly TRow[] | null | undefined,
+  invalidatedIds: ReadonlySet<number>
+): Map<number, TRow> | null {
+  if (!queryRows?.length) return null;
+  let next: Map<number, TRow> | null = null;
+  for (const row of queryRows) {
+    const id = evidenceRowId(row);
+    if (id == null || invalidatedIds.has(id)) continue;
+    if (!next) next = new Map(current);
+    next.set(id, row);
+  }
+  return next;
+}
+
+/**
+ * Tombstoned ids present in a POST-fence successful fetch result — exactly
+ * those may be merged as fresh server authority and released from the fence.
+ * An id absent from the result keeps its tombstone (fail closed).
+ */
+export function reconcilableEvidenceIds(
+  invalidatedIds: ReadonlySet<number>,
+  queryRows: readonly EvidenceRowLike[] | null | undefined
+): number[] {
+  if (!invalidatedIds.size || !queryRows?.length) return [];
+  const present: number[] = [];
+  for (const row of queryRows) {
+    const id = evidenceRowId(row);
+    if (id != null && invalidatedIds.has(id)) present.push(id);
+  }
+  return present;
+}
+
+/**
+ * Whether an activated scope contains tombstoned ids — staleTime must not
+ * suppress reconciliation for those.
+ */
+export function scopeNeedsReconciliation(
+  scopeIds: readonly number[],
+  invalidatedIds: ReadonlySet<number>
+): boolean {
+  return scopeIds.some((id) => invalidatedIds.has(id));
+}
+
+// ---------------------------------------------------------------------------
+// IPE-065R3 — generation-bound reconciliation authority.
+//
+// A wall-clock "data completed after invalidation" comparison is NOT a
+// freshness authority (a pre-mutation request may complete after the
+// mutation). Freshness is: EXPLICIT PER-WORKITEM INVALIDATION GENERATION +
+// an explicit reconciliation request whose captured generation snapshot still
+// matches at completion. Completion timestamps and React Query `.data`
+// references are never authority.
+// ---------------------------------------------------------------------------
+
+/**
+ * Monotonic per-workItem generation bump on every evidence-changing
+ * invalidation of that id.
+ */
+export function bumpEvidenceGenerations(
+  generations: ReadonlyMap<number, number>,
+  ids: readonly number[]
+): Map<number, number> {
+  const next = new Map(generations);
+  for (const id of ids) {
+    next.set(id, (next.get(id) ?? 0) + 1);
+  }
+  return next;
+}
+
+/** Snapshot the captured generations for the reconciliation targets. */
+export function captureEvidenceGenerations(
+  generations: ReadonlyMap<number, number>,
+  ids: readonly number[]
+): Map<number, number> {
+  const snapshot = new Map<number, number>();
+  for (const id of ids) {
+    snapshot.set(id, generations.get(id) ?? 0);
+  }
+  return snapshot;
+}
+
+/**
+ * Which tombstoned target ids may be reconciled by a successful reconciliation
+ * response, under the generation fence:
+ * 1. the id was one of the captured targets,
+ * 2. its CURRENT generation still equals the captured generation (no newer
+ *    mutation happened while the request was in flight),
+ * 3. it is still tombstoned,
+ * 4. the fresh result actually contains it.
+ * Everything else — including a generation-bumped id — is rejected: its row
+ * is not applied and its (newer) tombstone is not cleared.
+ */
+export function acceptedReconciliationIds(
+  capturedGenerations: ReadonlyMap<number, number>,
+  currentGenerations: ReadonlyMap<number, number>,
+  stillInvalidated: ReadonlySet<number>,
+  freshRows: readonly EvidenceRowLike[] | null | undefined
+): number[] {
+  if (!capturedGenerations.size || !freshRows?.length) return [];
+  const present = new Set<number>();
+  for (const row of freshRows) {
+    const id = evidenceRowId(row);
+    if (id != null) present.add(id);
+  }
+  const accepted: number[] = [];
+  for (const [id, capturedGeneration] of Array.from(capturedGenerations.entries())) {
+    if (currentGenerations.get(id) !== capturedGeneration) continue;
+    if (!stillInvalidated.has(id)) continue;
+    if (!present.has(id)) continue;
+    accepted.push(id);
+  }
+  return accepted;
+}
+
+/** The fresh rows belonging exactly to the accepted reconciliation ids. */
+export function acceptedReconciliationRows<TRow extends EvidenceRowLike>(
+  freshRows: readonly TRow[] | null | undefined,
+  acceptedIds: ReadonlySet<number>
+): TRow[] {
+  if (!freshRows?.length || !acceptedIds.size) return [];
+  return freshRows.filter((row) => {
+    const id = evidenceRowId(row);
+    return id != null && acceptedIds.has(id);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// IPE-065R4 — workspace ABA lifecycle epoch.
+//
+// workspaceId + reused generation value do NOT prove the same workspace
+// LIFECYCLE (leave A → return A → generation restarts from 1). Every
+// workspace identity transition rotates a monotonic EPOCH that never resets;
+// a reconciliation captures the epoch at creation and its response is
+// accepted only when BOTH the workspace id AND the epoch still match.
+// ---------------------------------------------------------------------------
+
+export interface EvidenceWorkspaceIdentity {
+  workspaceId: number | null | undefined;
+  epoch: number;
+}
+
+/**
+ * Deterministic epoch rotation: the same workspace keeps its identity object
+ * (and epoch); ANY workspace identity change advances the epoch by exactly
+ * one, synchronously with the rendered selection — an async acceptance can
+ * never observe a returned-to-A workspace carrying A's old epoch.
+ */
+export function nextEvidenceWorkspaceIdentity(
+  current: EvidenceWorkspaceIdentity,
+  workspaceId: number | null | undefined
+): EvidenceWorkspaceIdentity {
+  if (current.workspaceId === workspaceId) return current;
+  return { workspaceId, epoch: current.epoch + 1 };
+}
+
+/** Lifecycle acceptance: id AND epoch must both match — A(epoch1) != A(epoch3). */
+export function sameEvidenceWorkspaceLifecycle(
+  identity: EvidenceWorkspaceIdentity,
+  workspaceId: number,
+  epoch: number
+): boolean {
+  return identity.workspaceId === workspaceId && identity.epoch === epoch;
+}
+
+/**
+ * Coalescing identity — the epoch is part of the key, so an old lifecycle can
+ * never collide with a new one merely because generation counters restarted:
+ * 7@1:101@1 != 7@3:101@1.
+ */
+export function buildEvidenceReconciliationKey(
+  workspaceId: number,
+  epoch: number,
+  targets: readonly number[],
+  generations: ReadonlyMap<number, number>
+): string {
+  const pairs = targets.map((id) => `${id}@${generations.get(id) ?? 0}`);
+  return `${workspaceId}@${epoch}:${pairs.join(",")}`;
+}
+
+/**
+ * Ownership-safe registry cleanup: a settling promise may remove its registry
+ * entry ONLY while the registry still points at THAT exact promise — an old
+ * promise settling late must never delete a newer reconciliation's entry.
+ * Returns true when the entry was removed.
+ */
+export function releaseOwnedReconciliationEntry(
+  registry: Map<string, Promise<unknown>>,
+  key: string,
+  promise: Promise<unknown>
+): boolean {
+  if (registry.get(key) !== promise) return false;
+  registry.delete(key);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// IPE-065R5 — lifecycle-tagged evidence state.
+//
+// The workspace-transition cleanup must never erase CURRENT-lifecycle work:
+// a delayed passive reset running after a new-lifecycle mutation once wiped
+// fresh tombstones/generations and let staleTime-fresh cached PASS become
+// authoritative again. All mutable evidence authority now lives in ONE
+// container tagged with its workspace epoch; the container is rotated
+// SYNCHRONOUSLY with the workspace identity (so old rows are non-
+// authoritative from the very first new-lifecycle render), and the delayed
+// cleanup is reduced to a lifecycle-selective registry prune that cannot
+// touch current-epoch entries.
+// ---------------------------------------------------------------------------
+
+export interface EvidenceLifecycleState {
+  epoch: number;
+  rows: Map<number, any>;
+  invalidatedIds: Set<number>;
+  generations: Map<number, number>;
+}
+
+/**
+ * Lifecycle rotation: the state tagged with the CURRENT epoch is returned
+ * unchanged (new-lifecycle work survives); anything from an older epoch is
+ * replaced by a fresh empty container for the new epoch. This replaces the
+ * old unconditional passive reset — it runs synchronously with the identity
+ * rotation, leaving no delayed authority that could wipe newer work.
+ */
+export function rotateEvidenceLifecycleState(
+  state: EvidenceLifecycleState,
+  epoch: number
+): EvidenceLifecycleState {
+  if (state.epoch === epoch) return state;
+  return { epoch, rows: new Map(), invalidatedIds: new Set(), generations: new Map() };
+}
+
+/**
+ * Record evidence-invalidating mutations that completed for a workspace the
+ * operator has ALREADY left — those stale identities stay fenced when that
+ * workspace is re-entered (they seed the new lifecycle's tombstones).
+ */
+export function recordInvalidEvidenceForWorkspace(
+  byWorkspace: Map<number, Set<number>>,
+  workspaceId: number,
+  ids: readonly number[]
+): Map<number, Set<number>> {
+  if (!ids.length) return byWorkspace;
+  const bucket = new Set(byWorkspace.get(workspaceId) ?? []);
+  for (const id of ids) bucket.add(id);
+  byWorkspace.set(workspaceId, bucket);
+  return byWorkspace;
+}
+
+/** Tombstones recorded for a workspace while it was away (empty if none). */
+export function invalidatedIdsForWorkspace(
+  byWorkspace: Map<number, Set<number>>,
+  workspaceId: number
+): Set<number> {
+  return byWorkspace.get(workspaceId) ?? new Set();
+}
+
+/**
+ * Lifecycle-selective registry prune: drop coalescing entries whose key does
+ * not belong to the CURRENT lifecycle (`workspaceId@epoch:...`). Current-
+ * lifecycle entries (registered by a fast mutation racing the transition)
+ * SURVIVE; old-epoch and other-workspace entries cannot coalesce with new
+ * requests and are removed. Returns the number of removed entries.
+ */
+export function pruneEvidenceRegistryForLifecycle(
+  registry: Map<string, Promise<unknown>>,
+  workspaceId: number,
+  epoch: number
+): number {
+  const currentPrefix = `${workspaceId}@${epoch}:`;
+  let removed = 0;
+  for (const key of Array.from(registry.keys())) {
+    if (!key.startsWith(currentPrefix)) {
+      registry.delete(key);
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(

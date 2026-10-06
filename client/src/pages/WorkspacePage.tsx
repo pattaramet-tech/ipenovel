@@ -14,15 +14,31 @@ import { WorkspaceReviewSummaryPanel } from "./WorkspaceReviewSummaryPanel";
 import { WorkspaceActionBar } from "./WorkspaceActionBar";
 import { WorkspaceFindingActions } from "./WorkspaceFindingActions";
 import {
+  acceptedReconciliationIds,
+  acceptedReconciliationRows,
+  buildEvidenceReconciliationKey,
+  bumpEvidenceGenerations,
+  captureEvidenceGenerations,
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
   groupStoriesByNovel,
+  mergeEvidenceRowsSkippingInvalidated,
+  invalidatedIdsForWorkspace,
+  nextEvidenceWorkspaceIdentity,
+  pruneEvidenceRegistryForLifecycle,
+  recordInvalidEvidenceForWorkspace,
+  releaseOwnedReconciliationEntry,
   resolveStoryUiState,
+  rotateEvidenceLifecycleState,
+  sameEvidenceWorkspaceLifecycle,
+  scopeNeedsReconciliation,
   sortPacksByEpisode,
   storyKeyFor,
   storyOverallStatus,
   summarizeStoryPacks,
   updateStoryUiState,
+  type EvidenceLifecycleState,
+  type EvidenceWorkspaceIdentity,
   type StoryPackTab,
   type StoryUiState,
 } from "./workspaceMultiStory";
@@ -273,9 +289,15 @@ export default function WorkspacePage() {
     { workspaceId: selectedWorkspaceId ?? 0 },
     {
       enabled: isAdmin && Boolean(selectedWorkspaceId),
-      refetchOnMount: "always",
-      refetchOnWindowFocus: "always",
-      refetchInterval: 30_000,
+      // IPE-065 (D): event-driven refresh — the unconditional 30s heavy
+      // polling and the forced refetch on every mount/focus are gone. With a
+      // 30s staleTime, remounts and window focus reuse recent data and
+      // refetch only when the cached board is older; every board/evidence
+      // mutation already refetches through its own onSuccess, so an idle
+      // workspace issues no background heavy refresh at all.
+      staleTime: 30_000,
+      refetchOnMount: true,
+      refetchOnWindowFocus: true,
       refetchIntervalInBackground: false,
     }
   );
@@ -283,10 +305,283 @@ export default function WorkspacePage() {
     .flatMap((column: any) => column.cards ?? [])
     .map((card: any) => card.workItemId)
     .filter((id: any): id is number => Number.isInteger(id) && id > 0);
-  const editorialEvidenceStatuses = trpc.workspace.editorial.evidenceStatuses.useQuery(
-    { workspaceId: selectedWorkspaceId ?? 0, workItemIds: editorialEvidenceWorkItemIds },
-    { enabled: isAdmin && Boolean(selectedWorkspaceId) && editorialEvidenceWorkItemIds.length > 0, retry: false }
+  // IPE-065 (C): the heavyweight evidence projection is SCOPED to the active
+  // story's packs instead of every work item on the board. The scope is held
+  // in state (stable reference while the story's pack set is unchanged) so
+  // the query key only changes when the story actually changes — switching
+  // stories fetches that story's projection, and React Query's cache keeps
+  // previously loaded stories (staleTime below avoids needless refires).
+  const [activeEvidenceScopeIds, setActiveEvidenceScopeIds] = useState<number[]>([]);
+  const activeEvidenceScopeIdsKey = activeEvidenceScopeIds.join(",");
+  const activeEvidenceScopeSet = useMemo(
+    () => new Set(activeEvidenceScopeIds),
+    [activeEvidenceScopeIdsKey]
   );
+  const editorialEvidenceStatuses = trpc.workspace.editorial.evidenceStatuses.useQuery(
+    { workspaceId: selectedWorkspaceId ?? 0, workItemIds: activeEvidenceScopeIds },
+    {
+      enabled: isAdmin && Boolean(selectedWorkspaceId) && activeEvidenceScopeIds.length > 0,
+      retry: false,
+      staleTime: 30_000,
+      refetchIntervalInBackground: false,
+    }
+  );
+  // IPE-065R5: ALL mutable evidence authority lives in ONE lifecycle-tagged
+  // container (epoch + rows + tombstones + generations). It is rotated
+  // SYNCHRONOUSLY with the workspace identity below — the old unconditional
+  // passive reset effect is GONE, because a delayed reset running after a
+  // new-lifecycle mutation erased fresh tombstones/generations and let
+  // staleTime-fresh cached PASS become authoritative again. React state only
+  // mirrors a revision counter that triggers re-renders when the container
+  // mutates.
+  const evidenceLifecycleRef = useRef<EvidenceLifecycleState>({
+    epoch: 0,
+    rows: new Map(),
+    invalidatedIds: new Set(),
+    generations: new Map(),
+  });
+  const [evidenceRevision, setEvidenceRevision] = useState(0);
+  const bumpEvidenceRevision = () => setEvidenceRevision((revision) => revision + 1);
+  // IPE-065R5 (§12): stale identities from mutations that completed for a
+  // workspace the operator already left — seeded as tombstones when that
+  // workspace is re-entered, so its cached evidence cannot resurrect.
+  const invalidEvidenceByWorkspaceRef = useRef(new Map<number, Set<number>>());
+  const selectedWorkspaceIdRef = useRef(selectedWorkspaceId);
+  selectedWorkspaceIdRef.current = selectedWorkspaceId;
+  // IPE-065R4: workspace LIFECYCLE identity — a monotonic epoch rotated
+  // SYNCHRONOUSLY during render whenever the selected workspace changes, so
+  // the epoch can never lag behind the workspace identity visible to async
+  // acceptance (no render/effect gap: A→B→A makes A(epoch1) != A(epoch3)
+  // even though generation counters restart). The epoch itself never resets.
+  const evidenceWorkspaceIdentityRef = useRef<EvidenceWorkspaceIdentity>({
+    workspaceId: selectedWorkspaceId,
+    epoch: 0,
+  });
+  evidenceWorkspaceIdentityRef.current = nextEvidenceWorkspaceIdentity(
+    evidenceWorkspaceIdentityRef.current,
+    selectedWorkspaceId
+  );
+  // IPE-065R5 (§4/§8): rotate the lifecycle container in the same
+  // synchronous pass — from the FIRST new-lifecycle render, old-epoch rows
+  // are non-authoritative (the container is fresh/empty) and old
+  // tombstones/generations cannot contaminate the new lifecycle. Tombstones
+  // recorded for THIS workspace by mutations that completed while it was
+  // away are re-seeded so their stale evidence stays fenced.
+  evidenceLifecycleRef.current = rotateEvidenceLifecycleState(
+    evidenceLifecycleRef.current,
+    evidenceWorkspaceIdentityRef.current.epoch
+  );
+  if (selectedWorkspaceId != null) {
+    const returnedInvalidations = invalidatedIdsForWorkspace(
+      invalidEvidenceByWorkspaceRef.current,
+      selectedWorkspaceId
+    );
+    if (returnedInvalidations.size) {
+      for (const id of Array.from(returnedInvalidations)) {
+        evidenceLifecycleRef.current.invalidatedIds.add(id);
+      }
+      invalidEvidenceByWorkspaceRef.current.delete(selectedWorkspaceId);
+    }
+  }
+  // IPE-065R3/R4: coalescing registry — at most one in-flight reconciliation
+  // per workspace LIFECYCLE (id@epoch) + scope + generation-snapshot identity.
+  const evidenceReconciliationInFlightRef = useRef(new Map<string, Promise<void>>());
+  // IPE-065R5 (§10/§11): lifecycle-selective registry prune instead of a
+  // blind delayed .clear() — entries of the CURRENT lifecycle (a fast
+  // mutation racing the transition) survive; old-epoch and other-workspace
+  // entries are dropped synchronously at rotation.
+  pruneEvidenceRegistryForLifecycle(
+    evidenceReconciliationInFlightRef.current,
+    selectedWorkspaceId ?? -1,
+    evidenceWorkspaceIdentityRef.current.epoch
+  );
+  // IPE-065R3/R4 (§5): THE centralized reconciliation authority. It captures
+  // the workspace lifecycle (id + epoch) and the generation snapshot BEFORE
+  // the request, starts the explicit network fetch after that capture
+  // (cancelRefetch supersedes any in-flight request for the scoped query),
+  // and consumes the refetch RESULT DIRECTLY — never dataUpdatedAt, never a
+  // React effect noticing `.data`, never a structural reference change
+  // (structural sharing cannot block a tombstone release).
+  const reconcileInvalidatedEvidence = (scopeIds: readonly number[]) => {
+    const capturedWorkspaceId = selectedWorkspaceId;
+    if (!capturedWorkspaceId) return Promise.resolve();
+    // IPE-065R4 (§4): capture BOTH the workspace id and its lifecycle epoch —
+    // a response is authoritative only while the page still lives in that
+    // exact lifecycle (A(epoch1) != A(epoch3)).
+    const capturedIdentity = evidenceWorkspaceIdentityRef.current;
+    const targets = scopeIds.filter((id) =>
+      evidenceLifecycleRef.current.invalidatedIds.has(id)
+    );
+    if (!targets.length) return Promise.resolve();
+    const captured = captureEvidenceGenerations(
+      evidenceLifecycleRef.current.generations,
+      targets
+    );
+    const key = buildEvidenceReconciliationKey(
+      capturedWorkspaceId,
+      capturedIdentity.epoch,
+      targets,
+      captured
+    );
+    const inFlight = evidenceReconciliationInFlightRef.current.get(key);
+    if (inFlight) return inFlight;
+    // IPE-065R4 (§7): the cleanup closure references `promise` — declare it
+    // before assignment so the ownership check reads the settled instance.
+    let promise!: Promise<void>;
+    promise = (async () => {
+      try {
+        const result = await editorialEvidenceStatuses.refetch({ cancelRefetch: true });
+        // Lifecycle fence: the response is authoritative only while the page
+        // still lives in the captured workspace AND the captured epoch — a
+        // returned-to-A workspace with a restarted lifecycle is a DIFFERENT
+        // lifecycle and rejects the old response outright.
+        if (
+          !sameEvidenceWorkspaceLifecycle(
+            evidenceWorkspaceIdentityRef.current,
+            capturedWorkspaceId,
+            capturedIdentity.epoch
+          )
+        ) {
+          return;
+        }
+        const freshRows = result.data;
+        // Unsuccessful/empty result → keep every tombstone (fail closed).
+        if (!Array.isArray(freshRows) || !freshRows.length) return;
+        // Re-read the CURRENT lifecycle container — an epoch rotation during
+        // the request re-homes all authority, and the lifecycle fence above
+        // already rejected cross-epoch responses.
+        const lifecycle = evidenceLifecycleRef.current;
+        const accepted = acceptedReconciliationIds(
+          captured,
+          lifecycle.generations,
+          lifecycle.invalidatedIds,
+          freshRows
+        );
+        if (!accepted.length) return;
+        const acceptedSet = new Set(accepted);
+        const rows = acceptedReconciliationRows(freshRows, acceptedSet);
+        // Merge the fresh rows and release their tombstones against the
+        // container (atomically, before the revision bump re-renders).
+        for (const row of rows) {
+          const rowWorkItemId = Number(row.workItemId);
+          if (Number.isInteger(rowWorkItemId) && rowWorkItemId > 0) {
+            lifecycle.rows.set(rowWorkItemId, row);
+          }
+        }
+        for (const id of accepted) {
+          lifecycle.invalidatedIds.delete(id);
+        }
+        bumpEvidenceRevision();
+      } catch {
+        // Failed reconciliation keeps every tombstone — the UI stays
+        // fail-closed (loading/unknown); the next legitimate scope activation
+        // retries. The pre-mutation PASS is never a fallback.
+      } finally {
+        // IPE-065R4 (§6): ownership-safe cleanup — remove the registry entry
+        // only while it still points at THIS promise; an old lifecycle's
+        // promise settling late must never delete a newer reconciliation's
+        // coalescing entry.
+        releaseOwnedReconciliationEntry(
+          evidenceReconciliationInFlightRef.current,
+          key,
+          promise
+        );
+      }
+    })();
+    evidenceReconciliationInFlightRef.current.set(key, promise);
+    return promise;
+  };
+  // IPE-065R1/R3 (P1): ONE centralized invalidation authority for every
+  // evidence-changing mutation — deterministic work only: (1) normalize the
+  // affected ids, (2) bump each id's invalidation generation, (3) tombstone
+  // them, (4) prune their accumulated rows, (5) start the explicit
+  // generation-bound reconciliation when an affected id belongs to the
+  // current active scope. No timestamps, no timers.
+  const invalidateEvidenceRows = (
+    workItemIds: ReadonlyArray<number | null | undefined>,
+    options?: { refetch?: boolean; workspaceId?: number | null }
+  ) => {
+    const ids = Array.from(
+      new Set(
+        workItemIds.filter(
+          (id): id is number => Number.isInteger(id) && Number(id) > 0
+        )
+      )
+    );
+    if (!ids.length) return;
+    // IPE-065R5 (§12): a mutation belonging to a workspace the operator has
+    // ALREADY left must fence its stale identity THERE — never touch the
+    // current lifecycle's container. The recorded ids are re-seeded as
+    // tombstones when that workspace is re-entered.
+    const targetWorkspaceId = options?.workspaceId;
+    if (
+      targetWorkspaceId != null &&
+      targetWorkspaceId !== selectedWorkspaceIdRef.current
+    ) {
+      recordInvalidEvidenceForWorkspace(
+        invalidEvidenceByWorkspaceRef.current,
+        targetWorkspaceId,
+        ids
+      );
+      return;
+    }
+    const lifecycle = evidenceLifecycleRef.current;
+    lifecycle.generations = bumpEvidenceGenerations(lifecycle.generations, ids);
+    for (const id of ids) {
+      lifecycle.invalidatedIds.add(id);
+    }
+    for (const id of ids) {
+      lifecycle.rows.delete(id);
+    }
+    bumpEvidenceRevision();
+    if (options?.refetch !== false && ids.some((id) => activeEvidenceScopeSet.has(id))) {
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
+    }
+  };
+  // IPE-065R3 (§4): generic query/cache observation is NEVER a freshness
+  // authority — no completion-timestamp comparison exists. The merge is
+  // ALWAYS fenced: non-tombstoned ids merge normally (progressive cache
+  // behavior for untouched evidence), tombstoned ids NEVER merge here, and
+  // tombstones are NEVER cleared by this path — only the explicit
+  // generation-bound reconciliation above may release them.
+  useEffect(() => {
+    const data = editorialEvidenceStatuses.data;
+    if (!Array.isArray(data) || !data.length) return;
+    const lifecycle = evidenceLifecycleRef.current;
+    const merged = mergeEvidenceRowsSkippingInvalidated(
+      lifecycle.rows,
+      data,
+      lifecycle.invalidatedIds
+    );
+    if (merged) {
+      lifecycle.rows = merged;
+      bumpEvidenceRevision();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorialEvidenceStatuses.data]);
+  // IPE-065R3 (§12): the board is server truth — once a successful board
+  // fetch proves a workItem no longer exists (e.g. the pack was removed),
+  // its tombstone/generation identity can be dropped deterministically (the
+  // evidence row was already pruned and no card references it). Prevents
+  // unbounded fence growth during the page's lifetime while keeping any
+  // still-present pack's fence fully intact.
+  useEffect(() => {
+    if (!editorialBoard.isSuccess) return;
+    const present = new Set<number>(editorialEvidenceWorkItemIds);
+    const lifecycle = evidenceLifecycleRef.current;
+    let changed = false;
+    for (const id of Array.from(lifecycle.invalidatedIds)) {
+      if (!present.has(id)) {
+        lifecycle.invalidatedIds.delete(id);
+        changed = true;
+      }
+    }
+    for (const id of Array.from(lifecycle.generations.keys())) {
+      if (!present.has(id)) lifecycle.generations.delete(id);
+    }
+    if (changed) bumpEvidenceRevision();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorialBoard.data]);
   const editorialSourceDraft = trpc.workspace.editorial.sourceDraft.useQuery(
     {
       workspaceId: selectedWorkspaceId ?? 0,
@@ -387,12 +682,26 @@ export default function WorkspacePage() {
     ensureEditorialBoard.mutate({ workspaceId });
   }, [editorialBoard.data, editorialBoard.isLoading, isAdmin, selectedWorkspaceId]);
 
+  // IPE-065R3 (§11): board/approval refresh only — the evidence projection is
+  // reconciled EXCLUSIVELY through the generation-bound authority, never by an
+  // ordinary unbound refetch (which could supersede an in-flight
+  // reconciliation request).
   const refreshBulkEditorial = async () => {
-    await Promise.all([editorialBoard.refetch(), editorialEvidenceStatuses.refetch(), editorialApproval.refetch()]);
+    await Promise.all([editorialBoard.refetch(), editorialApproval.refetch()]);
   };
   const bulkApproveEditorialDrafts = trpc.workspace.editorial.bulkApproveDrafts.useMutation({
-    onSuccess: async (results) => {
+    onSuccess: async (results, variables) => {
+      // IPE-065R1 (P1): prune the affected rows first — refreshBulkEditorial
+      // then refetches the scoped projection (cancelling any pre-mutation
+      // in-flight request) so only fresh server evidence is re-merged.
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false, workspaceId: variables.workspaceId }
+      );
       await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
       const failed = results.filter((result) => !result.ok);
       const firstError = failed.find((result: any) => result.error)?.error;
       toast[failed.length ? "error" : "success"](
@@ -402,12 +711,30 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const bulkStageEditorialDrafts = trpc.workspace.editorial.bulkStageDrafts.useMutation({
-    onSuccess: async (results) => { await refreshBulkEditorial(); const failed = results.filter((result) => !result.ok); toast[failed.length ? "error" : "success"](`Stage ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`); },
+    onSuccess: async (results, variables) => {
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false, workspaceId: variables.workspaceId }
+      );
+      await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
+      const failed = results.filter((result) => !result.ok);
+      toast[failed.length ? "error" : "success"](`Stage ${results.length - failed.length}/${results.length} ตอน${failed.length ? ` · ไม่ผ่าน ${failed.length}` : ""}`);
+    },
     onError: (error) => toast.error(error.message),
   });
   const bulkRunEditorialChecker = trpc.workspace.editorial.bulkRunChecker.useMutation({
-    onSuccess: async (results) => {
+    onSuccess: async (results, variables) => {
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false, workspaceId: variables.workspaceId }
+      );
       await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
       // IPE-064R4B (P2): the open pack's finding card / chapter issue counts /
       // stale indicator derive from this query — refresh it after bulk Check
       // or they keep showing the previous run.
@@ -421,8 +748,15 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const bulkRequestEditorialPublish = trpc.workspace.editorial.bulkRequestPublish.useMutation({
-    onSuccess: async (results) => {
+    onSuccess: async (results, variables) => {
+      invalidateEvidenceRows(
+        results.map((result: any) => result.workItemId),
+        { refetch: false, workspaceId: variables.workspaceId }
+      );
       await refreshBulkEditorial();
+      // IPE-065R3 (§11): the affected active-scope ids reconcile EXCLUSIVELY
+      // through the generation-bound authority — never an unbound refetch.
+      void reconcileInvalidatedEvidence(activeEvidenceScopeIds).catch(() => undefined);
       const failed = results.filter((result) => !result.ok);
       const firstError = failed.find((result: any) => result.error)?.error;
       toast[failed.length ? "error" : "success"](
@@ -432,14 +766,19 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const updateEditorialEpisode = trpc.workspace.editorial.updateEpisode.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): a range/episodeNumber change can flip the published
+      // fallback mapping — the old evidence row must not stay current.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       await editorialBoard.refetch();
       toast.success("แก้ไข Episode Pack แล้ว");
     },
     onError: (error) => toast.error(error.message),
   });
   const updateEditorialEpisodeSale = trpc.workspace.editorial.updateEpisodeSale.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): sale validity feeds publish readiness — fail closed.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       await editorialBoard.refetch();
       toast.success("อัปเดตการขายของ Episode Pack แล้ว");
     },
@@ -448,6 +787,9 @@ export default function WorkspacePage() {
   const removeEditorialEpisode = trpc.workspace.editorial.removeEpisode.useMutation({
     onSuccess: async (_result, variables) => {
       if (selectedSourceWorkItemId === variables.workItemId) setSelectedSourceWorkItemId(undefined);
+      // IPE-065R1 (§5): the removed pack must not linger in the accumulated
+      // evidence cache — prune its row without a needless scoped refetch.
+      invalidateEvidenceRows([variables.workItemId], { refetch: false, workspaceId: variables.workspaceId });
       await editorialBoard.refetch();
       toast.success("นำ Episode Pack ออกจาก Workspace แล้ว");
     },
@@ -467,7 +809,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const runEditorialForeignChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): the run changed checkerRan/checker — the previous row
+      // (possibly a PASS from the earlier draft) must stop being current now.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       await Promise.all([
         editorialForeignChecker.refetch(),
         editorialApproval.refetch(),
@@ -519,6 +864,11 @@ export default function WorkspacePage() {
 
   const editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation({
     onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): the save created a NEW draft revision — every QC/
+      // approval/stage fact in the previous evidence row belongs to the OLD
+      // revision and must stop being presented immediately (the background
+      // recheck lands later with fresh evidence).
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       const savedChapterTarget =
         variables.command.kind === "replace_tab" ? chapterEditorTarget : undefined;
       // Controlled canvas history never crosses a server save revision.
@@ -620,15 +970,26 @@ export default function WorkspacePage() {
     ]);
   };
   const excludeEditorialTab = trpc.workspace.editorial.editorExcludeTab.useMutation({
-    onSuccess: async () => { await refreshAfterTabRevision(); toast.success("นำแท็บออกจาก Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่"); },
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): a tab revision invalidates the pack's QC evidence.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
+      await refreshAfterTabRevision();
+      toast.success("นำแท็บออกจาก Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่");
+    },
     onError: (error) => toast.error(error.message),
   });
   const restoreEditorialTab = trpc.workspace.editorial.editorRestoreTab.useMutation({
-    onSuccess: async () => { await refreshAfterTabRevision(); toast.success("คืนแท็บเข้า Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่"); },
+    onSuccess: async (_result, variables) => {
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
+      await refreshAfterTabRevision();
+      toast.success("คืนแท็บเข้า Draft แล้ว — กรุณารัน Checker และ Confirm ใหม่");
+    },
     onError: (error) => toast.error(error.message),
   });
   const undoEditorialEdit = trpc.workspace.editorial.editorUndo.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): undo creates a new draft revision — same stale rule.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       setChapterEditorTarget(undefined);
       setChapterEditorParagraphs([]);
       await Promise.all([
@@ -652,7 +1013,9 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const approveEditorialDraft = trpc.workspace.editorial.approveDraft.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): approval validity changed — refresh the row.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       await editorialApproval.refetch();
       toast.success(
         result.replayed
@@ -663,7 +1026,9 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const stageEditorialEpisode = trpc.workspace.editorial.stageEpisodeDraft.useMutation({
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
+      // IPE-065R1 (P1): staging changes stage/readyToPublish evidence.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       await Promise.all([
         editorialApproval.refetch(),
         editorialBoard.refetch(),
@@ -677,7 +1042,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const resolveEditorialFinding = trpc.workspace.editorial.foreignCheckerResolve.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): resolve/reopen changes the unresolved count that the
+      // checker flag derives from — refresh the row.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       await Promise.all([
         editorialForeignChecker.refetch(),
         editorialApproval.refetch(),
@@ -686,7 +1054,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const allowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): the allow-list changed and a recheck is about to run —
+      // the pre-allow evidence row must stop being current immediately.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       // IPE-064R4B (P2): refetch the cached checker read model FIRST so the
       // exactly-once identity picks up the NEW allow-list hash — otherwise a
       // second quick allow coalesces into the still-running pre-mutation
@@ -718,7 +1089,10 @@ export default function WorkspacePage() {
     onError: (error) => toast.error(error.message),
   });
   const setStructuralConfirmation = trpc.workspace.editorial.structuralConfirmation.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
+      // IPE-065R1 (P1): a structural confirmation can clear a blocking issue
+      // from the QC chain — refresh the row.
+      invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });
       await Promise.all([
         editorialForeignChecker.refetch(),
         editorialApproval.refetch(),
@@ -730,6 +1104,10 @@ export default function WorkspacePage() {
   });
   const unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation({
     onSuccess: async () => {
+      // IPE-065R1 (P1): the unallow has no workItemId in its input — the
+      // recheck runs for the currently selected pack, so its row is the one
+      // that must stop being current.
+      invalidateEvidenceRows([selectedSourceWorkItemId], { workspaceId: selectedWorkspaceId });
       // IPE-064R4B (P2): refetch before the recheck — same allow-list-hash
       // identity rationale as foreignCheckerAllow.
       if (selectedWorkspaceId && selectedSourceWorkItemId) {
@@ -907,18 +1285,33 @@ export default function WorkspacePage() {
   ]);
 
   const editorialColumns = (((editorialBoard.data as any)?.columns as any[] | undefined) ?? []);
-  const editorialEvidenceByWorkItemId = new Map(
-    (((editorialEvidenceStatuses.data as any[]) ?? [])).map((status: any) => [status.workItemId, status])
-  );
+  // IPE-065R5 (§8): rows are read from the LIFECYCLE- tagged container —
+  // rotation replaces it synchronously with the workspace identity, so old
+  // rows can never be authoritative during a render/effect transition gap.
+  const evidenceRowsForRender = evidenceLifecycleRef.current.rows;
   const editorialCards = editorialColumns.flatMap((column: any) =>
     (column.cards ?? [])
       .filter((card: any) => card.workItemType !== "NEW_STORY")
-      .map((card: any) => ({
-        ...card,
-        columnKey: column.key,
-        columnName: column.name,
-        evidence: editorialEvidenceByWorkItemId.get(card.workItemId) ?? null,
-      }))
+      .map((card: any) => {
+        // IPE-065 (B): a card WITHOUT a loaded evidence row is neutral —
+        // "loading" only while the scoped projection is in flight for its
+        // pack, otherwise "unavailable" (other story / query error). The
+        // pack badge derives loading/unknown from this signal and never
+        // presents an unloaded row as not_checked/passed/published.
+        const row = evidenceRowsForRender.get(card.workItemId);
+        const evidenceState: "loaded" | "loading" | "unavailable" = row
+          ? "loaded"
+          : activeEvidenceScopeSet.has(card.workItemId) && editorialEvidenceStatuses.isFetching
+            ? "loading"
+            : "unavailable";
+        return {
+          ...card,
+          columnKey: column.key,
+          columnName: column.name,
+          evidence: row ?? null,
+          evidenceState,
+        };
+      })
   );
   const selectedSourceCard = editorialCards.find(
     (card: any) => card.workItemId === selectedSourceWorkItemId
@@ -1673,6 +2066,35 @@ export default function WorkspacePage() {
     editorialNovelGroups.find(
       (group: any) => storyKeyFor(group.workspaceNovelId, group.novel?.id) === activeStoryKey
     ) ?? null;
+
+  // IPE-065 (C): keep the evidence query scoped to the ACTIVE story's packs.
+  // The scope state only changes when the pack-id set actually changes, so
+  // the query key (and its cache entry per story) is stable across unrelated
+  // re-renders.
+  useEffect(() => {
+    const ids = (activeStoryGroup?.cards ?? [])
+      .map((card: any) => card.workItemId)
+      .filter((id: any): id is number => Number.isInteger(id) && id > 0)
+      .sort((left: number, right: number) => left - right);
+    setActiveEvidenceScopeIds((current) =>
+      current.length === ids.length && current.every((id, index) => id === ids[index])
+        ? current
+        : ids
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStoryKey, activeStoryGroup?.cards.length, editorialBoard.data]);
+
+  // IPE-065R2/R3: scope activation reconciles tombstoned ids even when React
+  // Query still considers cached data fresh — staleTime never overrides the
+  // fence. Activation routes through the centralized generation-bound
+  // reconciliation (no render loop: a successful reconciliation releases the
+  // tombstones, so the next run finds nothing to reconcile; a FAILED one
+  // leaves them and may retry on the next legitimate activation).
+  useEffect(() => {
+    if (!scopeNeedsReconciliation(activeEvidenceScopeIds, evidenceLifecycleRef.current.invalidatedIds)) return;
+    void reconcileInvalidatedEvidence(activeEvidenceScopeIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeEvidenceScopeIds, evidenceRevision]);
 
   // Persist the live pack/chapter/tab/filter into the active story's record.
   useEffect(() => {

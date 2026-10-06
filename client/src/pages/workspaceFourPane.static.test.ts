@@ -76,6 +76,198 @@ describe("IPE-064 — intake separation", () => {
     // The Google Docs bulk behavior is unchanged (rowIndex-based retention).
     expect(intake).toContain("const failedIndexes = new Set(failed.map((result) => result.rowIndex));");
   });
+
+  it("keeps the board event-driven and the evidence projection scoped (IPE-065)", () => {
+    // D: the heavy board query no longer force-refetches on every mount and
+    // focus and has NO unconditional 30s interval — a staleTime window makes
+    // remounts/focus reuse recent data, and mutations refetch via onSuccess.
+    expect(page).not.toContain('refetchOnMount: "always"');
+    expect(page).not.toContain('refetchOnWindowFocus: "always"');
+    expect(page).not.toContain("refetchInterval: 30_000");
+    expect(page).toContain("staleTime: 30_000,");
+    expect(page).toContain("refetchOnMount: true,");
+    expect(page).toContain("refetchOnWindowFocus: true,");
+
+    // C: the evidence projection query is scoped to the ACTIVE story's pack
+    // ids (state-held, stable per story) — not every work item on the board.
+    expect(page).toContain("const [activeEvidenceScopeIds, setActiveEvidenceScopeIds] = useState<number[]>([]);");
+    expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
+    expect(page).toContain("activeEvidenceScopeIds.length > 0");
+    // Rows accumulate per workspace so loaded stories keep their badges;
+    // IPE-065R5: the rows live in the LIFECYCLE-tagged container, rotated
+    // synchronously with the workspace identity (old rows are
+    // non-authoritative from the first new-lifecycle render).
+    expect(page).toContain("const evidenceLifecycleRef = useRef<EvidenceLifecycleState>({");
+    expect(page).toContain("const evidenceRowsForRender = evidenceLifecycleRef.current.rows;");
+    // B: a card without a loaded row is neutral — loading only while its
+    // scoped projection is in flight, otherwise unavailable.
+    expect(page).toContain('const evidenceState: "loaded" | "loading" | "unavailable" = row');
+    expect(page).toContain('activeEvidenceScopeSet.has(card.workItemId) && editorialEvidenceStatuses.isFetching');
+  });
+
+  it("removes a workspace story instantly via cache pruning (IPE-065)", () => {
+    // E: the unlink success path prunes the detail/bindings/board caches
+    // FIRST, toasts without waiting, and only then reconciles in the
+    // background — never `await refreshIntake()` before the UI settles.
+    expect(intake).toContain("const utils = trpc.useUtils();");
+    expect(intake).toContain("onSuccess: async (_result, variables) => {");
+    expect(intake).toContain("utils.workspace.detail.setData(scope,");
+    expect(intake).toContain("utils.workspace.bindings.list.setData(scope,");
+    expect(intake).toContain("utils.workspace.editorial.board.setData(scope,");
+    expect(intake).toContain('toast.success("นำเรื่องออกจาก Workspace แล้ว — ตัวนิยายต้นฉบับยังอยู่");');
+    expect(intake).toContain("void refreshIntake();");
+    // The unlink message keeps remove-from-workspace distinct from deleting
+    // the source novel.
+    expect(intake).toContain("ตัวนิยายต้นฉบับยังอยู่");
+  });
+
+  it("invalidates stale evidence rows on every evidence-changing mutation (IPE-065R1 P1)", () => {
+    // ONE centralized invalidation authority: drops the affected rows from
+    // the accumulated map immediately (fail closed to loading/unknown), then
+    // refetches the SCOPED projection only when an affected id is in the
+    // active scope — with cancelRefetch so a pre-mutation in-flight response
+    // can never reinsert stale positive rows.
+    expect(page).toContain("const invalidateEvidenceRows = (");
+    // R5: the affected ids are tombstoned + pruned against the CONTAINER and
+    // the revision bumps (fail closed to loading/unknown immediately).
+    expect(page).toContain("lifecycle.invalidatedIds.add(id);");
+    expect(page).toContain("lifecycle.rows.delete(id);");
+    expect(page).toContain("bumpEvidenceRevision();");
+    expect(page).toContain("ids.some((id) => activeEvidenceScopeSet.has(id))");
+    expect(page).toContain('editorialEvidenceStatuses.refetch({ cancelRefetch: true })');
+    // Single-pack evidence-changing paths wired to the helper.
+    for (const mutation of [
+      "runEditorialForeignChecker = trpc.workspace.editorial.foreignCheckerRun.useMutation",
+      "editEditorialDraft = trpc.workspace.editorial.editorEdit.useMutation",
+      "approveEditorialDraft = trpc.workspace.editorial.approveDraft.useMutation",
+      "stageEditorialEpisode = trpc.workspace.editorial.stageEpisodeDraft.useMutation",
+      "resolveEditorialFinding = trpc.workspace.editorial.foreignCheckerResolve.useMutation",
+      "allowEditorialFinding = trpc.workspace.editorial.foreignCheckerAllow.useMutation",
+      "setStructuralConfirmation = trpc.workspace.editorial.structuralConfirmation.useMutation",
+      "updateEditorialEpisode = trpc.workspace.editorial.updateEpisode.useMutation",
+      "updateEditorialEpisodeSale = trpc.workspace.editorial.updateEpisodeSale.useMutation",
+    ]) {
+      const at = page.indexOf(mutation);
+      expect(at).toBeGreaterThan(-1);
+      // Each mutation's onSuccess body calls the invalidation helper WITH the
+      // mutation's workspaceId (R5 §12: cross-workspace completion fences the
+      // stale identity there instead of touching the current lifecycle).
+      const body = page.slice(at, at + 1700);
+      expect(body).toContain(
+        "invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId })"
+      );
+    }
+    // exclude/restore/undo route through the same helper.
+    expect(page).toContain(
+      "invalidateEvidenceRows([variables.workItemId], { workspaceId: variables.workspaceId });\n      await refreshAfterTabRevision();"
+    );
+    expect(page).toContain("// IPE-065R1 (P1): undo creates a new draft revision — same stale rule.");
+    // Bulk paths prune the affected ids, then refreshBulkEditorial refetches
+    // board/approval only (no page-wide evidence reintroduction).
+    const bulkPrunes = page.match(/invalidateEvidenceRows\(\s*results\.map\(\(result: any\) => result\.workItemId\),\s*\{ refetch: false, workspaceId: variables\.workspaceId \}\s*\)/g) ?? [];
+    expect(bulkPrunes.length).toBe(4);
+    // remove pack prunes its evidence row (refetch suppressed — board refetch
+    // already runs and the work item is gone).
+    const removeAt = page.indexOf("removeEditorialEpisode = trpc.workspace.editorial.removeEpisode.useMutation");
+    expect(page.slice(removeAt, removeAt + 750)).toContain(
+      "invalidateEvidenceRows([variables.workItemId], { refetch: false, workspaceId: variables.workspaceId })"
+    );
+    // unallow has no workItemId in its input — the selected pack's row is
+    // invalidated instead, tagged with the closure's workspace.
+    const unallowAt = page.indexOf("unallowEditorialWord = trpc.workspace.editorial.foreignCheckerUnallow.useMutation");
+    expect(page.slice(unallowAt, unallowAt + 700)).toContain(
+      "invalidateEvidenceRows([selectedSourceWorkItemId], { workspaceId: selectedWorkspaceId })"
+    );
+    // Evidence-neutral mutations stay untouched (no helper wiring).
+    const assignAt = page.indexOf("assignEditorialWorkItem = trpc.workspace.editorial.assignWorkItem.useMutation");
+    expect(page.slice(assignAt, assignAt + 320)).not.toContain("invalidateEvidenceRows");
+    // The performance contract survives: scoped query input, no polling.
+    expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
+    expect(page).not.toContain("refetchInterval: 30_000");
+    expect(page).not.toContain('refetchOnMount: "always"');
+  });
+
+  it("renders the story footer through the pure fail-closed helper (IPE-065R1 P2)", () => {
+    const overview = source("client/src/pages/WorkspaceStoryOverview.tsx");
+    // The footer comes from storyOverviewFooterLine — no inline fallthrough
+    // that could print ผ่าน for an unknown/loading story.
+    expect(overview).toContain("storyOverviewFooterLine(story)");
+    expect(overview).not.toContain(": STORY_PACK_STATUS_LABEL.passed}");
+  });
+
+  it("binds evidence refresh to the invalidation generation fence (IPE-065R2/R3) inside a lifecycle-tagged container (R5)", () => {
+    // R5: ALL mutable evidence authority lives in ONE lifecycle-tagged
+    // container (epoch + rows + tombstones + generations) — no standalone
+    // tombstone/generation states that a delayed workspace-reset effect
+    // could wipe after new-lifecycle mutation work.
+    expect(page).toContain("const evidenceLifecycleRef = useRef<EvidenceLifecycleState>({");
+    expect(page).toContain("const [evidenceRevision, setEvidenceRevision] = useState(0);");
+    expect(page).toContain("const bumpEvidenceRevision = () => setEvidenceRevision((revision) => revision + 1);");
+    // R3: monotonic per-workItem generation bump on every invalidation —
+    // applied to the CONTAINER (the old unconditional passive reset is gone:
+    // no setInvalidatedEvidenceIds(new Set()) / blind registry .clear()).
+    expect(page).toContain("lifecycle.generations = bumpEvidenceGenerations(lifecycle.generations, ids);");
+    expect(page).not.toContain("evidenceInvalidatedAtRef");
+    expect(page).not.toContain("dataUpdatedAt >");
+    expect(page).not.toContain("setInvalidatedEvidenceIds(new Set())");
+    expect(page).not.toContain("evidenceGenerationRef.current = new Map();");
+    expect(page).not.toContain("evidenceReconciliationInFlightRef.current.clear();");
+    // R5 (§4/§8): the container rotates SYNCHRONOUSLY with the workspace
+    // identity — old rows are non-authoritative from the first
+    // new-lifecycle render, and stale identities from away-mutations are
+    // re-seeded as tombstones.
+    expect(page).toContain(
+      "evidenceLifecycleRef.current = rotateEvidenceLifecycleState(\n    evidenceLifecycleRef.current,\n    evidenceWorkspaceIdentityRef.current.epoch\n  );"
+    );
+    expect(page).toContain("invalidatedIdsForWorkspace(\n      invalidEvidenceByWorkspaceRef.current,\n      selectedWorkspaceId\n    )");
+    expect(page).toContain("recordInvalidEvidenceForWorkspace(\n        invalidEvidenceByWorkspaceRef.current,\n        targetWorkspaceId,\n        ids\n      );");
+    // R5 (§10/§11): lifecycle-selective registry prune (never a blind .clear()).
+    expect(page).toContain("pruneEvidenceRegistryForLifecycle(\n    evidenceReconciliationInFlightRef.current,\n    selectedWorkspaceId ?? -1,\n    evidenceWorkspaceIdentityRef.current.epoch\n  );");
+    // R5 (§8): card rows read the lifecycle container directly.
+    expect(page).toContain("const evidenceRowsForRender = evidenceLifecycleRef.current.rows;");
+    // Generic merge is ALWAYS fenced against the container's tombstones and
+    // never clears them.
+    expect(page).toContain(
+      "mergeEvidenceRowsSkippingInvalidated(\n      lifecycle.rows,\n      data,\n      lifecycle.invalidatedIds\n    );"
+    );
+    // Explicit reconciliation consumes the refetch RESULT directly (never
+    // `.data` observation / dataUpdatedAt / structural references) and only
+    // accepts rows whose captured generation still matches.
+    expect(page).toContain("const result = await editorialEvidenceStatuses.refetch({ cancelRefetch: true });");
+    expect(page).toContain("const freshRows = result.data;");
+    expect(page).toContain("acceptedReconciliationIds(\n          captured,\n          lifecycle.generations,\n          lifecycle.invalidatedIds,\n          freshRows\n        );");
+    expect(page).toContain("const rows = acceptedReconciliationRows(freshRows, acceptedSet);");
+    // IPE-065R4: workspace LIFECYCLE fence — the response is authoritative
+    // only while the page lives in the captured id AND epoch.
+    expect(page).toContain("evidenceWorkspaceIdentityRef.current = nextEvidenceWorkspaceIdentity(");
+    expect(page).toContain(
+      "sameEvidenceWorkspaceLifecycle(\n            evidenceWorkspaceIdentityRef.current,\n            capturedWorkspaceId,\n            capturedIdentity.epoch\n          )"
+    );
+    // The epoch rotates synchronously during render — no effect-lag gap.
+    expect(page).not.toContain("capturedWorkspaceId !== selectedWorkspaceIdRef.current");
+    // Coalescing registry — one in-flight reconciliation per
+    // workspace lifecycle+scope+generation key, with OWNERSHIP-SAFE cleanup.
+    expect(page).toContain("buildEvidenceReconciliationKey(\n      capturedWorkspaceId,\n      capturedIdentity.epoch,\n      targets,\n      captured\n    )");
+    expect(page).toContain("evidenceReconciliationInFlightRef.current.get(key)");
+    expect(page).toContain("evidenceReconciliationInFlightRef.current.set(key, promise);");
+    expect(page).toContain(
+      "releaseOwnedReconciliationEntry(\n          evidenceReconciliationInFlightRef.current,\n          key,\n          promise\n        )"
+    );
+    expect(page).not.toContain("evidenceReconciliationInFlightRef.current.delete(key);");
+    // Scope activation routes through the centralized generation-bound
+    // reconciliation — never an unbound refetch — and re-runs on revision
+    // bumps so fresh tombstones reconcile without polling.
+    expect(page).toContain("scopeNeedsReconciliation(activeEvidenceScopeIds, evidenceLifecycleRef.current.invalidatedIds)");
+    expect(page).toContain("void reconcileInvalidatedEvidence(activeEvidenceScopeIds);");
+    // Bulk flow: refreshBulkEditorial no longer touches the evidence query;
+    // affected active-scope ids reconcile explicitly.
+    expect(page).not.toContain("editorialEvidenceStatuses.refetch(), editorialApproval");
+    expect(page).toContain("await Promise.all([editorialBoard.refetch(), editorialApproval.refetch()]);");
+    // Performance contract intact: scoped input, no polling.
+    expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
+    expect(page).not.toContain("refetchInterval: 30_000");
+    expect(page).not.toContain('refetchOnMount: "always"');
+  });
 });
 
 describe("IPE-064 — story gate", () => {

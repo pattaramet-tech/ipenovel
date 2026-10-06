@@ -1,19 +1,37 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  acceptedReconciliationIds,
+  acceptedReconciliationRows,
+  buildEvidenceReconciliationKey,
+  bumpEvidenceGenerations,
+  captureEvidenceGenerations,
   createStoryUiState,
+  derivePackCardStatus,
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
   filterPacksByQuery,
   groupStoriesByNovel,
+  mergeEvidenceRowsSkippingInvalidated,
+  invalidatedIdsForWorkspace,
+  nextEvidenceWorkspaceIdentity,
+  pruneEvidenceRegistryForLifecycle,
+  recordInvalidEvidenceForWorkspace,
+  reconcilableEvidenceIds,
+  releaseOwnedReconciliationEntry,
   resolveStoryUiState,
+  rotateEvidenceLifecycleState,
+  sameEvidenceWorkspaceLifecycle,
+  scopeNeedsReconciliation,
   sortPacksByEpisode,
   storyKeyFor,
+  storyOverviewFooterLine,
   storyOverallStatus,
   STORY_PACK_STATUS_LABEL,
   STORY_OVERALL_LABEL,
   summarizeStoryPacks,
   updateStoryUiState,
+  type EvidenceWorkspaceIdentity,
 } from "./workspaceMultiStory";
 
 describe("workspaceMultiStory — per-story UI state", () => {
@@ -59,13 +77,13 @@ describe("workspaceMultiStory — evidence rollup", () => {
     expect(STORY_PACK_STATUS_LABEL.needs_fix).toBe("ต้องแก้");
   });
 
-  it("summarizes a story's packs into the four operator counters", () => {
+  it("summarizes a story's packs into the operator counters", () => {
     const summary = summarizeStoryPacks([
       { evidence: { checkerRan: true, checker: true } },
       { evidence: { checkerRan: true, checker: true, published: true } },
       { evidence: { checkerRan: true, checker: false } },
       { evidence: { available: false } },
-      { evidence: null },
+      { evidence: {} },
     ]);
     expect(summary).toEqual({
       total: 5,
@@ -74,8 +92,52 @@ describe("workspaceMultiStory — evidence rollup", () => {
       needsFix: 1,
       anomalous: 1,
       notChecked: 1,
+      unknown: 0,
     });
     expect(storyOverallStatus(summary)).toBe("anomalous");
+  });
+
+  // IPE-065: progressive loading semantics — a pack WITHOUT a loaded evidence
+  // row is loading/unknown, never a genuine not_checked.
+  it("keeps loading and unknown distinct from not_checked (loaded rows only)", () => {
+    expect(derivePackCardStatus({ evidence: null, evidenceState: "loading" })).toBe("loading");
+    expect(derivePackCardStatus({ evidence: null, evidenceState: "unavailable" })).toBe("unknown");
+    // No signal at all fails closed to unknown.
+    expect(derivePackCardStatus({ evidence: null })).toBe("unknown");
+    expect(derivePackCardStatus({})).toBe("unknown");
+    // A LOADED row maps through the unchanged success-path contract.
+    expect(derivePackCardStatus({ evidence: {}, evidenceState: "loaded" })).toBe("not_checked");
+    expect(derivePackCardStatus({ evidence: { checker: true }, evidenceState: "loaded" })).toBe("passed");
+    expect(derivePackCardStatus({ evidence: { published: true, checker: true }, evidenceState: "loaded" })).toBe("published");
+  });
+
+  it("never promotes loading/unknown/error evidence into a checked or passed state", () => {
+    for (const state of ["loading", "unknown"] as const) {
+      const status = derivePackCardStatus({ evidence: null, evidenceState: state });
+      expect(["passed", "published", "not_checked"]).not.toContain(status);
+    }
+    // A row that reports an error stays anomalous (fail closed), never PASS.
+    expect(derivePackStatus({ available: false, error: "boom" })).toBe("anomalous");
+    expect(derivePackCardStatus({ evidence: { available: false }, evidenceState: "loaded" })).toBe("anomalous");
+  });
+
+  it("counts missing-row packs as unknown, keeping notChecked genuine (IPE-065)", () => {
+    const summary = summarizeStoryPacks([
+      { evidence: { checkerRan: true, checker: true }, evidenceState: "loaded" },
+      { evidence: null, evidenceState: "loading" },
+      { evidence: null, evidenceState: "unavailable" },
+    ]);
+    expect(summary).toEqual({
+      total: 3,
+      published: 0,
+      passed: 1,
+      needsFix: 0,
+      anomalous: 0,
+      notChecked: 0,
+      unknown: 2,
+    });
+    // Unknown packs keep the story neutral in-progress.
+    expect(storyOverallStatus(summary)).toBe("in_progress");
   });
 
   it("rolls the story up as published only when every pack is published", () => {
@@ -85,6 +147,88 @@ describe("workspaceMultiStory — evidence rollup", () => {
     expect(storyOverallStatus(summarizeStoryPacks([]))).toBe("in_progress");
     expect(storyOverallStatus(summarizeStoryPacks([{ evidence: { checker: true } }]))).toBe("passed");
     expect(storyOverallStatus(summarizeStoryPacks([{ evidence: { checkerRan: true, checker: false } }]))).toBe("needs_fix");
+    // A full-unknown story never rolls up to passed/published (IPE-065).
+    expect(storyOverallStatus(summarizeStoryPacks([{ evidence: null, evidenceState: "unavailable" }]))).toBe("in_progress");
+  });
+});
+
+// IPE-065R1 (P2): the story-card footer is a pure decision — an
+// unknown/loading story must NEVER render a PASS line.
+describe("workspaceMultiStory — story overview footer (IPE-065R1)", () => {
+  const summaryOf = (cards: Parameters<typeof summarizeStoryPacks>[number]) =>
+    summarizeStoryPacks(cards);
+
+  it("shows neutral รอสถานะ wording for a story with unknown/loading packs (never ผ่าน)", () => {
+    const summary = summaryOf([
+      { evidence: null, evidenceState: "loading" },
+      { evidence: null, evidenceState: "unavailable" },
+    ]);
+    const footer = storyOverviewFooterLine({ focused: false, summary, overall: "in_progress" });
+    expect(footer).toBe("รอสถานะ 2 แพ็ก");
+    expect(footer).not.toContain(STORY_PACK_STATUS_LABEL.passed);
+    expect(footer).not.toContain(STORY_PACK_STATUS_LABEL.published);
+  });
+
+  it("shows ยังไม่ตรวจ wording for genuinely-not-checked packs (not a PASS line)", () => {
+    const footer = storyOverviewFooterLine({
+      focused: false,
+      summary: summaryOf([{ evidence: {} }]),
+      overall: "in_progress",
+    });
+    expect(footer).toBe("ยังไม่ตรวจ 1 แพ็ก");
+  });
+
+  it("keeps the needs-fix/anomalous warning wording unchanged", () => {
+    expect(
+      storyOverviewFooterLine({
+        focused: false,
+        summary: summaryOf([{ evidence: { checkerRan: true, checker: false } }]),
+        overall: "needs_fix",
+      })
+    ).toBe("มีงานรอแก้ 1 แพ็ก");
+    expect(
+      storyOverviewFooterLine({
+        focused: false,
+        summary: summaryOf([{ evidence: { available: false } }, { evidence: { checkerRan: true, checker: false } }]),
+        overall: "anomalous",
+      })
+    ).toBe("มีงานรอแก้ 2 แพ็ก");
+  });
+
+  it("renders the PASS line only for a genuinely passed rollup", () => {
+    const passed = storyOverviewFooterLine({
+      focused: false,
+      summary: summaryOf([{ evidence: { checker: true } }]),
+      overall: "passed",
+    });
+    expect(passed).toBe(STORY_PACK_STATUS_LABEL.passed);
+    // Mixed with a single unknown pack the same story stops being "ผ่าน".
+    const withUnknown = storyOverviewFooterLine({
+      focused: false,
+      summary: summaryOf([{ evidence: { checker: true } }, { evidence: null, evidenceState: "unavailable" }]),
+      overall: "in_progress",
+    });
+    expect(withUnknown).toBe("รอสถานะ 1 แพ็ก");
+  });
+
+  it("renders the published line only for a genuinely published rollup", () => {
+    expect(
+      storyOverviewFooterLine({
+        focused: false,
+        summary: summaryOf([{ evidence: { published: true, checker: true } }]),
+        overall: "published",
+      })
+    ).toBe(STORY_PACK_STATUS_LABEL.published);
+  });
+
+  it("keeps the focused-story line for the story being worked on", () => {
+    expect(
+      storyOverviewFooterLine({
+        focused: true,
+        summary: summaryOf([{ evidence: { checker: true } }]),
+        overall: "passed",
+      })
+    ).toBe("กำลังทำงานอยู่ — state ของเรื่องนี้ถูกจำไว้");
   });
 });
 
@@ -211,5 +355,387 @@ describe("workspaceMultiStory — editor save identity invariant (IPE-062R3 P2-B
     expect(editorDraftBelongsToSelectedPack(501, undefined)).toBe(false);
     expect(editorDraftBelongsToSelectedPack(null, null)).toBe(false);
     expect(editorDraftBelongsToSelectedPack("501", 501)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPE-065R2 — invalidation tombstone fence. Once an evidence-changing
+// mutation succeeds for workItem X, no pre-mutation evidence row may become
+// authoritative again until a successful post-fence fetch returns X — even
+// when X's story is inactive, the cache is staleTime-fresh, or the post-
+// mutation refetch fails.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — evidence tombstone fence (IPE-065R2)", () => {
+  const rowA = { workItemId: 101, checker: true, approval: true, stage: true, readyToPublish: true, published: false };
+  const rowAStale = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+  const rowB = { workItemId: 202, checker: true, checkerRan: true, published: true };
+  const cachedPass = new Map<number, any>([[101, rowA]]);
+
+  it("scenario A: a tombstoned id is NEVER merged from cache — even staleTime-fresh story re-activation", () => {
+    // Story A's old PASS arrives through the generic merge (cache observation
+    // on scope re-activation) while A is tombstoned → skipped entirely.
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), [rowA], new Set([101]));
+    expect(merged).toBeNull();
+    // And it cannot re-enter an existing map either.
+    const mergedIntoExisting = mergeEvidenceRowsSkippingInvalidated(
+      new Map([[202, rowB]]),
+      [rowA],
+      new Set([101])
+    );
+    // Nothing merged → null (bail out): the CURRENT map survives untouched,
+    // so B's row stays and A's stale PASS never re-enters.
+    expect(mergedIntoExisting).toBeNull();
+    // Scope activation with a tombstoned id demands forced reconciliation —
+    // staleTime must not suppress it.
+    expect(scopeNeedsReconciliation([101, 202], new Set([101]))).toBe(true);
+  });
+
+  it("scenario B: a FAILED reconciliation keeps the tombstone — old PASS never returns", () => {
+    // A failed refetch returns no rows → nothing is reconcilable → the
+    // tombstone stays and the generic merge keeps skipping the cached PASS.
+    expect(reconcilableEvidenceIds(new Set([101]), [])).toEqual([]);
+    expect(reconcilableEvidenceIds(new Set([101]), undefined)).toEqual([]);
+    const stillFenced = mergeEvidenceRowsSkippingInvalidated(new Map(), [rowA], new Set([101]));
+    expect(stillFenced).toBeNull();
+    // The only card-visible status for that pack remains fail-closed.
+    expect(derivePackCardStatus({ evidence: null, evidenceState: "unavailable" })).toBe("unknown");
+  });
+
+  it("scenario C: invalidating A never clears or blocks unrelated B evidence", () => {
+    const current = new Map<number, any>([[202, rowB]]);
+    const merged = mergeEvidenceRowsSkippingInvalidated(current, [rowAStale, rowB], new Set([101]));
+    expect(merged?.get(202)).toBe(rowB);
+    expect(merged?.has(101)).toBe(false);
+    // B needs no reconciliation.
+    expect(scopeNeedsReconciliation([202], new Set([101]))).toBe(false);
+  });
+
+  it("scenario D: a successful post-fence fetch merges the fresh row and releases the tombstone", () => {
+    const freshRow = { workItemId: 101, checker: false, checkerRan: true, approval: false };
+    // The post-fence result contains A → exactly A is reconcilable.
+    expect(reconcilableEvidenceIds(new Set([101]), [freshRow, rowB])).toEqual([101]);
+    // Fresh row merges (empty fence on the post-fence branch)…
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), [freshRow], new Set());
+    expect(merged?.get(101)).toBe(freshRow);
+    // …and once released, ordinary cache reuse is allowed again — the same
+    // fresh row merges freely with an empty fence.
+    const ordinaryReuse = mergeEvidenceRowsSkippingInvalidated(new Map([[101, freshRow]]), [freshRow], new Set());
+    expect(ordinaryReuse?.get(101)).toBe(freshRow);
+  });
+
+  it("tombstones fence by id — an id absent from the fresh result stays fenced", () => {
+    // A mutation may remove the pack: the fresh scope result lacks 101, so
+    // nothing releases it and no stale row can come back for it.
+    expect(reconcilableEvidenceIds(new Set([101, 303]), [rowB])).toEqual([]);
+  });
+
+  it("merge bails out (null) when rows are absent so no render churn occurs", () => {
+    expect(mergeEvidenceRowsSkippingInvalidated(cachedPass, undefined, new Set())).toBeNull();
+    expect(mergeEvidenceRowsSkippingInvalidated(cachedPass, [], new Set())).toBeNull();
+    // Rows without a valid workItemId are never merged.
+    expect(mergeEvidenceRowsSkippingInvalidated(new Map(), [{ workItemId: null, checker: true }], new Set())).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPE-065R3 — generation-bound evidence reconciliation. Freshness authority =
+// per-workItem invalidation GENERATION + an explicit reconciliation request
+// whose captured generation still matches at completion. Completion
+// timestamps and React Query `.data` references are never authority.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — generation-bound reconciliation (IPE-065R3)", () => {
+  const passRow = { workItemId: 101, checker: true, approval: true, stage: true, readyToPublish: true, published: false };
+  const failedRow = { workItemId: 101, checker: false, checkerRan: true, approval: false, readyToPublish: false, published: false };
+
+  it("generations are monotonic per workItemId and snapshots are frozen at capture time", () => {
+    let generations = new Map<number, number>();
+    generations = bumpEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [202]);
+    expect(generations.get(101)).toBe(2);
+    expect(generations.get(202)).toBe(1);
+    // Snapshot BEFORE a newer bump stays at the captured value.
+    const snapshot = captureEvidenceGenerations(generations, [101, 202]);
+    expect(snapshot.get(101)).toBe(2);
+    generations = bumpEvidenceGenerations(generations, [101]);
+    expect(snapshot.get(101)).toBe(2);
+    expect(generations.get(101)).toBe(3);
+  });
+
+  it("scenario A: a pre-mutation request completing after the mutation can never release the tombstone", () => {
+    // mutation succeeds → generation 1 + tombstone. The OLD request's PASS
+    // row then lands in the generic merge: it is skipped (no timestamp
+    // involved anywhere — the fence is the tombstone set itself).
+    const generations = bumpEvidenceGenerations(new Map(), [101]);
+    const tombstones = new Set([101]);
+    const genericMerge = mergeEvidenceRowsSkippingInvalidated(new Map(), [passRow], tombstones);
+    expect(genericMerge).toBeNull();
+    // And the old request is not a reconciliation at all: with no captured
+    // generation it has no path to acceptance.
+    expect(acceptedReconciliationIds(new Map(), generations, tombstones, [passRow])).toEqual([]);
+  });
+
+  it("scenario B: a generation-1 reconciliation response cannot clear a generation-2 tombstone", () => {
+    // Reconciliation A captures generation 1, then mutation 2 bumps to 2.
+    let generations = bumpEvidenceGenerations(new Map(), [101]); // gen 1
+    const captured = captureEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [101]); // gen 2 in flight
+    const tombstones = new Set([101]);
+    // The generation-1 response arrives: rejected entirely.
+    expect(
+      acceptedReconciliationIds(captured, generations, tombstones, [passRow])
+    ).toEqual([]);
+    // The gen-2 reconciliation succeeds: fresh row merges, tombstone clears.
+    const accepted = acceptedReconciliationIds(
+      captureEvidenceGenerations(generations, [101]),
+      generations,
+      tombstones,
+      [failedRow]
+    );
+    expect(accepted).toEqual([101]);
+    const rows = acceptedReconciliationRows([failedRow], new Set(accepted));
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), rows, new Set());
+    expect(merged?.get(101)).toBe(failedRow);
+  });
+
+  it("scenario C: structural sharing cannot block a tombstone release — acceptance reads the result content", () => {
+    // The reconciliation succeeded with a row logically identical to the
+    // cached data: acceptance is decided from the returned rows themselves.
+    const generations = bumpEvidenceGenerations(new Map(), [101]);
+    const captured = captureEvidenceGenerations(generations, [101]);
+    const accepted = acceptedReconciliationIds(captured, generations, new Set([101]), [passRow]);
+    expect(accepted).toEqual([101]);
+    expect(acceptedReconciliationRows([passRow], new Set(accepted))).toEqual([passRow]);
+  });
+
+  it("scenario E: failed reconciliation (no rows) accepts nothing — tombstones stay", () => {
+    const generations = bumpEvidenceGenerations(new Map(), [101]);
+    const captured = captureEvidenceGenerations(generations, [101]);
+    expect(acceptedReconciliationIds(captured, generations, new Set([101]), [])).toEqual([]);
+    expect(acceptedReconciliationIds(captured, generations, new Set([101]), undefined)).toEqual([]);
+  });
+
+  it("scenario F: acceptance is id-scoped — an unrelated tombstoned id in the same response stays fenced", () => {
+    const generations = bumpEvidenceGenerations(new Map(), [101, 303]);
+    const captured = captureEvidenceGenerations(generations, [101]); // only 101 targeted
+    const accepted = acceptedReconciliationIds(captured, generations, new Set([101, 303]), [passRow, rowBFresh]);
+    expect(accepted).toEqual([101]);
+    // The accepted rows projection contains ONLY the accepted id's row.
+    expect(acceptedReconciliationRows([passRow, rowBFresh], new Set(accepted))).toEqual([passRow]);
+  });
+
+  it("scenario H: coalescing identity = workspace + target@generation pairs (pure key contract)", () => {
+    const keyFor = (workspaceId: number, targets: number[], generations: Map<number, number>) =>
+      `${workspaceId}:${targets
+        .map((id) => `${id}@${captureEvidenceGenerations(generations, targets).get(id) ?? 0}`)
+        .join(",")}`;
+    const gen = bumpEvidenceGenerations(new Map(), [101, 102]);
+    expect(keyFor(7, [101, 102], gen)).toBe("7:101@1,102@1");
+    // Same scope + same generations → identical key (one in-flight identity).
+    expect(keyFor(7, [101, 102], gen)).toBe(keyFor(7, [101, 102], gen));
+    // A newer generation → a different key → a new reconciliation is allowed.
+    const gen2 = bumpEvidenceGenerations(gen, [101]);
+    expect(keyFor(7, [101, 102], gen2)).toBe("7:101@2,102@1");
+    // A different workspace never shares an identity.
+    expect(keyFor(8, [101, 102], gen)).toBe("8:101@1,102@1");
+  });
+});
+
+const rowBFresh = { workItemId: 202, checker: true, checkerRan: true, published: true };
+
+// ---------------------------------------------------------------------------
+// IPE-065R4 — workspace ABA lifecycle epoch. workspaceId + reused generation
+// value do NOT prove the same workspace lifecycle; every identity transition
+// rotates a monotonic epoch and reconciliation acceptance requires BOTH.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — workspace ABA epoch fence (IPE-065R4)", () => {
+  const passRow = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+  const staleRow = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+
+  it("epoch rotation is identity-driven and monotonic: A(1) -> B(2) -> A(3)", () => {
+    let identity: EvidenceWorkspaceIdentity = { workspaceId: 7, epoch: 0 };
+    identity = nextEvidenceWorkspaceIdentity(identity, 7); // same id → same object
+    expect(identity).toEqual({ workspaceId: 7, epoch: 0 });
+    identity = nextEvidenceWorkspaceIdentity(identity, 8); // A -> B
+    expect(identity).toEqual({ workspaceId: 8, epoch: 1 });
+    identity = nextEvidenceWorkspaceIdentity(identity, 7); // B -> A: NEW lifecycle
+    expect(identity).toEqual({ workspaceId: 7, epoch: 2 });
+  });
+
+  it("scenario A: an OLD lifecycle response (A/epoch1/gen1) is rejected after A -> B -> A(epoch3)", () => {
+    // OLD reconciliation captured {A, epoch 1} with generation 1.
+    const oldIdentity: EvidenceWorkspaceIdentity = { workspaceId: 7, epoch: 1 };
+    const oldGenerations = bumpEvidenceGenerations(new Map(), [101]);
+    const oldCaptured = captureEvidenceGenerations(oldGenerations, [101]);
+    // Lifecycle moved on: epoch is now 3 (A again), and the NEW lifecycle's
+    // mutation restarted generation 101 back to 1 with a fresh tombstone.
+    const newIdentity: EvidenceWorkspaceIdentity = { workspaceId: 7, epoch: 3 };
+    const newGenerations = bumpEvidenceGenerations(new Map(), [101]);
+    const tombstones = new Set([101]);
+    // Workspace id matches (7 === 7) but the EPOCH does not (1 != 3):
+    // sameEvidenceWorkspaceLifecycle rejects the old response outright.
+    expect(sameEvidenceWorkspaceLifecycle(newIdentity, 7, 1)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle(newIdentity, oldIdentity.workspaceId as number, oldIdentity.epoch)).toBe(false);
+    // And even a direct generation comparison cannot rescue it — the NEW
+    // lifecycle's acceptance path is keyed to the NEW captured identity.
+    const newCaptured = captureEvidenceGenerations(newGenerations, [101]);
+    expect(acceptedReconciliationIds(oldCaptured, newGenerations, tombstones, [passRow])).toEqual([101]); // generation alone is NOT acceptance
+    // …the authority gate is the lifecycle check, which failed above. The NEW
+    // reconciliation (A/epoch3/gen1) accepts normally.
+    expect(
+      sameEvidenceWorkspaceLifecycle(newIdentity, 7, newIdentity.epoch)
+    ).toBe(true);
+    expect(acceptedReconciliationIds(newCaptured, newGenerations, tombstones, [passRow])).toEqual([101]);
+  });
+
+  it("scenario B: same workspace id with different epochs are DIFFERENT lifecycles", () => {
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 7, epoch: 1 }, 7, 1)).toBe(true);
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 7, epoch: 1 }, 7, 3)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 7, epoch: 3 }, 7, 1)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle({ workspaceId: 8, epoch: 1 }, 7, 1)).toBe(false);
+  });
+
+  it("scenario C: registry keys differ across lifecycles (7@1:101@1 != 7@3:101@1)", () => {
+    const generations = new Map([[101, 1]]);
+    const keyEpoch1 = buildEvidenceReconciliationKey(7, 1, [101], generations);
+    const keyEpoch3 = buildEvidenceReconciliationKey(7, 3, [101], generations);
+    expect(keyEpoch1).toBe("7@1:101@1");
+    expect(keyEpoch3).toBe("7@3:101@1");
+    expect(keyEpoch1).not.toBe(keyEpoch3);
+  });
+
+  it("scenario D/E: registry cleanup is ownership-safe (old settle never deletes a newer entry)", () => {
+    const registry = new Map<string, Promise<unknown>>();
+    const oldPromise = Promise.resolve();
+    const newPromise = Promise.resolve();
+    const key = "7@3:101@1";
+    registry.set(key, newPromise);
+    // An OLD promise settling against a key now owned by the NEW promise:
+    expect(releaseOwnedReconciliationEntry(registry, key, oldPromise)).toBe(false);
+    expect(registry.get(key)).toBe(newPromise);
+    // Normal cleanup: the owner settles and removes its own entry.
+    expect(releaseOwnedReconciliationEntry(registry, key, newPromise)).toBe(true);
+    expect(registry.has(key)).toBe(false);
+  });
+
+  it("scenario F: A -> B without return still rejects the A response (workspace id mismatch)", () => {
+    const identity: EvidenceWorkspaceIdentity = { workspaceId: 8, epoch: 2 };
+    expect(sameEvidenceWorkspaceLifecycle(identity, 7, 1)).toBe(false);
+  });
+
+  it("scenario G/H: within one epoch the R3 generation race and structural-sharing acceptance are unchanged", () => {
+    let generations = bumpEvidenceGenerations(new Map(), [101]); // gen 1
+    const gen1Captured = captureEvidenceGenerations(generations, [101]);
+    generations = bumpEvidenceGenerations(generations, [101]); // gen 2 in flight
+    const tombstones = new Set([101]);
+    // Gen-1 response rejected within the same epoch.
+    expect(acceptedReconciliationIds(gen1Captured, generations, tombstones, [passRow])).toEqual([]);
+    // Gen-2 response accepted even when structurally identical (content read).
+    const accepted = acceptedReconciliationIds(
+      captureEvidenceGenerations(generations, [101]),
+      generations,
+      tombstones,
+      [staleRow]
+    );
+    expect(accepted).toEqual([101]);
+    expect(acceptedReconciliationRows([staleRow], new Set(accepted))).toEqual([staleRow]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPE-065R5 — lifecycle-tagged evidence state. The workspace-transition
+// cleanup can never erase CURRENT-lifecycle work: the container is rotated
+// synchronously with the identity, and the delayed cleanup is reduced to a
+// lifecycle-selective registry prune.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — lifecycle-tagged evidence state (IPE-065R5)", () => {
+  const passRow = { workItemId: 101, checker: true, approval: true, readyToPublish: true, published: false };
+
+  it("test A: rotation is once-per-transition — NEW-lifecycle work survives a repeated rotate", () => {
+    // Old lifecycle state (epoch 2) with a stale PASS row.
+    let state = rotateEvidenceLifecycleState(
+      { epoch: 2, rows: new Map([[101, passRow]]), invalidatedIds: new Set(), generations: new Map([[101, 9]]) },
+      3 // A -> B -> A(new epoch 3)
+    );
+    expect(state.epoch).toBe(3);
+    expect(state.rows.size).toBe(0);
+    // Mutation success in the NEW lifecycle: gen 1 + tombstone 101.
+    state.generations = bumpEvidenceGenerations(state.generations, [101]);
+    state.invalidatedIds.add(101);
+    state.rows.delete(101);
+    // The DELAYED cleanup re-runs rotation for epoch 3 → no-op: gen 1 and
+    // the tombstone SURVIVE (the old "unconditional reset" would have wiped
+    // both).
+    state = rotateEvidenceLifecycleState(state, 3);
+    expect(state.generations.get(101)).toBe(1);
+    expect(state.invalidatedIds.has(101)).toBe(true);
+    // Stale cached PASS remains fenced in the generic merge.
+    expect(mergeEvidenceRowsSkippingInvalidated(new Map(), [passRow], state.invalidatedIds)).toBeNull();
+  });
+
+  it("test B: OLD rows are invisible from the FIRST new-lifecycle render (rotation is synchronous)", () => {
+    const oldState: EvidenceLifecycleState = {
+      epoch: 2,
+      rows: new Map([[101, passRow]]),
+      invalidatedIds: new Set(),
+      generations: new Map(),
+    };
+    // Transition render: the container is replaced in the same pass.
+    const newState = rotateEvidenceLifecycleState(oldState, 3);
+    expect(newState.rows.has(101)).toBe(false);
+    // Card authority for the new lifecycle: unknown/unloaded, never PASS.
+    expect(derivePackCardStatus({ evidence: newState.rows.get(101) ?? null, evidenceState: "unavailable" })).toBe("unknown");
+  });
+
+  it("test C: NEW generation survives cleanup and stays 1 (not undefined/0)", () => {
+    let state = rotateEvidenceLifecycleState(
+      { epoch: 2, rows: new Map(), invalidatedIds: new Set(), generations: new Map() },
+      3
+    );
+    state.generations = bumpEvidenceGenerations(state.generations, [101]); // gen 1
+    state = rotateEvidenceLifecycleState(state, 3); // delayed cleanup no-op
+    expect(state.generations.get(101)).toBe(1);
+  });
+
+  it("test D/E: registry prune keeps CURRENT-lifecycle entries and drops everything else", () => {
+    const registry = new Map<string, Promise<unknown>>();
+    const newEntry = Promise.resolve();
+    registry.set("7@3:101@1", newEntry); // CURRENT lifecycle (7, epoch 3)
+    registry.set("7@1:101@1", Promise.resolve()); // OLD epoch of 7
+    registry.set("8@2:202@1", Promise.resolve()); // other workspace
+    const removed = pruneEvidenceRegistryForLifecycle(registry, 7, 3);
+    expect(removed).toBe(2);
+    expect(registry.get("7@3:101@1")).toBe(newEntry);
+    expect(registry.has("7@1:101@1")).toBe(false);
+    expect(registry.has("8@2:202@1")).toBe(false);
+  });
+
+  it("test F: rotation removes old tombstones/generations — no cross-lifecycle contamination", () => {
+    const oldState: EvidenceLifecycleState = {
+      epoch: 1,
+      rows: new Map(),
+      invalidatedIds: new Set([101, 999]),
+      generations: new Map([[101, 4], [999, 2]]),
+    };
+    const newState = rotateEvidenceLifecycleState(oldState, 2);
+    expect(newState.invalidatedIds.has(101)).toBe(false);
+    expect(newState.invalidatedIds.has(999)).toBe(false);
+    expect(newState.generations.has(101)).toBe(false);
+    expect(newState.generations.has(999)).toBe(false);
+    // Same-epoch rotation is a no-op (same object) — no churn.
+    expect(rotateEvidenceLifecycleState(newState, 2)).toBe(newState);
+  });
+
+  it("away-mutation tombstones are recorded per workspace and re-seeded on re-entry", () => {
+    const byWorkspace = new Map<number, Set<number>>();
+    recordInvalidEvidenceForWorkspace(byWorkspace, 7, [101, 102]);
+    recordInvalidEvidenceForWorkspace(byWorkspace, 7, [102]); // dedupe
+    expect(invalidatedIdsForWorkspace(byWorkspace, 7)).toEqual(new Set([101, 102]));
+    expect(invalidatedIdsForWorkspace(byWorkspace, 8).size).toBe(0);
+    // Seeding consumes the record.
+    const seeded = invalidatedIdsForWorkspace(byWorkspace, 7);
+    byWorkspace.delete(7);
+    expect(invalidatedIdsForWorkspace(byWorkspace, 7).size).toBe(0);
+    expect(seeded.has(101)).toBe(true);
   });
 });

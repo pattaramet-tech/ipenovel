@@ -10,11 +10,12 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { EditorialPackRowActionsMenu } from "./EditorialPackRowActionsMenu";
 import {
-  derivePackStatus,
+  derivePackCardStatus,
   filterPacksByQuery,
   sortPacksByEpisode,
   STORY_PACK_STATUS_LABEL,
   type StoryEvidence,
+  type StoryEvidenceState,
   type StoryPackStatus,
 } from "./workspaceMultiStory";
 
@@ -24,6 +25,9 @@ const STATUS_BADGE_CLASS: Record<StoryPackStatus, string> = {
   needs_fix: "border-orange-300 bg-orange-50 text-orange-700",
   anomalous: "border-red-300 bg-red-50 text-red-700",
   not_checked: "border-slate-300 bg-slate-50 text-slate-600",
+  // IPE-065: neutral states — visually quiet, never rendered like a pass.
+  loading: "border-slate-300 bg-slate-50 text-slate-500 animate-pulse",
+  unknown: "border-amber-300 bg-amber-50 text-amber-700",
 };
 
 const CHAPTER_STATE_LABEL: Record<string, string> = {
@@ -63,6 +67,8 @@ export interface WorkspacePackListCard {
   isFree?: boolean | null;
   price?: string | number | null;
   evidence?: StoryEvidence | null;
+  /** IPE-065: progressive-loading signal — absent row is loading/unknown, never not_checked. */
+  evidenceState?: StoryEvidenceState;
 }
 
 interface WorkspacePackListPanelProps {
@@ -192,7 +198,9 @@ export function WorkspacePackListPanel({
       <div className="max-h-[28rem] space-y-1 overflow-auto pr-1" data-testid="workspace-pack-list">
         {visiblePacks.length ? (
           visiblePacks.map((card) => {
-            const status = derivePackStatus(card.evidence);
+            // IPE-065: card-level derivation — a loaded row maps exactly as
+            // before; a missing row is loading/unknown, never a checked state.
+            const status = derivePackCardStatus(card);
             const workItemId = card.workItemId ?? null;
             const selected = workItemId != null && workItemId === selectedWorkItemId;
             const rowKey = String(card.id ?? card.workItemId ?? "pack");
