@@ -335,7 +335,15 @@ export function cleanupEnding(
     const sourceNoteChapter =
       kept
         .slice(0, 3)
-        .some(paragraph => isSourceNoteChapterHeadingText(paragraph.text)) &&
+        .some(paragraph => {
+          const text = normalizeEditorialText(String(paragraph.text ?? ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          return (
+            isSourceNoteChapterHeadingText(text) ||
+            text === EDITORIAL_SOURCE_NOTE_CHAPTER_TITLE
+          );
+        }) &&
       kept.every(paragraph => {
         const text = normalizeEditorialText(String(paragraph.text ?? ""))
           .replace(/\s+/g, " ")
