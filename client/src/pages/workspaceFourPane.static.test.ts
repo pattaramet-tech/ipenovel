@@ -178,6 +178,31 @@ describe("IPE-064R3 — workspace context & navigation", () => {
     expect(page).toContain("if (!urlRestoreAppliedRef.current) return;");
   });
 
+  it("consumes the stale story restore only after the workspace data settles (IPE-064R4B R29)", () => {
+    // Zero groups while board/detail are still fetching is TRANSIENT — the
+    // restore must keep waiting, or legitimate bookmarks get consumed early.
+    expect(page).toContain("const editorialWorkspaceDataSettled =");
+    expect(page).toContain(
+      "Boolean(selectedWorkspaceId) && !editorialBoard.isLoading && !detail.isLoading;"
+    );
+    // A SETTLED empty workspace consumes the stale restore exactly like the
+    // !group branch below it — the URL writer then canonicalizes from live
+    // state and the stale ?workspace can never yank the operator back into
+    // the empty workspace.
+    expect(page).toContain("if (!editorialWorkspaceDataSettled) return;");
+    // The settled flag participates in the effect deps so a zero-length group
+    // list that merely settles (length 0 → 0) still re-runs the restore
+    // decision.
+    expect(page).toContain(
+      "[editorialNovelGroups.length, editorialWorkspaceDataSettled, selectedWorkspaceId, editorialBoard.data, workspaces.data]"
+    );
+    // The restore ref is never reset — resetting it would revive the stale
+    // params and reintroduce the empty-workspace trap.
+    expect(page).not.toContain("urlRestoreAppliedRef.current = false");
+    // The URL writer stays guarded by the one-time restore flag.
+    expect(page).toContain("if (!urlRestoreAppliedRef.current) return;");
+  });
+
   it("offers a quick story switcher in the header (guarded by the dirty check)", () => {
     expect(page).toContain('data-testid="workspace-story-switcher"');
     expect(page).toContain("if (selectStory(event.target.value)) setStoryEntered(true);");

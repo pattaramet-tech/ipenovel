@@ -1698,6 +1698,13 @@ export default function WorkspacePage() {
   // runs once when the board first arrives; the story-switch machinery
   // above then re-opens the seeded pack/chapter through storyUiStates.
   const urlRestoreAppliedRef = useRef(false);
+  // IPE-064R4B review round 29 (P2): "settled" means both workspace-scoped
+  // queries finished their first load for the CURRENT workspace. A zero
+  // group count only proves the workspace is empty AFTER that — while the
+  // queries are still fetching, empty groups are transient and the restore
+  // must keep waiting, or legitimate bookmarks get consumed too early.
+  const editorialWorkspaceDataSettled =
+    Boolean(selectedWorkspaceId) && !editorialBoard.isLoading && !detail.isLoading;
   useEffect(() => {
     if (urlRestoreAppliedRef.current) return;
     // IPE-064R4B review round 11 (P1): wait for the workspace LIST before
@@ -1729,7 +1736,19 @@ export default function WorkspacePage() {
       setSelectedWorkspaceId(workspaceParam);
       return;
     }
-    if (!editorialNovelGroups.length) return;
+    if (!editorialNovelGroups.length) {
+      // IPE-064R4B review round 29 (P2): a zero-group list is evidence of a
+      // removed story only once the workspace's board/detail queries have
+      // SETTLED. A settled empty workspace consumes the stale restore exactly
+      // like the !group branch below — the URL writer then canonicalizes from
+      // live state and the stale ?workspace param can no longer yank the
+      // operator back into the empty workspace. While still loading, keep
+      // waiting: consuming here would eat legitimate bookmarks whose groups
+      // are merely still in flight.
+      if (!editorialWorkspaceDataSettled) return;
+      urlRestoreAppliedRef.current = true;
+      return;
+    }
     const group = editorialNovelGroups.find(
       (candidate: any) =>
         storyKeyFor(candidate.workspaceNovelId, candidate.novel?.id) === storyParam
@@ -1757,7 +1776,7 @@ export default function WorkspacePage() {
       })
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorialNovelGroups.length, selectedWorkspaceId, editorialBoard.data, workspaces.data]);
+  }, [editorialNovelGroups.length, editorialWorkspaceDataSettled, selectedWorkspaceId, editorialBoard.data, workspaces.data]);
 
   // Keep the URL in sync with the live context (replaceState — no history
   // spam). Skipped until the one-time restore has consumed the params.
