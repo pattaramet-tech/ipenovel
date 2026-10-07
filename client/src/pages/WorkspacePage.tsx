@@ -16,18 +16,21 @@ import { WorkspaceFindingActions } from "./WorkspaceFindingActions";
 import {
   acceptedReconciliationIds,
   acceptedReconciliationRows,
+  backgroundHydrationOwnerBlocksCurrentLifecycle,
   buildBackgroundHydrationQueue,
   buildEvidenceReconciliationKey,
   bumpEvidenceGenerations,
   captureEvidenceGenerations,
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
+  filterEvidenceRowsToCurrentBoard,
   groupStoriesByNovel,
   mergeEvidenceRowsSkippingInvalidated,
   invalidatedIdsForWorkspace,
   nextEvidenceWorkspaceIdentity,
   pruneEvidenceRegistryForLifecycle,
   recordInvalidEvidenceForWorkspace,
+  releaseOwnedBackgroundHydration,
   releaseOwnedReconciliationEntry,
   resolveStoryUiState,
   rotateEvidenceLifecycleState,
@@ -39,6 +42,7 @@ import {
   storyOverallStatus,
   summarizeStoryPacks,
   updateStoryUiState,
+  type BackgroundHydrationOwner,
   type EvidenceLifecycleState,
   type EvidenceWorkspaceIdentity,
   type StoryHydrationState,
@@ -308,6 +312,11 @@ export default function WorkspacePage() {
     .flatMap((column: any) => column.cards ?? [])
     .map((card: any) => card.workItemId)
     .filter((id: any): id is number => Number.isInteger(id) && id > 0);
+  // IPE-065R8B (§9): CURRENT board membership source for the background
+  // hydration result guard — refreshed every render, never a stale captured
+  // pre-request snapshot.
+  const editorialEvidenceWorkItemIdsRef = useRef(editorialEvidenceWorkItemIds);
+  editorialEvidenceWorkItemIdsRef.current = editorialEvidenceWorkItemIds;
   // IPE-065 (C): the heavyweight evidence projection is SCOPED to the active
   // story's packs instead of every work item on the board. The scope is held
   // in state (stable reference while the story's pack set is unchanged) so
@@ -387,11 +396,27 @@ export default function WorkspacePage() {
       evidenceWorkspaceIdentityRef.current.epoch
     );
   }
-  // IPE-065R8A: the story currently hydrating in the background (concurrency
-  // 1 — single-flight marker; the ref mirror guards the async settle path).
-  const [backgroundHydratingStoryKey, setBackgroundHydratingStoryKey] = useState<string | null>(null);
-  const backgroundHydratingStoryKeyRef = useRef<string | null>(null);
-  backgroundHydratingStoryKeyRef.current = backgroundHydratingStoryKey;
+  // IPE-065R8A/R8B: the story currently hydrating in the background. The
+  // single-flight marker is LIFECYCLE-OWNED: { workspaceId, epoch, storyKey,
+  // requestId } — an old lifecycle's in-flight request never blocks a new
+  // lifecycle's queue, and its settlement releases ONLY its own record.
+  // The state mirrors the ref for rendering; the ref is the immediate
+  // authority for the runner and the async settle path.
+  const [backgroundHydrationOwner, setBackgroundHydrationOwner] = useState<BackgroundHydrationOwner | null>(
+    () => null
+  );
+  const backgroundHydrationOwnerRef = useRef<BackgroundHydrationOwner | null>(null);
+  backgroundHydrationOwnerRef.current = backgroundHydrationOwner;
+  const backgroundHydrationRequestIdRef = useRef(0);
+  // IPE-065R8B (§5): the displayed "loading" story derives from the CURRENT
+  // lifecycle owner only — a stale old-lifecycle owner never renders as
+  // loading after switching workspaces.
+  const backgroundHydratingStoryKey =
+    backgroundHydrationOwner != null &&
+    backgroundHydrationOwner.workspaceId === selectedWorkspaceId &&
+    backgroundHydrationOwner.epoch === evidenceWorkspaceIdentityRef.current.epoch
+      ? backgroundHydrationOwner.storyKey
+      : null;
   if (selectedWorkspaceId != null) {
     const returnedInvalidations = invalidatedIdsForWorkspace(
       invalidEvidenceByWorkspaceRef.current,
@@ -2152,24 +2177,44 @@ export default function WorkspacePage() {
     .join(",");
   useEffect(() => {
     if (!isAdmin || !selectedWorkspaceId) return;
-    // Bounded concurrency: at most ONE background hydration in flight.
-    if (backgroundHydratingStoryKeyRef.current) return;
+    // IPE-065R8B (§3): concurrency 1 PER CURRENT LIFECYCLE — only a
+    // same-lifecycle owner blocks the runner. An old lifecycle's in-flight
+    // request is non-authoritative and does not count against this queue,
+    // so B starts immediately without waiting for A's settlement.
+    if (
+      backgroundHydrationOwnerBlocksCurrentLifecycle(
+        backgroundHydrationOwnerRef.current,
+        selectedWorkspaceId,
+        evidenceWorkspaceIdentityRef.current.epoch
+      )
+    ) {
+      return;
+    }
     const next = backgroundHydrationQueue[0];
     if (!next) return;
     const capturedWorkspaceId = selectedWorkspaceId;
     if (!capturedWorkspaceId) return;
     const capturedEpoch = evidenceWorkspaceIdentityRef.current.epoch;
     const capturedLifecycleEpoch = evidenceLifecycleRef.current.epoch;
+    // IPE-065R8B (§2): claim a lifecycle-owned request identity —
+    // workspaceId + epoch + storyKey + monotonic requestId.
+    const capturedRequestId = ++backgroundHydrationRequestIdRef.current;
+    const capturedOwner: BackgroundHydrationOwner = {
+      workspaceId: capturedWorkspaceId,
+      epoch: capturedEpoch,
+      storyKey: next.key,
+      requestId: capturedRequestId,
+    };
     storyHydrationRef.current.statuses.set(next.key, "loading");
-    backgroundHydratingStoryKeyRef.current = next.key;
-    setBackgroundHydratingStoryKey(next.key);
+    backgroundHydrationOwnerRef.current = capturedOwner;
+    setBackgroundHydrationOwner(capturedOwner);
     bumpEvidenceRevision();
     void (async () => {
       try {
         // Story-scoped request: ONLY this story's pack ids — never a
         // workspace-wide projection. fetch owns this request independently
         // of the active-story query instance (fresh cache reuse, else fetch).
-        const rows = await utils.workspace.editorial.evidenceStatuses.fetch(
+        const resultRows = await utils.workspace.editorial.evidenceStatuses.fetch(
           { workspaceId: capturedWorkspaceId, workItemIds: next.workItemIds },
           { staleTime: 30_000 }
         );
@@ -2185,13 +2230,22 @@ export default function WorkspacePage() {
         ) {
           return;
         }
+        const lifecycle = evidenceLifecycleRef.current;
+        // IPE-065R8B (§8/§9): board-removal guard FIRST — rows for
+        // workItems the current board no longer contains (removed pack or
+        // whole removed story) are discarded before the merge, so the
+        // lifecycle evidence container never regains removed rows.
+        const boardRows = filterEvidenceRowsToCurrentBoard(
+          Array.isArray(resultRows) ? resultRows : [],
+          new Set(editorialEvidenceWorkItemIdsRef.current)
+        );
         // Tombstone-fenced merge: tombstoned packs in the response are
         // skipped — only the explicit generation-bound reconciliation may
-        // restore them. Unrelated rows are preserved.
-        const lifecycle = evidenceLifecycleRef.current;
+        // restore them. Unrelated rows are preserved. The two fences
+        // compose (board filter never bypasses tombstones).
         const merged = mergeEvidenceRowsSkippingInvalidated(
           lifecycle.rows,
-          Array.isArray(rows) ? rows : [],
+          boardRows,
           lifecycle.invalidatedIds
         );
         if (merged) lifecycle.rows = merged;
@@ -2205,9 +2259,17 @@ export default function WorkspacePage() {
           storyHydrationRef.current.statuses.set(next.key, "failed");
         }
       } finally {
-        if (backgroundHydratingStoryKeyRef.current === next.key) {
-          backgroundHydratingStoryKeyRef.current = null;
-          setBackgroundHydratingStoryKey(null);
+        // IPE-065R8B (§4/§6): ownership-safe release — this settlement
+        // clears the marker ONLY if it is still the current owner; an old
+        // lifecycle's request settling late can never release a newer
+        // lifecycle's in-flight hydration.
+        const released = releaseOwnedBackgroundHydration(
+          backgroundHydrationOwnerRef.current,
+          capturedOwner
+        );
+        if (released !== backgroundHydrationOwnerRef.current) {
+          backgroundHydrationOwnerRef.current = released;
+          setBackgroundHydrationOwner(released);
         }
         bumpEvidenceRevision();
       }
@@ -2216,7 +2278,7 @@ export default function WorkspacePage() {
   }, [
     isAdmin,
     selectedWorkspaceId,
-    backgroundHydratingStoryKey,
+    backgroundHydrationOwner,
     backgroundHydrationQueueKey,
     evidenceRevision,
     activeStoryKey,

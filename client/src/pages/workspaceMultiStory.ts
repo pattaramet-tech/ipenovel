@@ -592,6 +592,73 @@ export function buildBackgroundHydrationQueue(input: {
   return queue;
 }
 
+// ---------------------------------------------------------------------------
+// IPE-065R8B — lifecycle-owned background hydration lock + board-removal
+// guard. The single-flight marker is bound to the workspace LIFECYCLE
+// (id + epoch) and the exact request instance (monotonic requestId): an
+// old lifecycle's in-flight request NEVER blocks a new lifecycle's queue,
+// and its settlement releases ONLY its own owner record. Background
+// responses may merge only rows still present on the CURRENT board, so a
+// removed workItem/story can never re-enter lifecycle evidence authority.
+// ---------------------------------------------------------------------------
+
+export interface BackgroundHydrationOwner {
+  workspaceId: number;
+  epoch: number;
+  storyKey: string;
+  /** Monotonic, non-reused request instance identity. */
+  requestId: number;
+}
+
+/**
+ * Concurrency gate: ONLY a background hydration owned by the CURRENT
+ * lifecycle (same workspace id AND same epoch) blocks the runner. An old
+ * lifecycle's in-flight request is non-authoritative and does not count
+ * against the new lifecycle's concurrency.
+ */
+export function backgroundHydrationOwnerBlocksCurrentLifecycle(
+  owner: BackgroundHydrationOwner | null | undefined,
+  workspaceId: number,
+  epoch: number
+): boolean {
+  return (
+    owner != null && owner.workspaceId === workspaceId && owner.epoch === epoch
+  );
+}
+
+/**
+ * Ownership-safe release: a settling request clears the owner record ONLY if
+ * the current owner is still ITSELF (requestId identity); an old request
+ * settling late can never release a newer lifecycle's owner. Returns the
+ * owner to store (null when released, unchanged otherwise).
+ */
+export function releaseOwnedBackgroundHydration(
+  current: BackgroundHydrationOwner | null,
+  settled: BackgroundHydrationOwner
+): BackgroundHydrationOwner | null {
+  return current != null && current.requestId === settled.requestId
+    ? null
+    : current;
+}
+
+/**
+ * Board-removal guard: a background response may only contribute rows whose
+ * workItem is still present on the CURRENT board. Rows for removed
+ * workItems/stories are discarded BEFORE the tombstone-fenced merge, so the
+ * lifecycle evidence container never regains removed rows. (Tombstones are
+ * applied separately by the merge — this filter never bypasses them.)
+ */
+export function filterEvidenceRowsToCurrentBoard<TRow extends EvidenceRowLike>(
+  rows: readonly TRow[] | null | undefined,
+  currentBoardWorkItemIds: ReadonlySet<number>
+): TRow[] {
+  if (!rows?.length) return [];
+  return rows.filter((row) => {
+    const id = evidenceRowId(row);
+    return id != null && currentBoardWorkItemIds.has(id);
+  });
+}
+
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(
   cards: T[],
   rawQuery: string

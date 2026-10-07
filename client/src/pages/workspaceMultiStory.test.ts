@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  backgroundHydrationOwnerBlocksCurrentLifecycle,
   acceptedReconciliationIds,
   acceptedReconciliationRows,
   buildBackgroundHydrationQueue,
@@ -11,9 +12,11 @@ import {
   derivePackCardStatus,
   derivePackStatus,
   editorDraftBelongsToSelectedPack,
+  filterEvidenceRowsToCurrentBoard,
   filterPacksByQuery,
   groupStoriesByNovel,
   mergeEvidenceRowsSkippingInvalidated,
+  releaseOwnedBackgroundHydration,
   invalidatedIdsForWorkspace,
   nextEvidenceWorkspaceIdentity,
   pruneEvidenceRegistryForLifecycle,
@@ -33,6 +36,7 @@ import {
   STORY_OVERALL_LABEL,
   summarizeStoryPacks,
   updateStoryUiState,
+  type BackgroundHydrationOwner,
   type EvidenceWorkspaceIdentity,
   type StoryHydrationState,
   type StoryHydrationStatus,
@@ -848,5 +852,93 @@ describe("workspaceMultiStory — background hydration queue (IPE-065R8A)", () =
     expect(sameEvidenceWorkspaceLifecycle(currentIdentity, 7, 1)).toBe(false);
     expect(sameEvidenceWorkspaceLifecycle(currentIdentity, 9, 3)).toBe(false);
     expect(sameEvidenceWorkspaceLifecycle(currentIdentity, 7, 3)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPE-065R8B — lifecycle-owned background hydration lock + board-removal
+// guard. An old lifecycle's in-flight request never blocks a new lifecycle's
+// queue, its settlement never releases a newer owner, and a background
+// response merges only rows still present on the current board.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — hydration owner lock + board guard (IPE-065R8B)", () => {
+  const group = (key: string, ids: number[]) => ({ key, workItemIds: ids });
+  const ownerAX = { workspaceId: 7, epoch: 1, storyKey: "wn:1", requestId: 1 };
+  const ownerBX = { workspaceId: 8, epoch: 2, storyKey: "wn:2", requestId: 2 };
+  const ownerAY = { workspaceId: 7, epoch: 3, storyKey: "wn:1", requestId: 3 };
+
+  it("test A: an old-lifecycle owner does NOT block the new lifecycle's queue", () => {
+    // AX (A epoch1) still in flight; the current lifecycle is B epoch2.
+    expect(
+      backgroundHydrationOwnerBlocksCurrentLifecycle(ownerAX, 8, 2)
+    ).toBe(false);
+    // …so B may start BX immediately.
+  });
+
+  it("test D: same-lifecycle concurrency remains 1", () => {
+    expect(
+      backgroundHydrationOwnerBlocksCurrentLifecycle(ownerBX, 8, 2)
+    ).toBe(true);
+  });
+
+  it("test B: an old request settling releases only its own owner record", () => {
+    // BX is the CURRENT owner when the old AX settles.
+    expect(releaseOwnedBackgroundHydration(ownerBX, ownerAX)).toBe(ownerBX);
+    // Then BX settles → released.
+    expect(releaseOwnedBackgroundHydration(ownerBX, ownerBX)).toBeNull();
+  });
+
+  it("test C: ABA — an epoch1 AX settle cannot clear the epoch3 AY owner", () => {
+    expect(releaseOwnedBackgroundHydration(ownerAY, ownerAX)).toBe(ownerAY);
+  });
+
+  it("test E: board removal PARTIAL — removed workItem rows are discarded before merge", () => {
+    const rows = [
+      { workItemId: 201, checker: true, checkerRan: true },
+      { workItemId: 202, checker: true, checkerRan: true, readyToPublish: true },
+    ];
+    const filtered = filterEvidenceRowsToCurrentBoard(rows, new Set([201]));
+    expect(filtered.map((row) => row.workItemId)).toEqual([201]);
+    // The discarded 202 cannot re-enter lifecycle rows.
+    const lifecycleRows = new Map<number, any>();
+    const merged = mergeEvidenceRowsSkippingInvalidated(lifecycleRows, filtered, new Set());
+    expect(merged?.has(202)).toBe(false);
+  });
+
+  it("test F: WHOLE removed story — no row merges (no resurrection)", () => {
+    const rows = [
+      { workItemId: 201, checker: true },
+      { workItemId: 202, checker: true },
+    ];
+    const filtered = filterEvidenceRowsToCurrentBoard(rows, new Set([999]));
+    expect(filtered).toEqual([]);
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), filtered, new Set());
+    expect(merged).toBeNull();
+  });
+
+  it("test G: board filter and tombstone fence COMPOSE (201 merges, 202 tombstoned, 203 removed)", () => {
+    const rows = [
+      { workItemId: 201, checker: true, checkerRan: true },
+      { workItemId: 202, checker: true, checkerRan: true, readyToPublish: true },
+      { workItemId: 203, checker: true, checkerRan: true },
+    ];
+    const boardIds = new Set([201, 202]);
+    const tombstones = new Set([202]);
+    // Order: board membership filter FIRST, then the tombstone-fenced merge.
+    const filtered = filterEvidenceRowsToCurrentBoard(rows, boardIds);
+    const merged = mergeEvidenceRowsSkippingInvalidated(new Map(), filtered, tombstones);
+    expect(merged?.has(201)).toBe(true);
+    expect(merged?.has(202)).toBe(false);
+    expect(merged?.has(203)).toBe(false);
+    expect(tombstones.has(202)).toBe(true);
+  });
+
+  it("test I: active priority regression — active story stays excluded from the queue", () => {
+    const queue = buildBackgroundHydrationQueue({
+      activeStoryKey: "wn:1",
+      statuses: new Map(),
+      groups: [group("wn:1", [11]), group("wn:2", [21])],
+    });
+    expect(queue.map((entry) => entry.key)).toEqual(["wn:2"]);
   });
 });
