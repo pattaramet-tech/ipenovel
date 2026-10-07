@@ -2673,12 +2673,6 @@ export const workspaceEditorialDraftParagraphs = mysqlTable(
       table.draftTabId,
       table.paragraphKey
     ),
-    fingerprintIdx: index("wedp_fingerprint_idx").on(
-      table.paragraphFingerprint
-    ),
-    sourceFingerprintIdx: index("wedp_source_fingerprint_idx").on(
-      table.sourceParagraphFingerprint
-    ),
     draftTabFk: foreignKey({
       name: "wedp_draft_tab_fk",
       columns: [table.draftTabId],
