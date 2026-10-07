@@ -534,6 +534,64 @@ export function pruneEvidenceRegistryForLifecycle(
   return removed;
 }
 
+// ---------------------------------------------------------------------------
+// IPE-065R8A — progressive background story status hydration.
+//
+// The active story loads its evidence projection first (Priority 1, the
+// existing scoped query); every OTHER story with Episode Packs hydrates its
+// own story-scoped projection afterwards, one at a time (bounded, Priority
+// 2), so the Story Overview converges to real statuses WITHOUT interaction —
+// without ever reintroducing a full-workspace evidence request. Hydration is
+// DATA-only: it never changes navigation/selection.
+// ---------------------------------------------------------------------------
+
+export type StoryHydrationStatus = "loading" | "loaded" | "failed";
+
+export interface StoryHydrationState {
+  epoch: number;
+  statuses: Map<string, StoryHydrationStatus>;
+}
+
+/** Same rotation contract as the evidence container: new epoch = fresh state. */
+export function rotateStoryHydrationState(
+  state: StoryHydrationState,
+  epoch: number
+): StoryHydrationState {
+  if (state.epoch === epoch) return state;
+  return { epoch, statuses: new Map() };
+}
+
+export interface BackgroundHydrationGroup {
+  key: string;
+  workItemIds: number[];
+}
+
+/**
+ * Bounded background queue for the CURRENT workspace lifecycle, in
+ * deterministic order:
+ * - the ACTIVE story is excluded (Priority 1 — it loads through the existing
+ *   scoped query and must never wait behind the queue),
+ * - stories already in a hydration state (loading/loaded/failed) are excluded
+ *   (no duplicate work; a failed story is skipped this lifecycle and may be
+ *   retried later through the active-story path),
+ * - zero-pack stories cannot have evidence and are skipped.
+ * Input order is preserved so the queue is deterministic.
+ */
+export function buildBackgroundHydrationQueue(input: {
+  activeStoryKey: string | null;
+  statuses: ReadonlyMap<string, StoryHydrationStatus>;
+  groups: ReadonlyArray<BackgroundHydrationGroup>;
+}): BackgroundHydrationGroup[] {
+  const queue: BackgroundHydrationGroup[] = [];
+  for (const group of input.groups) {
+    if (input.activeStoryKey != null && group.key === input.activeStoryKey) continue;
+    if (input.statuses.has(group.key)) continue;
+    if (!group.workItemIds.length) continue;
+    queue.push({ key: group.key, workItemIds: [...group.workItemIds] });
+  }
+  return queue;
+}
+
 export function filterPacksByQuery<T extends { episodeNumber?: string | null; episodeTitle?: string | null; note?: string | null; workItemType?: string }>(
   cards: T[],
   rawQuery: string

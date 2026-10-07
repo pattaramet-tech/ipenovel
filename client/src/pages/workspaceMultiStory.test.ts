@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   acceptedReconciliationIds,
   acceptedReconciliationRows,
+  buildBackgroundHydrationQueue,
   buildEvidenceReconciliationKey,
   bumpEvidenceGenerations,
   captureEvidenceGenerations,
@@ -21,6 +22,7 @@ import {
   releaseOwnedReconciliationEntry,
   resolveStoryUiState,
   rotateEvidenceLifecycleState,
+  rotateStoryHydrationState,
   sameEvidenceWorkspaceLifecycle,
   scopeNeedsReconciliation,
   sortPacksByEpisode,
@@ -32,6 +34,8 @@ import {
   summarizeStoryPacks,
   updateStoryUiState,
   type EvidenceWorkspaceIdentity,
+  type StoryHydrationState,
+  type StoryHydrationStatus,
 } from "./workspaceMultiStory";
 
 describe("workspaceMultiStory — per-story UI state", () => {
@@ -737,5 +741,112 @@ describe("workspaceMultiStory — lifecycle-tagged evidence state (IPE-065R5)", 
     byWorkspace.delete(7);
     expect(invalidatedIdsForWorkspace(byWorkspace, 7).size).toBe(0);
     expect(seeded.has(101)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPE-065R8A — progressive background story status hydration. Active story
+// first (existing scoped query); every other story hydrates its OWN
+// story-scoped projection one at a time, data-only, tombstone-fenced, and
+// workspace-lifecycle fenced.
+// ---------------------------------------------------------------------------
+describe("workspaceMultiStory — background hydration queue (IPE-065R8A)", () => {
+  const group = (key: string, ids: number[]) => ({ key, workItemIds: ids });
+
+  it("scenario A: queue excludes the ACTIVE story and preserves deterministic order", () => {
+    const queue = buildBackgroundHydrationQueue({
+      activeStoryKey: "wn:1",
+      statuses: new Map(),
+      groups: [group("wn:3", [31, 32]), group("wn:1", [11]), group("wn:2", [21])],
+    });
+    expect(queue.map((entry) => entry.key)).toEqual(["wn:3", "wn:2"]);
+    // Story-scoped: B's request contains ONLY B's ids (32 before 31? — input
+    // order preserved; the page pre-sorts ids ascending).
+    expect(queue[0]).toEqual({ key: "wn:3", workItemIds: [31, 32] });
+  });
+
+  it("scenario B: activating C removes it from the background queue (active priority, no duplication)", () => {
+    const statuses = new Map<string, StoryHydrationStatus>([["wn:2", "loading"]]);
+    // C ("wn:3") becomes active → excluded from the background queue; the
+    // in-flight wn:2 is ALSO not requeued (it is owned by its running
+    // request — queueing it again would duplicate the fetch). C's own
+    // evidence loads immediately through the active-story query path.
+    const queue = buildBackgroundHydrationQueue({
+      activeStoryKey: "wn:3",
+      statuses,
+      groups: [group("wn:2", [21]), group("wn:3", [31])],
+    });
+    expect(queue).toEqual([]);
+  });
+
+  it("scenario G: a FAILED story is skipped — later stories still hydrate (no block, no infinite retry)", () => {
+    const statuses = new Map<string, StoryHydrationStatus>([
+      ["wn:2", "failed"],
+      ["wn:4", "loaded"],
+    ]);
+    const queue = buildBackgroundHydrationQueue({
+      activeStoryKey: "wn:1",
+      statuses,
+      groups: [group("wn:1", [11]), group("wn:2", [21]), group("wn:3", [31]), group("wn:4", [41])],
+    });
+    expect(queue.map((entry) => entry.key)).toEqual(["wn:3"]);
+  });
+
+  it("scenario H: fully hydrated stories are NOT requeued when another story completes", () => {
+    const statuses = new Map<string, StoryHydrationStatus>([
+      ["wn:2", "loaded"],
+      ["wn:3", "loaded"],
+    ]);
+    const queue = buildBackgroundHydrationQueue({
+      activeStoryKey: "wn:1",
+      statuses,
+      groups: [group("wn:1", [11]), group("wn:2", [21]), group("wn:3", [31])],
+    });
+    expect(queue).toEqual([]);
+  });
+
+  it("zero-pack stories cannot have evidence and never enter the queue", () => {
+    const queue = buildBackgroundHydrationQueue({
+      activeStoryKey: null,
+      statuses: new Map(),
+      groups: [group("wn:9", [])],
+    });
+    expect(queue).toEqual([]);
+  });
+
+  it("hydration state rotates with the workspace epoch (fresh ledger per lifecycle)", () => {
+    let hydration: StoryHydrationState = { epoch: 1, statuses: new Map([["wn:2", "loaded"]]) };
+    hydration = rotateStoryHydrationState(hydration, 1); // same epoch → no-op
+    expect(hydration.statuses.get("wn:2")).toBe("loaded");
+    hydration = rotateStoryHydrationState(hydration, 2); // new lifecycle
+    expect(hydration.statuses.size).toBe(0);
+    expect(rotateStoryHydrationState(hydration, 2)).toBe(hydration);
+  });
+
+  it("tombstone fence D: a background response merging [101 normal, 202 tombstoned] keeps the fence", () => {
+    const lifecycleRows = new Map<number, any>();
+    const tombstones = new Set([202]);
+    const merged = mergeEvidenceRowsSkippingInvalidated(
+      lifecycleRows,
+      [
+        { workItemId: 101, checker: true, checkerRan: true },
+        { workItemId: 202, checker: true, checkerRan: true, readyToPublish: true },
+      ],
+      tombstones
+    );
+    // 101 merges; 202 does NOT merge and the tombstone survives untouched.
+    expect(merged?.get(101).checker).toBe(true);
+    expect(merged?.has(202)).toBe(false);
+    expect(tombstones.has(202)).toBe(true);
+    // The tombstoned pack stays fail-closed.
+    expect(derivePackCardStatus({ evidence: null, evidenceState: "unavailable" })).toBe("unknown");
+  });
+
+  it("lifecycle fence E/F: a hydration result is accepted only for the SAME workspace lifecycle", () => {
+    const currentIdentity: EvidenceWorkspaceIdentity = { workspaceId: 7, epoch: 3 };
+    // Old lifecycle (epoch 1) and other workspace responses are rejected.
+    expect(sameEvidenceWorkspaceLifecycle(currentIdentity, 7, 1)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle(currentIdentity, 9, 3)).toBe(false);
+    expect(sameEvidenceWorkspaceLifecycle(currentIdentity, 7, 3)).toBe(true);
   });
 });

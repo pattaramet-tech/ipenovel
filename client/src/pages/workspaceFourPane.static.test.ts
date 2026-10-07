@@ -268,6 +268,46 @@ describe("IPE-064 — intake separation", () => {
     expect(page).not.toContain("refetchInterval: 30_000");
     expect(page).not.toContain('refetchOnMount: "always"');
   });
+
+  it("hydrates inactive story statuses progressively in the background (IPE-065R8A)", () => {
+    // Separate mechanism: the ACTIVE story keeps its scoped query; inactive
+    // stories hydrate through utils fetch with their OWN story-scoped ids —
+    // never multiplexed through activeEvidenceScopeIds, never one
+    // all-workspace workItemIds query.
+    expect(page).toContain("const [backgroundHydratingStoryKey, setBackgroundHydratingStoryKey] = useState<string | null>(null);");
+    expect(page).toContain("buildBackgroundHydrationQueue({");
+    expect(page).toContain("activeStoryKey,");
+    expect(page).toContain("statuses: storyHydrationRef.current.statuses,");
+    expect(page).toContain("utils.workspace.editorial.evidenceStatuses.fetch(");
+    expect(page).toContain("workItemIds: next.workItemIds },");
+    // Bounded concurrency: single-flight marker — the runner returns while a
+    // background hydration is in flight (one story at a time).
+    expect(page).toContain("if (backgroundHydratingStoryKeyRef.current) return;");
+    // Lifecycle fence: workspace id AND epoch captured; a result from an old
+    // lifecycle (switch or ABA return) is rejected before any merge.
+    expect(page).toContain(
+      "sameEvidenceWorkspaceLifecycle(\n            evidenceWorkspaceIdentityRef.current,\n            capturedWorkspaceId,\n            capturedEpoch\n          )"
+    );
+    expect(page).toContain("evidenceLifecycleRef.current.epoch !== capturedLifecycleEpoch");
+    // Tombstone-fenced merge — a background response can never release a
+    // tombstone or bypass the fence.
+    expect(page).toContain(
+      "mergeEvidenceRowsSkippingInvalidated(\n          lifecycle.rows,\n          Array.isArray(rows) ? rows : [],\n          lifecycle.invalidatedIds\n        );"
+    );
+    // No navigation side effects from hydration: the block must not call the
+    // story/pack navigation setters.
+    const hydrationAt = page.indexOf("IPE-065R8A: bounded progressive background hydration");
+    const hydrationBlock = page.slice(hydrationAt, hydrationAt + 4200);
+    expect(hydrationBlock).not.toContain("setSelectedStoryKey(");
+    expect(hydrationBlock).not.toContain("setSelectedSourceWorkItemId(");
+    expect(hydrationBlock).not.toContain("setStoryEntered(");
+    // Card visibility: a pack whose story is hydrating shows loading.
+    expect(page).toContain("cardStoryKey === backgroundHydratingStoryKey");
+    // Hydration ledger rotates with the workspace epoch.
+    expect(page).toContain("rotateStoryHydrationState(");
+    // The active-story scoped query is untouched by the background path.
+    expect(page).toContain("workItemIds: activeEvidenceScopeIds },");
+  });
 });
 
 describe("IPE-064 — story gate", () => {
