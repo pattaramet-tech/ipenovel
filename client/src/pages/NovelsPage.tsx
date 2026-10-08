@@ -9,6 +9,7 @@ import { Search, Loader2 } from "lucide-react";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { useLanguage } from "@/contexts/LanguageContext";
 import { keepPreviousData } from "@tanstack/react-query";
 import NovelCard, { type NovelCardBadge } from "@/components/NovelCard";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
@@ -42,6 +43,8 @@ export default function NovelsPage() {
   // setSearchParams navigates for us - single source of truth for both
   // reading and writing the query string.
   const [searchParams, setSearchParams] = useSearchParams();
+  const { language } = useLanguage();
+  const isThai = language === "th";
   const { user } = useAuth();
   const utils = trpc.useUtils();
   // Seeded from the URL on first render only (StrictMode/rerenders must not
@@ -219,6 +222,12 @@ export default function NovelsPage() {
 
   // Get display title based on current sort/filter
   const getPageTitle = () => {
+    if (isThai) {
+      if (storyStatusParam === "finished") return "นิยายจบแล้ว";
+      if (storyStatusParam === "ongoing") return "นิยายกำลังดำเนินเรื่อง";
+      if (filterParam === "free") return sortParam === "popular" ? "นิยายฟรียอดนิยม" : "นิยายฟรีล่าสุด";
+      return sortParam === "popular" ? "นิยายยอดนิยม" : "นิยายล่าสุด";
+    }
     if (storyStatusParam === "finished") return "Finished Novels";
     if (storyStatusParam === "ongoing") return "Ongoing Novels";
     if (filterParam === "free") return sortParam === "popular" ? "Popular Free Novels" : "Latest Free Novels";
@@ -266,17 +275,18 @@ export default function NovelsPage() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="ipe-public ipe-catalog min-h-screen">
       {/* Header */}
-      <div className="bg-white border-b border-slate-200 py-4 sm:py-6">
-        <div className="container mx-auto px-4">
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-3 sm:mb-4">{getPageTitle()}</h1>
+      <div className="ipe-catalog-header border-b py-6 sm:py-9">
+        <div className="ipe-page-container">
+          <p className="ipe-hero-label mb-1">IPENOVEL / LIBRARY</p>
+          <h1 className="ipe-section-title text-2xl sm:text-3xl md:text-4xl mb-4 sm:mb-5">{getPageTitle()}</h1>
 
           {/* Search */}
-          <div className="relative w-full sm:max-w-md mb-3">
+          <div className="ipe-catalog-controls relative w-full sm:max-w-xl mb-4">
             <Search className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
             <Input
-              placeholder="Search novels..."
+              placeholder={isThai ? "ค้นหานิยาย..." : "Search novels..."}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-10"
@@ -284,7 +294,7 @@ export default function NovelsPage() {
           </div>
 
           {/* Filter/Sort Controls */}
-          <div className="flex flex-wrap gap-2 sm:gap-3">
+          <div className="ipe-catalog-controls flex flex-wrap gap-2 sm:gap-3">
             {/* Sort */}
             <div className="flex gap-1.5 sm:gap-2">
               <Button
@@ -292,14 +302,14 @@ export default function NovelsPage() {
                 size="sm"
                 onClick={() => handleSortChange("new")}
               >
-                Latest
+                {isThai ? "ล่าสุด" : "Latest"}
               </Button>
               <Button
                 variant={sortParam === "popular" ? "default" : "outline"}
                 size="sm"
                 onClick={() => handleSortChange("popular")}
               >
-                Popular
+                {isThai ? "ยอดนิยม" : "Popular"}
               </Button>
             </div>
 
@@ -310,14 +320,14 @@ export default function NovelsPage() {
                 size="sm"
                 onClick={() => handleFilterChange("all")}
               >
-                All
+                {isThai ? "ทั้งหมด" : "All"}
               </Button>
               <Button
                 variant={filterParam === "free" ? "default" : "outline"}
                 size="sm"
                 onClick={() => handleFilterChange("free")}
               >
-                Free Only
+                {isThai ? "ฟรีเท่านั้น" : "Free Only"}
               </Button>
             </div>
 
@@ -328,7 +338,7 @@ export default function NovelsPage() {
                 size="sm"
                 onClick={() => handleStoryStatusChange("all")}
               >
-                All Status
+                {isThai ? "ทุกสถานะ" : "All Status"}
               </Button>
               <Button
                 variant={storyStatusParam === "ongoing" ? "default" : "outline"}
@@ -336,7 +346,7 @@ export default function NovelsPage() {
                 onClick={() => handleStoryStatusChange("ongoing")}
                 className={storyStatusParam === "ongoing" ? "" : "border-blue-200 text-blue-700 hover:bg-blue-50"}
               >
-                Ongoing
+                {isThai ? "กำลังดำเนินเรื่อง" : "Ongoing"}
               </Button>
               <Button
                 variant={storyStatusParam === "finished" ? "default" : "outline"}
@@ -348,7 +358,7 @@ export default function NovelsPage() {
                     : "border-purple-200 text-purple-700 hover:bg-purple-50"
                 }
               >
-                Finished
+                {isThai ? "จบแล้ว" : "Finished"}
               </Button>
             </div>
           </div>
@@ -356,7 +366,7 @@ export default function NovelsPage() {
       </div>
 
       {/* Content */}
-      <div className="container mx-auto px-4 pt-6 sm:pt-8 pb-[calc(3rem+env(safe-area-inset-bottom))]">
+      <div className="ipe-page-container ipe-catalog-content pt-6 sm:pt-8 pb-[calc(3rem+env(safe-area-inset-bottom))]">
         {isLoading ? (
           // True first load only - no cached/placeholder data to show yet.
           <div className={CARD_GRID_CLASSES}>
@@ -379,7 +389,7 @@ export default function NovelsPage() {
           </div>
         ) : novels && novels.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-slate-600 text-lg">No novels found</p>
+            <p className="text-slate-600 text-lg">{isThai ? "ไม่พบนิยายที่ตรงกับการค้นหา" : "No novels found"}</p>
           </div>
         ) : (
           <>
@@ -396,12 +406,12 @@ export default function NovelsPage() {
               {novels?.map((novel: any, idx: number) => {
                 const badges: NovelCardBadge[] = [
                   {
-                    label: novel.storyStatus === "finished" ? "Finished" : "Ongoing",
+                    label: novel.storyStatus === "finished" ? (isThai ? "จบแล้ว" : "Finished") : (isThai ? "กำลังดำเนินเรื่อง" : "Ongoing"),
                     className: novel.storyStatus === "finished" ? "bg-purple-600 text-white" : "bg-blue-600 text-white",
                   },
                 ];
                 if (novel.freeEpisodeCount > 0) {
-                  badges.push({ label: "Free", className: "bg-green-500 text-white" });
+                  badges.push({ label: isThai ? "ฟรี" : "Free", className: "bg-green-500 text-white" });
                 }
 
                 return (
@@ -432,15 +442,15 @@ export default function NovelsPage() {
                   aria-label with different text would silently break
                   getByRole/voice-control lookups by "Next" too. */}
               <Button variant="outline" disabled={currentPage === 1} onClick={() => goToPage(currentPage - 1)}>
-                Previous
+                {isThai ? "ก่อนหน้า" : "Previous"}
               </Button>
 
               <span className="text-sm text-slate-600" aria-current="page">
-                Page {currentPage}
+                {isThai ? "หน้า" : "Page"} {currentPage}
               </span>
 
               <Button variant="outline" disabled={!hasNextPage || isFetching} onClick={() => goToPage(currentPage + 1)}>
-                Next
+                {isThai ? "ถัดไป" : "Next"}
               </Button>
             </nav>
           </>

@@ -60,7 +60,7 @@ export default function NovelCard({
 
   return (
     <Link href={link}>
-      <div className="group h-full flex flex-col rounded-2xl bg-white border border-slate-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden cursor-pointer">
+      <div className="ipe-novel-card group h-full flex flex-col rounded-2xl bg-white border border-slate-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden cursor-pointer">
         <div className="relative aspect-3/4 overflow-hidden bg-slate-100">
           {coverImageUrl ? (
             <>
@@ -87,7 +87,7 @@ export default function NovelCard({
               />
             </>
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 px-3">
+            <div className="ipe-cover-placeholder w-full h-full flex items-center justify-center px-3">
               <span className="text-xs sm:text-sm font-medium text-slate-400 text-center line-clamp-4">
                 {title || "ไม่มีภาพปก"}
               </span>

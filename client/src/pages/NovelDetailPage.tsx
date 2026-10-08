@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { BookOpen, Search, ChevronDown, ChevronUp } from "lucide-react";
 import {
   formatEpisodeLabel,
@@ -24,7 +24,7 @@ export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
   const [, setLocation] = useLocation();
   const { user } = useAuth();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [selectedEpisodes, setSelectedEpisodes] = useState<number[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   // Default sort is always numeric episode order (ascending) - never title
@@ -36,6 +36,7 @@ export default function NovelDetailPage() {
   // chapters still surface under "ทั้งหมด" (see visibleReaderEpisodes below).
   const [saleType, setSaleType] = useState<"all" | "package">("all");
   const [purchasingEpisodeId, setPurchasingEpisodeId] = useState<number | null>(null);
+  const [coverLoadFailed, setCoverLoadFailed] = useState(false);
   // Table-of-contents accordion state, keyed by "<chapter|file>:<group.key>" so
   // the chapter and file sections track expansion independently. Absent keys
   // fall back to isGroupExpanded()'s default (first group open, rest closed).
@@ -49,6 +50,9 @@ export default function NovelDetailPage() {
     { novelId: validNovelId },
     { enabled: !!validNovelId }
   );
+  useEffect(() => {
+    setCoverLoadFailed(false);
+  }, [novel?.novel?.coverImageUrl]);
 
   // Always call episodes query (never conditionally) - gated by validNovelId only
   const { data: episodes, error: episodesError, isLoading: episodesLoading } = trpc.novels.episodes.useQuery(
@@ -642,18 +646,18 @@ export default function NovelDetailPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container max-w-4xl px-4 py-6 md:py-8">
+    <div className="ipe-public ipe-detail min-h-screen">
+      <div className="ipe-detail-container py-6 md:py-10">
         {/* Back Button */}
         <Button variant="ghost" onClick={() => setLocation("/novels")} className="mb-6 -ml-2 hover:bg-slate-100">
           ← {t("common.back")}
         </Button>
 
         {/* Novel Header Section */}
-        <div className="grid md:grid-cols-3 gap-6 md:gap-8 mb-10">
+        <div className="ipe-detail-hero grid md:grid-cols-3 mb-8">
           {/* Novel Cover and Info */}
           <div className="md:col-span-1">
-            {novel?.novel?.coverImageUrl && (
+            {novel?.novel?.coverImageUrl && !coverLoadFailed && (
               <img
                 src={novel.novel.coverImageUrl}
                 alt={novel.novel?.title || "Novel"}
@@ -669,11 +673,18 @@ export default function NovelDetailPage() {
                 loading="eager"
                 decoding="async"
                 fetchPriority="high"
-                className="w-full h-auto rounded-lg shadow-md mb-6"
+                className="w-full max-w-[280px] mx-auto h-auto rounded-lg shadow-md mb-6"
                 onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = "none";
+                  setCoverLoadFailed(true);
                 }}
               />
+            )}
+            {(!novel?.novel?.coverImageUrl || coverLoadFailed) && (
+              <div className="ipe-detail-cover mb-6" role="img" aria-label={language === "th" ? `ไม่มีภาพปกสำหรับ ${novel.novel.title}` : `Cover unavailable for ${novel.novel.title}`}>
+                <BookOpen className="w-12 h-12" aria-hidden="true" />
+                <p className="text-base font-semibold line-clamp-4">{novel.novel.title}</p>
+                <span className="text-xs tracking-[.18em]">IPENOVEL</span>
+              </div>
             )}
             <div className="space-y-4">
               <div>
@@ -700,7 +711,7 @@ export default function NovelDetailPage() {
 
           {/* Novel Details */}
           <div className="md:col-span-2">
-            <h1 className="text-3xl md:text-4xl font-bold mb-3">{novel?.novel?.title || "Untitled"}</h1>
+            <h1 className="ipe-detail-title text-3xl md:text-4xl font-bold mb-3">{novel?.novel?.title || "Untitled"}</h1>
 
             {/* Story status badge */}
             {novel?.novel?.storyStatus && (
@@ -718,7 +729,7 @@ export default function NovelDetailPage() {
             <p className="text-base text-muted-foreground mb-6 leading-relaxed">{novel?.novel?.description || t("novel.noDescription")}</p>
 
             {/* Episode Stats */}
-            <div className="grid grid-cols-3 gap-3 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border">
+            <div className="ipe-detail-meta grid grid-cols-3 gap-3 p-4 rounded-lg border">
               <div>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">{t("status.totalEpisodes")}</p>
                 <p className="text-2xl font-bold">{episodesError ? "—" : episodesLoading ? "…" : totalReadableChapterCount}</p>
@@ -736,7 +747,7 @@ export default function NovelDetailPage() {
         </div>
 
         {/* Episodes Section */}
-        <div className="space-y-6">
+        <div className="ipe-detail-episode-section space-y-6">
           {/* Section Header */}
           <div>
             <h2 className="text-2xl font-bold mb-4 px-1">{t("status.episodes")}</h2>

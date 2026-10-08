@@ -8,10 +8,11 @@ import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { ACCOUNT_RECOVERY_NAV_HREF, shouldHideGlobalNavbar, shouldShowAccountRecoveryNavItem } from "./navbarVisibility";
+import "../styles/public-storefront.css";
 
 export default function Navbar() {
   const { user, logout, isAuthenticated } = useAuth();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -55,19 +56,21 @@ export default function Navbar() {
   ];
 
   return (
-    <nav className="bg-white border-b border-slate-100 sticky top-0 z-50 shadow-sm">
+    <nav aria-label="Public navigation" className="ipe-public-nav sticky top-0 z-50">
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between h-16 gap-4">
           {/* Logo - Mobile First */}
-          <div
+          <button
+            type="button"
+            aria-label={language === "th" ? "Ipenovel — หน้าแรก" : "Ipenovel — home"}
             className="flex items-center gap-2 cursor-pointer flex-shrink-0"
             onClick={() => navigate("/")}
           >
-            <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center">
+            <span className="ipe-brand-mark w-8 h-8 flex items-center justify-center">
               <BookOpen className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-base sm:text-lg text-slate-900 hidden sm:inline">Ipenovel</span>
-          </div>
+            </span>
+            <span className="ipe-brand-name text-base sm:text-lg hidden sm:inline">Ipenovel</span>
+          </button>
 
           {/* Desktop Navigation - Hidden on Mobile */}
           <div className="hidden lg:flex items-center gap-2 flex-1 ml-8">
@@ -78,7 +81,7 @@ export default function Navbar() {
                 <button
                   key={link.href}
                   onClick={() => navigate(link.href)}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
+                  className="ipe-nav-link flex items-center gap-2 px-4 py-2 rounded-full transition text-sm whitespace-nowrap"
                 >
                   <Icon className="w-4 h-4" />
                   {link.label}
@@ -90,7 +93,7 @@ export default function Navbar() {
             {user?.role === "admin" && (
               <button
                 onClick={() => navigate("/admin")}
-                className="flex items-center gap-2 px-4 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm whitespace-nowrap"
+                className="ipe-nav-link flex items-center gap-2 px-4 py-2 rounded-full transition text-sm whitespace-nowrap"
               >
                 <Settings className="w-4 h-4" />
                 {t("nav.admin")}
@@ -145,7 +148,7 @@ export default function Navbar() {
                 </button>
               </div>
             ) : (
-              <Button size="sm" asChild className="rounded-full">
+              <Button size="sm" asChild className="ipe-nav-cta rounded-full">
                 <a href={getLoginUrl()}>{t("nav.login")}</a>
               </Button>
             )}
@@ -156,8 +159,10 @@ export default function Navbar() {
             <LanguageSwitcher />
             
             <button
+              type="button"
+              aria-label={t("nav.cart")}
               onClick={() => navigate("/cart")}
-              className="p-2 rounded-full hover:bg-slate-100 transition relative"
+              className="ipe-nav-link p-2 rounded-full transition relative"
             >
               <ShoppingCart className="w-5 h-5 text-slate-600" />
               {cartCount > 0 && (
@@ -169,7 +174,11 @@ export default function Navbar() {
 
             {/* Mobile Menu Button */}
             <button
-              className="p-2 rounded-full hover:bg-slate-100 transition"
+              type="button"
+              className="ipe-nav-link p-2 rounded-full transition"
+              aria-label={mobileMenuOpen ? (language === "th" ? "ปิดเมนู" : "Close menu") : (language === "th" ? "เปิดเมนู" : "Open menu")}
+              aria-expanded={mobileMenuOpen}
+              aria-controls="ipe-mobile-navigation"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             >
               {mobileMenuOpen ? (
@@ -183,7 +192,7 @@ export default function Navbar() {
 
         {/* Mobile Navigation Menu */}
         {mobileMenuOpen && (
-          <div className="lg:hidden pb-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div id="ipe-mobile-navigation" className="lg:hidden pb-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="flex flex-col gap-2 pt-4">
               {/* Mobile Nav Links */}
               {navLinks.map((link) => {
@@ -258,7 +267,7 @@ export default function Navbar() {
                   </button>
                 </div>
               ) : (
-                <Button asChild className="rounded-full w-full">
+                <Button asChild className="ipe-nav-cta rounded-full w-full">
                   <a href={getLoginUrl()}>{t("nav.login")}</a>
                 </Button>
               )}

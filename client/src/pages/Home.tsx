@@ -44,8 +44,8 @@ function BannerCarousel({ banners, learnMoreLabel }: { banners: any[]; learnMore
   const currentBanner = banners[currentIndex];
 
   return (
-    <div className="mb-12 sm:mb-16 md:mb-20">
-      <div className="relative w-full h-48 sm:h-64 md:h-80 rounded-xl overflow-hidden group">
+    <div className="ipe-home-hero mb-12 sm:mb-16 md:mb-20">
+      <div className="relative w-full min-h-[170px] aspect-[16/7] sm:aspect-[16/5] overflow-hidden group bg-[#172238]">
         {/* Banner Image */}
         {currentBanner.imageUrl ? (
           <img
@@ -61,36 +61,13 @@ function BannerCarousel({ banners, learnMoreLabel }: { banners: any[]; learnMore
             loading="eager"
             decoding="async"
             fetchPriority="high"
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            className="w-full h-full object-contain transition-transform duration-300"
           />
         ) : (
           <div className="w-full h-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center">
             <Sparkles className="w-16 h-16 text-white/50" />
           </div>
         )}
-
-        {/* Dark overlay for text readability */}
-        <div className="absolute inset-0 bg-black/20" />
-
-        {/* Banner Content */}
-        <div className="absolute inset-0 flex flex-col justify-end p-4 sm:p-6 md:p-8 text-white">
-          <h2 className="text-xl sm:text-2xl md:text-3xl font-bold mb-2 line-clamp-2">
-            {currentBanner.title}
-          </h2>
-          {currentBanner.description && (
-            <p className="text-sm sm:text-base text-white/90 mb-4 line-clamp-2">
-              {currentBanner.description}
-            </p>
-          )}
-          {currentBanner.linkUrl && (
-            <a href={currentBanner.linkUrl} target="_blank" rel="noopener noreferrer">
-              <Button className="w-full sm:w-auto rounded-full bg-white text-slate-900 hover:bg-blue-50 font-semibold">
-                {learnMoreLabel}
-                <ArrowRight className="w-4 h-4 ml-2" />
-              </Button>
-            </a>
-          )}
-        </div>
 
         {/* Navigation Dots */}
         {banners.length > 1 && (
@@ -106,6 +83,20 @@ function BannerCarousel({ banners, learnMoreLabel }: { banners: any[]; learnMore
               />
             ))}
           </div>
+        )}
+      </div>
+      <div className="ipe-home-banner-caption flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h2 className="line-clamp-2">{currentBanner.title}</h2>
+          {currentBanner.description && (
+            <p className="text-sm mt-1 line-clamp-2">{currentBanner.description}</p>
+          )}
+        </div>
+        {currentBanner.linkUrl && (
+          <a className="ipe-editorial-button inline-flex flex-shrink-0 items-center justify-center gap-2 px-4 py-2 text-sm" href={currentBanner.linkUrl} target="_blank" rel="noopener noreferrer">
+            {learnMoreLabel}
+            <ArrowRight className="w-4 h-4" />
+          </a>
         )}
       </div>
     </div>
@@ -159,7 +150,7 @@ function NovelCardSection({
 
 export default function Home() {
   const { user } = useAuth();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   // Homepage sections (popular/new/free/finished novels, latest episodes,
   // banners) don't need to be second-fresh - a few minutes of staleness is
   // invisible to users and cuts redundant refetches on every window focus.
@@ -218,9 +209,14 @@ export default function Home() {
   const freeLabel = t("home.free");
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="ipe-public ipe-home min-h-screen">
       {/* Main Content - Mobile First */}
-      <div className="max-w-6xl mx-auto px-4 pt-6 sm:pt-8 md:pt-10 pb-[calc(3rem+env(safe-area-inset-bottom))] sm:pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-[calc(5rem+env(safe-area-inset-bottom))]">
+      <div className="ipe-page-container pt-8 sm:pt-10 md:pt-12 pb-[calc(3rem+env(safe-area-inset-bottom))] sm:pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-[calc(5rem+env(safe-area-inset-bottom))]">
+        <header className="mb-6 sm:mb-8">
+          <p className="ipe-hero-label mb-2">IPENOVEL / STORIES</p>
+          <h1 className="ipe-section-title text-3xl sm:text-4xl md:text-5xl">{language === "th" ? "ค้นพบโลกใหม่ผ่านเรื่องเล่า" : "Discover your next great story"}</h1>
+          <p className="ipe-section-intro mt-2 text-sm sm:text-base">{language === "th" ? "เลือกอ่านนิยายที่คุณชื่นชอบ และติดตามเรื่องราวตอนใหม่ล่าสุด" : "Explore the stories you love and the latest chapter updates."}</p>
+        </header>
         {/* Banners Section */}
         {!isLoading && (
           <BannerCarousel banners={banners} learnMoreLabel={t("home.learnMore") || "Learn More"} />
@@ -229,7 +225,7 @@ export default function Home() {
         <section className="mb-16 sm:mb-20">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
-              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+              <h2 className="ipe-section-title text-2xl sm:text-3xl md:text-4xl">
                 {t("home.featured")}
               </h2>
               <p className="text-sm text-slate-600 mt-1">{t("home.featuredDesc")}</p>
@@ -268,7 +264,7 @@ export default function Home() {
         <section className="mb-16 sm:mb-20">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
-              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+              <h2 className="ipe-section-title text-2xl sm:text-3xl md:text-4xl">
                 {t("home.newReleases")}
               </h2>
               <p className="text-sm text-slate-600 mt-1">{t("home.newReleasesDesc")}</p>
@@ -307,7 +303,7 @@ export default function Home() {
         <section className="mb-16 sm:mb-20">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
-              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+              <h2 className="ipe-section-title text-2xl sm:text-3xl md:text-4xl">
                 {t("home.freeEpisodes")}
               </h2>
               <p className="text-sm text-slate-600 mt-1">{t("home.freeEpisodesDesc")}</p>
@@ -347,7 +343,7 @@ export default function Home() {
           <section className="mb-16 sm:mb-20">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
               <div>
-                <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+                <h2 className="ipe-section-title text-2xl sm:text-3xl md:text-4xl">
                   {t("home.finishedNovels")}
                 </h2>
                 <p className="text-sm text-slate-600 mt-1">{t("home.finishedDesc")}</p>
@@ -393,7 +389,7 @@ export default function Home() {
         <section>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
-              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-900">
+              <h2 className="ipe-section-title text-2xl sm:text-3xl md:text-4xl">
                 {t("home.latestEpisodes")}
               </h2>
               <p className="text-sm text-slate-600 mt-1">{t("home.latestEpisodesDesc")}</p>
