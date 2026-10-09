@@ -322,3 +322,68 @@ test.describe("@local-fixture IPE-069R5I mobile navigation Codex fixes", () => {
     await expect(hamburger).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+// IPE-069R5L-R1 — nullable account names must still yield meaningful
+// visible and accessible account-toggle labels without mutating test DB users.
+test.describe("@local-fixture IPE-069R5L-R1 account accessibility", () => {
+  for (const sample of [
+    { description: "null", name: null },
+    { description: "empty", name: "" },
+    { description: "whitespace-only", name: "   " },
+  ]) {
+    test(`P2 account name ${sample.description}: localized fallback remains visible and accessible`, async ({ page }) => {
+      await loginAs(page.context(), "user");
+      await page.setViewportSize({ width: 1440, height: 900 });
+      let intercepted = 0;
+      // Override only auth.me responses from the real local backend.
+      // Preserve all other API behavior, cookies, and user fields.
+      await page.route("**/api/trpc/**", async (route) => {
+        const pathname = decodeURIComponent(new URL(route.request().url()).pathname);
+        const procedures = pathname.split("/api/trpc/")[1]?.split(",") ?? [];
+        if (!procedures.includes("auth.me")) {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        const payload = await response.json();
+        const envelopes = Array.isArray(payload) ? payload : [payload];
+        for (const [index, envelope] of envelopes.entries()) {
+          if (procedures[index] !== "auth.me") continue;
+          const sessionUser = envelope?.result?.data?.json;
+          if (sessionUser && typeof sessionUser === "object") {
+            sessionUser.name = sample.name;
+            intercepted += 1;
+          }
+        }
+        await route.fulfill({ response, json: payload });
+      });
+
+      await gotoOk(page, "/novels");
+      const accountToggle = page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']");
+      await expect(accountToggle).toBeVisible();
+      expect(intercepted).toBeGreaterThan(0);
+      await expect(accountToggle).toHaveAttribute("aria-label", "บัญชี");
+      await expect(accountToggle.getByText("บัญชี", { exact: true })).toBeVisible();
+      await accountToggle.click();
+      await expect(page.locator("#ipe-account-menu")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(accountToggle).toBeFocused();
+
+      await page.getByRole("button", { name: "Switch to English" }).click();
+      await expect(accountToggle).toHaveAttribute("aria-label", "Account");
+      await expect(accountToggle.getByText("Account", { exact: true })).toBeVisible();
+    });
+  }
+
+  test("P2 account name present: first-name display and accessible account label are retained", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/novels");
+    const accountToggle = page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']");
+    await expect(accountToggle).toBeVisible();
+    await expect(accountToggle).toHaveAttribute("aria-label", "บัญชี");
+    await expect(accountToggle.getByText("Test", { exact: true })).toBeVisible();
+    await accountToggle.click();
+    await expect(page.locator("#ipe-account-menu")).toBeVisible();
+  });
+});

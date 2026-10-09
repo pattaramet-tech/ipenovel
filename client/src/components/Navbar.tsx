@@ -146,6 +146,10 @@ export default function Navbar() {
     ...(user?.role === "admin" ? [{ label: t("nav.admin"), href: "/admin", icon: Settings }] : []),
   ];
   const accountChildActive = accountItems.some((item) => isActive(item.href));
+  // Account names are nullable; keep a meaningful visible label for users
+  // without a name. The disclosure also has a localized accessible name.
+  const accountName = user?.name?.trim();
+  const accountDisplayName = accountName ? accountName.split(/\s+/)[0] : t("nav.account");
 
   const renderNavLink = (link: { label: string; href: string; icon: typeof BookOpen }) => {
     const Icon = link.icon;
@@ -262,6 +266,7 @@ export default function Navbar() {
               <div ref={accountRef} className="relative">
                 <button
                   data-ipe-nav-toggle
+                  aria-label={t("nav.account")}
                   aria-controls="ipe-account-menu"
                   aria-expanded={accountOpen}
                   onClick={() => setAccountOpen((open) => !open)}
@@ -270,7 +275,7 @@ export default function Navbar() {
                   <span className="ipe-account-avatar w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold">
                     {(user?.name?.trim()?.[0] ?? "?").toUpperCase()}
                   </span>
-                  <span className="max-w-[120px] truncate">{user?.name?.split(" ")[0]}</span>
+                  <span className="max-w-[120px] truncate">{accountDisplayName}</span>
                   <ChevronDown className={`w-4 h-4 transition-transform ${accountOpen ? "rotate-180" : ""}`} />
                 </button>
                 {accountOpen && (
