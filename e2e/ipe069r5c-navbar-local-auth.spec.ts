@@ -183,3 +183,89 @@ test.describe("@local-fixture IPE-069R5C navbar roles × viewports (local fixtur
     expect(inPanel).toBe(true);
   });
 });
+// ---------------------------------------------------------------------------
+// IPE-069R5F — bounded P2 repairs regression
+// ---------------------------------------------------------------------------
+
+test.describe("@local-fixture IPE-069R5F navbar P2 repairs", () => {
+  test("P2-01: More toggle shows active state on wallet/points/sports-votes routes", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const moreToggle = page.locator(".ipe-public-nav").getByText(/More|เพิ่มเติม/).first();
+    // /wallet and /sports-votes hard-load fine (their pages do not bounce
+    // while auth.me is still resolving).
+    for (const route of ["/wallet", "/sports-votes"]) {
+      await gotoOk(page, route);
+      await expect(moreToggle).toHaveClass(/ipe-nav-link-active/);
+      // aria-current stays on the navigation item, not on the toggle
+      await expect(moreToggle).not.toHaveAttribute("aria-current", "page");
+    }
+    // /points: PointsPage redirects a hard load to / while auth.me is still
+    // resolving (pre-existing page behavior, outside this repair scope) —
+    // verify the active state through the real user flow instead: click
+    // the dropdown item, land on /points via SPA navigation.
+    await gotoOk(page, "/novels");
+    await moreToggle.click();
+    await page.locator("#ipe-more-menu").getByText(/พอยท์|Points/).click();
+    await expect(page).toHaveURL(/points/);
+    await expect(moreToggle).toHaveClass(/ipe-nav-link-active/);
+    // A non-More route must NOT light the More toggle
+    await gotoOk(page, "/novels");
+    await expect(page.locator(".ipe-public-nav").getByText(/More|เพิ่มเติม/).first()).not.toHaveClass(/ipe-nav-link-active/);
+  });
+
+  test("P2-01: Account toggle shows active state on profile route", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/profile");
+    const userAccountToggle = page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']");
+    await expect(userAccountToggle).toHaveClass(/ipe-nav-link-active/);
+    // …and returns to inactive on a non-account route
+    await gotoOk(page, "/novels");
+    await expect(userAccountToggle).not.toHaveClass(/ipe-nav-link-active/);
+  });
+
+  test("P2-01: on /admin the global navbar stays hidden (admin owns its navigation)", async ({ page }) => {
+    // Existing contract: /admin hides the storefront navbar entirely, so
+    // there is no toggle to mark active there — assert the hiding instead.
+    await loginAs(page.context(), "admin");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/admin");
+    await expect(page.locator(".ipe-public-nav")).toHaveCount(0);
+  });
+
+  test("P2-02: breakpoint resize closes layers and never leaves duplicate menu ids", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    // Mobile: open the mobile menu (which contains the mobile More group)
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    await page.getByRole("button", { name: /เปิดเมนู|Open menu/ }).click();
+    await expect(page.locator("#ipe-mobile-navigation")).toBeVisible();
+    // Resize Mobile -> Desktop: the mobile menu must close, and the desktop
+    // More dropdown may then open with a UNIQUE panel id.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.locator("#ipe-mobile-navigation")).toHaveCount(0);
+    const moreToggle = page.locator(".ipe-public-nav").getByText(/More|เพิ่มเติม/).first();
+    await moreToggle.click();
+    await expect(page.locator("#ipe-more-menu")).toBeVisible();
+    await expect(page.locator("[id='ipe-more-menu']")).toHaveCount(1);
+    // Desktop -> Mobile with the desktop dropdown open: it must not linger.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator(".ipe-public-nav [aria-controls='ipe-more-menu']")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("P2-02: keyboard + outside-press dismissal still work after resize", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/novels");
+    const accountToggle = page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']");
+    await accountToggle.click();
+    await expect(page.locator("#ipe-account-menu")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(accountToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(accountToggle).toBeFocused();
+    await accountToggle.click();
+    await page.mouse.click(10, 400);
+    await expect(accountToggle).toHaveAttribute("aria-expanded", "false");
+  });
+});

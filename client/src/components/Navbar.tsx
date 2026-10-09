@@ -20,6 +20,26 @@ export default function Navbar() {
   const moreRef = useRef<HTMLDivElement | null>(null);
   const accountRef = useRef<HTMLDivElement | null>(null);
 
+  // IPE-069R5F (P2-02): crossing the lg breakpoint closes every navigation
+  // layer (mobile menu + both dropdowns) so a resize never leaves a stale
+  // mobile menu in the DOM next to desktop dropdowns, and the variants can
+  // never render duplicate ids at the same time. The listener is removed on
+  // unmount - nothing leaks.
+  const [isDesktopViewport, setIsDesktopViewport] = useState(
+    () => window.matchMedia("(min-width: 1024px)").matches
+  );
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(min-width: 1024px)");
+    const onChange = (event: MediaQueryListEvent) => {
+      setIsDesktopViewport(event.matches);
+      setMobileMenuOpen(false);
+      setMoreOpen(false);
+      setAccountOpen(false);
+    };
+    mediaQuery.addEventListener("change", onChange);
+    return () => mediaQuery.removeEventListener("change", onChange);
+  }, []);
+
   // Reader (/read/*) and the entire Admin section (/admin, /admin/*) own
   // their own top-level navigation - see navbarVisibility.ts. Computed
   // before the early return below so the hidden-navbar branch never fires
@@ -105,6 +125,9 @@ export default function Navbar() {
     { label: "Football Votes", href: "/sports-votes", auth: true, icon: Trophy },
   ];
   const visibleMoreLinks = moreLinks.filter((link) => !link.auth || isAuthenticated);
+  // IPE-069R5F (P2-01): dropdown toggles show the active state whenever the
+  // current route matches any destination INSIDE their dropdown.
+  const moreChildActive = visibleMoreLinks.some((link) => isActive(link.href));
   const accountItems = [
     { label: t("nav.profile"), href: "/profile", icon: UserIcon },
     ...(showAccountRecoveryNavItem
@@ -112,6 +135,7 @@ export default function Navbar() {
       : []),
     ...(user?.role === "admin" ? [{ label: t("nav.admin"), href: "/admin", icon: Settings }] : []),
   ];
+  const accountChildActive = accountItems.some((item) => isActive(item.href));
 
   const renderNavLink = (link: { label: string; href: string; icon: typeof BookOpen }) => {
     const Icon = link.icon;
@@ -134,7 +158,7 @@ export default function Navbar() {
 
   const renderMoreMenu = (variant: "desktop" | "mobile") => (
     <div
-      id="ipe-more-menu"
+      id={variant === "desktop" ? "ipe-more-menu" : "ipe-more-menu-mobile"}
       aria-label={t("nav.more")}
       className={
         variant === "desktop"
@@ -195,12 +219,12 @@ export default function Navbar() {
                   aria-controls="ipe-more-menu"
                   aria-expanded={moreOpen}
                   onClick={() => setMoreOpen((open) => !open)}
-                  className={`ipe-nav-link flex items-center gap-1 px-4 py-2 rounded-full transition text-sm whitespace-nowrap ${moreOpen ? "ipe-nav-link-active" : ""}`}
+                  className={`ipe-nav-link flex items-center gap-1 px-4 py-2 rounded-full transition text-sm whitespace-nowrap ${moreOpen || moreChildActive ? "ipe-nav-link-active" : ""}`}
                 >
                   {t("nav.more")}
                   <ChevronDown className={`w-4 h-4 transition-transform ${moreOpen ? "rotate-180" : ""}`} />
                 </button>
-                {moreOpen && renderMoreMenu("desktop")}
+                {moreOpen && isDesktopViewport && renderMoreMenu("desktop")}
               </div>
             )}
           </div>
@@ -230,7 +254,7 @@ export default function Navbar() {
                   aria-controls="ipe-account-menu"
                   aria-expanded={accountOpen}
                   onClick={() => setAccountOpen((open) => !open)}
-                  className="flex items-center gap-2 px-3 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm"
+                  className={`flex items-center gap-2 px-3 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm ${accountOpen || accountChildActive ? "ipe-nav-link-active" : ""}`}
                 >
                   <span className="ipe-account-avatar w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold">
                     {(user?.name?.trim()?.[0] ?? "?").toUpperCase()}
