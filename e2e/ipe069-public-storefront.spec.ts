@@ -37,7 +37,7 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
           await page.waitForFunction(
             () => {
               const images = Array.from(
-                document.querySelectorAll(".ipe-home-hero img")
+                document.querySelectorAll<HTMLImageElement>(".ipe-home-hero img")
               );
               return (
                 images.length === 0 ||
@@ -53,9 +53,24 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
         path: "/novels",
         key: "catalog",
         // Catalog is backed by the novels browse query — wait for the
-        // server-rendered card list (not just the shell).
+        // server-rendered card list (not just the shell), for every card
+        // image to finish loading, and for the card count to settle so the
+        // overflow check + capture see the fully hydrated grid.
         ready: async () => {
           await expect(page.locator(".ipe-public.ipe-catalog")).toBeVisible();
+          await expect(page.locator(".ipe-novel-card").first()).toBeVisible();
+          await page.waitForFunction(
+            () => {
+              const images = Array.from(
+                document.querySelectorAll<HTMLImageElement>(".ipe-novel-card img")
+              );
+              return images.every((image) => image.complete);
+            },
+            undefined,
+            { timeout: 10_000 }
+          );
+          // A first card plus settled images proves the API-backed grid is
+          // rendered; comparing a count to itself would not detect loading.
           await expect(page.locator(".ipe-novel-card").first()).toBeVisible();
         },
       },
