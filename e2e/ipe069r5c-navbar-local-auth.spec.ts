@@ -269,3 +269,56 @@ test.describe("@local-fixture IPE-069R5F navbar P2 repairs", () => {
     await expect(accountToggle).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+// IPE-069R5I — Codex exact-head P2: mobile focus and dismissal regressions.
+test.describe("@local-fixture IPE-069R5I mobile navigation Codex fixes", () => {
+  test("P2-01: Escape from a focused mobile menu item restores hamburger focus", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    await hamburger.click();
+    const mobile = page.locator("#ipe-mobile-navigation");
+    await expect(mobile).toBeVisible();
+    const firstItem = mobile.locator("button").first();
+    await firstItem.focus();
+    await expect(firstItem).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(mobile).toHaveCount(0);
+    await expect(hamburger).toHaveAttribute("aria-expanded", "false");
+    await expect(hamburger).toBeFocused();
+  });
+
+  test("P2-02: pointer outside the expanded mobile navigation dismisses it", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    await hamburger.click();
+    await expect(page.locator("#ipe-mobile-navigation")).toBeVisible();
+    // The blank space between the brand and language/cart controls is
+    // inside the navbar header but outside both the toggle and mobile panel.
+    await page.mouse.click(160, 32);
+    await expect(page.locator("#ipe-mobile-navigation")).toHaveCount(0);
+    await expect(hamburger).toHaveAttribute("aria-expanded", "false");
+    await expect(page).toHaveURL(/\/novels$/);
+  });
+
+  test("P2-03: tapping the current More destination closes the mobile navigation", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    const mobile = page.locator("#ipe-mobile-navigation");
+    await hamburger.click();
+    await mobile.getByRole("button", { name: /กระเป๋าเงิน|Wallet/ }).click();
+    await expect(page).toHaveURL(/\/wallet$/);
+    await expect(mobile).toHaveCount(0);
+
+    // Reopen on /wallet, then tap Wallet again without changing the URL.
+    await hamburger.click();
+    await expect(mobile).toBeVisible();
+    await mobile.getByRole("button", { name: /กระเป๋าเงิน|Wallet/ }).click();
+    await expect(page).toHaveURL(/\/wallet$/);
+    await expect(mobile).toHaveCount(0);
+    await expect(hamburger).toHaveAttribute("aria-expanded", "false");
+  });
+});

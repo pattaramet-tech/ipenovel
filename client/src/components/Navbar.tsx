@@ -19,6 +19,8 @@ export default function Navbar() {
   const [accountOpen, setAccountOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement | null>(null);
   const accountRef = useRef<HTMLDivElement | null>(null);
+  const mobileToggleRef = useRef<HTMLButtonElement | null>(null);
+  const mobilePanelRef = useRef<HTMLDivElement | null>(null);
 
   // IPE-069R5F (P2-02): crossing the lg breakpoint closes every navigation
   // layer (mobile menu + both dropdowns) so a resize never leaves a stale
@@ -75,13 +77,21 @@ export default function Navbar() {
         setAccountOpen(false);
         accountRef.current?.querySelector<HTMLButtonElement>("[data-ipe-nav-toggle]")?.focus();
       }
-      setMobileMenuOpen(false);
+      if (mobileMenuOpen) {
+        setMobileMenuOpen(false);
+        mobileToggleRef.current?.focus();
+      }
     };
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
       if (moreOpen && !moreRef.current?.contains(target)) setMoreOpen(false);
       if (accountOpen && !accountRef.current?.contains(target)) setAccountOpen(false);
+      if (mobileMenuOpen &&
+          !mobileToggleRef.current?.contains(target) &&
+          !mobilePanelRef.current?.contains(target)) {
+        setMobileMenuOpen(false);
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     document.addEventListener("pointerdown", onPointerDown, true);
@@ -176,6 +186,7 @@ export default function Navbar() {
             onClick={() => {
               navigate(link.href);
               setMoreOpen(false);
+              if (variant === "mobile") setMobileMenuOpen(false);
             }}
             className={`${dropdownItemClass} ${active ? "ipe-nav-link-active" : ""}`}
           >
@@ -330,6 +341,7 @@ export default function Navbar() {
 
             {/* Mobile Menu Button */}
             <button
+              ref={mobileToggleRef}
               type="button"
               className="ipe-nav-link p-2 rounded-full transition"
               aria-label={mobileMenuOpen ? (language === "th" ? "ปิดเมนู" : "Close menu") : (language === "th" ? "เปิดเมนู" : "Open menu")}
@@ -348,7 +360,7 @@ export default function Navbar() {
 
         {/* Mobile Navigation Menu */}
         {mobileMenuOpen && (
-          <div id="ipe-mobile-navigation" className="lg:hidden pb-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div ref={mobilePanelRef} id="ipe-mobile-navigation" className="lg:hidden pb-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="flex flex-col gap-2 pt-4">
               {/* Mobile Nav Links */}
               {primaryLinks.map((link) => {
