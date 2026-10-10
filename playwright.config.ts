@@ -39,6 +39,14 @@ export default defineConfig({
       use: sharedUse,
     },
     {
+      // IPE-069R5C: authenticated LOCAL fixture tests (disposable seeded
+      // sessions on a local dev server). Never runs against remote targets —
+      // the spec file additionally guards with its own local-only skip.
+      name: "local-fixture",
+      grep: /@local-fixture/,
+      use: { ...sharedUse, trace: "off", screenshot: "off", video: "off" },
+    },
+    {
       name: "auth",
       grep: /@auth/,
       use: {

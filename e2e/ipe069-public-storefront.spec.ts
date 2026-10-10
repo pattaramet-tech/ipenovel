@@ -37,7 +37,7 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
           await page.waitForFunction(
             () => {
               const images = Array.from(
-                document.querySelectorAll(".ipe-home-hero img")
+                document.querySelectorAll<HTMLImageElement>(".ipe-home-hero img")
               );
               return (
                 images.length === 0 ||
@@ -53,9 +53,29 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
         path: "/novels",
         key: "catalog",
         // Catalog is backed by the novels browse query — wait for the
-        // server-rendered card list (not just the shell).
+        // server-rendered card list (not just the shell), for every card
+        // image to finish loading, and for the card count to settle so the
+        // overflow check + capture see the fully hydrated grid.
         ready: async () => {
           await expect(page.locator(".ipe-public.ipe-catalog")).toBeVisible();
+          await expect(page.locator(".ipe-novel-card").first()).toBeVisible();
+          await page.waitForFunction(
+            () => {
+              const images = Array.from(
+                document.querySelectorAll<HTMLImageElement>(".ipe-novel-card img")
+              );
+              return images.every((image) => image.complete);
+            },
+            undefined,
+            { timeout: 10_000 }
+          );
+          // complete can be true even when the browser could not decode an
+          // image (e.g. a preview image host returning HTML). Fail explicitly
+          // on broken images rather than timing out or silently accepting them.
+          const brokenImages = await page.locator(".ipe-novel-card img").evaluateAll(
+            (images) => images.filter((image) => (image as HTMLImageElement).naturalWidth <= 0).length
+          );
+          expect(brokenImages, "Catalog images completed with zero naturalWidth").toBe(0);
           await expect(page.locator(".ipe-novel-card").first()).toBeVisible();
         },
       },
@@ -87,7 +107,7 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
         }));
         expect(widths.document, route.key + " at " + viewport.width + "px").toBeLessThanOrEqual(widths.viewport + 1);
         await page.screenshot({
-          path: "test-results/ipe069-candidate-" + route.key + "-" + viewport.width + ".png",
+          path: test.info().outputPath("ipe069-candidate-" + route.key + "-" + viewport.width + ".png"),
           fullPage: true,
           animations: "disabled",
         });
