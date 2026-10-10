@@ -69,8 +69,13 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
             undefined,
             { timeout: 10_000 }
           );
-          // A first card plus settled images proves the API-backed grid is
-          // rendered; comparing a count to itself would not detect loading.
+          // complete can be true even when the browser could not decode an
+          // image (e.g. a preview image host returning HTML). Fail explicitly
+          // on broken images rather than timing out or silently accepting them.
+          const brokenImages = await page.locator(".ipe-novel-card img").evaluateAll(
+            (images) => images.filter((image) => (image as HTMLImageElement).naturalWidth <= 0).length
+          );
+          expect(brokenImages, "Catalog images completed with zero naturalWidth").toBe(0);
           await expect(page.locator(".ipe-novel-card").first()).toBeVisible();
         },
       },
@@ -102,7 +107,7 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
         }));
         expect(widths.document, route.key + " at " + viewport.width + "px").toBeLessThanOrEqual(widths.viewport + 1);
         await page.screenshot({
-          path: "test-results/ipe069-candidate-" + route.key + "-" + viewport.width + ".png",
+          path: test.info().outputPath("ipe069-candidate-" + route.key + "-" + viewport.width + ".png"),
           fullPage: true,
           animations: "disabled",
         });

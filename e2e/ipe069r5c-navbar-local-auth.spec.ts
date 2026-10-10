@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gotoOk } from "./support/runtime";
@@ -9,11 +10,10 @@ import { e2eBaseUrl } from "./support/env";
 // production cookie is ever used. The local-only guard runs before reading
 // any session cookie; Playwright traces and videos are disabled for this project.
 const testDir = path.dirname(fileURLToPath(import.meta.url));
-// e2e -> worktree root -> .worktrees -> repo parent: deterministic location
-// OUTSIDE any repository checkout, overridable for other machines.
-const evidenceRoot =
-  process.env.E2E_NAV_EVIDENCE_DIR?.trim() ||
-  path.resolve(testDir, "..", "..", "..", "..", "evidence", "IPE-069R5C-navbar");
+// The default must be writable in ordinary Linux/macOS/Windows checkouts,
+// not depend on a particular .worktrees directory nesting depth.
+const evidenceRoot = process.env.E2E_NAV_EVIDENCE_DIR?.trim() ||
+  path.join(tmpdir(), "IPE-069R5C-navbar");
 const cookiesFile = process.env.E2E_SESSION_COOKIES_FILE?.trim() || "";
 
 type LocalFixtureCookies = { cookieName: string; adminToken: string; userToken: string };
@@ -48,6 +48,11 @@ test.beforeEach(async ({ baseURL }) => {
     "Fixture-session tests may run only on an explicit local HTTP target");
   test.skip(!cookiesFile || !path.isAbsolute(cookiesFile) || !existsSync(cookiesFile),
     "Local fixture session file is not configured; set E2E_SESSION_COOKIES_FILE");
+  // Operator assertion after an independent, read-only test-DB binding check.
+  // A local hostname does NOT, on its own, prove the backend uses test data.
+  if (process.env.E2E_LOCAL_DB_ATTESTED !== "ipenovel_test") {
+    throw new Error("Refusing local session fixture without explicit ipenovel_test isolation attestation");
+  }
   const raw: unknown = JSON.parse(readFileSync(cookiesFile, "utf8"));
   if (!raw || typeof raw !== "object") throw new Error("Invalid local fixture-session file");
   const c = raw as Record<string, unknown>;
@@ -385,5 +390,271 @@ test.describe("@local-fixture IPE-069R5L-R1 account accessibility", () => {
     await expect(accountToggle.getByText("Test", { exact: true })).toBeVisible();
     await accountToggle.click();
     await expect(page.locator("#ipe-account-menu")).toBeVisible();
+  });
+});
+
+
+// IPE-069R5L-R4B — consolidated focus, disclosure, failure and path regressions.
+test.describe("@local-fixture IPE-069R5L-R4B consolidated navbar repairs", () => {
+  test("More same-route keyboard selection restores focus to the disclosure", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/wallet");
+    const toggle = page.locator(".ipe-public-nav [aria-controls='ipe-more-menu']");
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    const item = page.locator("#ipe-more-menu").getByRole("button", { name: /กระเป๋าเงิน|Wallet/ });
+    await item.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/wallet$/);
+    await expect(page.locator("#ipe-more-menu")).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+  });
+
+  test("More cross-route selection retains navigation focus on the disclosure", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/wallet");
+    const toggle = page.locator(".ipe-public-nav [aria-controls='ipe-more-menu']");
+    await toggle.click();
+    const item = page.locator("#ipe-more-menu").getByRole("button", { name: /Football Votes/ });
+    await item.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/sports-votes$/);
+    await expect(page.locator("#ipe-more-menu")).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+  });
+
+  test("Account same-route selection preserves focus and closes the menu", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/profile");
+    const toggle = page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']");
+    await toggle.click();
+    const item = page.locator("#ipe-account-menu").getByRole("button", { name: /โปรไฟล์|Profile/ });
+    await item.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#ipe-account-menu")).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+  });
+
+  test("More and Account disclosures are mutually exclusive on keyboard activation", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/novels");
+    const more = page.locator(".ipe-public-nav [aria-controls='ipe-more-menu']");
+    const account = page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']");
+    await more.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#ipe-more-menu")).toBeVisible();
+    await account.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#ipe-more-menu")).toHaveCount(0);
+    await expect(page.locator("#ipe-account-menu")).toBeVisible();
+    await more.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#ipe-account-menu")).toHaveCount(0);
+    await expect(page.locator("#ipe-more-menu")).toBeVisible();
+  });
+
+  test("Mobile same-route selection restores hamburger focus", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    const toggle = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    await toggle.click();
+    const item = page.locator("#ipe-mobile-navigation").getByRole("button", { name: /เรียกดู|Browse/ });
+    await item.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#ipe-mobile-navigation")).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+  });
+
+  test("Logout transport failure preserves authentication and shows an error", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    let blocked = 0;
+    await page.route("**/api/trpc/auth.logout*", async route => {
+      blocked += 1;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { message: "Local synthetic network failure", code: -32603, data: { code: "INTERNAL_SERVER_ERROR" } } }),
+      });
+    });
+    await gotoOk(page, "/novels");
+    const toggle = page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']");
+    await toggle.click();
+    await page.locator("#ipe-account-menu").getByRole("button", { name: /ออกจากระบบ|Logout/ }).click();
+    await expect(page.getByText(/ออกจากระบบไม่สำเร็จ|Unable to sign out/)).toBeVisible();
+    expect(blocked).toBeGreaterThan(0);
+    await expect(page).toHaveURL(/\/novels$/);
+    await expect(toggle).toBeVisible();
+  });
+
+  test("Evidence default is independent of checkout nesting on POSIX and Windows", () => {
+    const expected = "IPE-069R5C-navbar";
+    expect(path.basename(path.join(tmpdir(), expected))).toBe(expected);
+    const linux = path.posix.join("/tmp", expected);
+    const windows = path.win32.join("C:\\Users\\Public\\AppData\\Local\\Temp", expected);
+    expect(linux.startsWith("/tmp/")).toBe(true);
+    expect(windows.endsWith(expected)).toBe(true);
+    // An explicitly selected evidence path must be outside checkout (checked
+    // in beforeEach), while the fallback always uses the OS temporary folder.
+    if (!process.env.E2E_NAV_EVIDENCE_DIR?.trim()) {
+      expect(evidenceRoot).toBe(path.join(tmpdir(), expected));
+    }
+  });
+});
+
+
+test.describe("@local-fixture IPE-069R5L-R4B extended focus lifecycle", () => {
+  test("Admin destination moves focus to the new page when the public navbar disappears", async ({ page }) => {
+    await loginAs(page.context(), "admin");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/novels");
+    await page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']").click();
+    const adminDestination = page.locator("#ipe-account-menu").getByRole("button", { name: /ผู้ดูแล|Admin/ });
+    await adminDestination.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/admin$/);
+    await expect(page.locator(".ipe-public-nav")).toHaveCount(0);
+    const heading = page.locator("main h1:visible, main h2:visible, h1:visible, h2:visible").first();
+    await expect(heading).toBeVisible();
+    await expect(heading).toBeFocused();
+  });
+
+  test("Resize while focused in mobile navigation does not strand focus on body", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    await hamburger.click();
+    await page.locator("#ipe-mobile-navigation button").first().focus();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.locator("#ipe-mobile-navigation")).toHaveCount(0);
+    const active = await page.evaluate(() => ({
+      tag: document.activeElement?.tagName,
+      nav: Boolean(document.querySelector(".ipe-public-nav")?.contains(document.activeElement)),
+    }));
+    expect(active.tag).not.toBe("BODY");
+    expect(active.nav).toBe(true);
+  });
+});
+
+
+test.describe("@local-fixture IPE-069R5L-R4B bidirectional accessibility", () => {
+  test("Desktop dropdown focus transfers to hamburger when resized to mobile", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoOk(page, "/novels");
+    const more = page.locator(".ipe-public-nav [aria-controls='ipe-more-menu']");
+    await more.click();
+    await page.locator("#ipe-more-menu").getByRole("button", { name: /กระเป๋าเงิน|Wallet/ }).focus();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator("#ipe-more-menu")).toHaveCount(0);
+    const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    await expect(hamburger).toBeFocused();
+  });
+
+  test("Mobile Admin navigation focuses visible destination heading", async ({ page }) => {
+    await loginAs(page.context(), "admin");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    await page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']").click();
+    const adminDestination = page.locator("#ipe-mobile-navigation").getByRole("button", { name: /ผู้ดูแล|Admin/ });
+    await adminDestination.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/admin$/);
+    await expect(page.locator(".ipe-public-nav")).toHaveCount(0);
+    const heading = page.locator("main h1:visible, main h2:visible, h1:visible, h2:visible").first();
+    await expect(heading).toBeVisible();
+    await expect(heading).toBeFocused();
+  });
+});
+
+
+test.describe("@local-fixture IPE-069R5L-R4C-R1 deterministic focus repair", () => {
+  for (const viewport of [
+    { label: "desktop", width: 1440, height: 900 },
+    { label: "mobile", width: 390, height: 844 },
+  ] as const) {
+    test(`${viewport.label}: successful logout focuses the visible guest Login CTA`, async ({ page }) => {
+      await loginAs(page.context(), "user");
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await gotoOk(page, "/novels");
+      if (viewport.label === "desktop") {
+        await page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']").click();
+        const logout = page.locator("#ipe-account-menu").getByRole("button", { name: /ออกจากระบบ|Logout/ });
+        await logout.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']").click();
+        const logout = page.locator("#ipe-mobile-navigation").getByRole("button", { name: /ออกจากระบบ|Logout/ });
+        await logout.focus();
+        await page.keyboard.press("Enter");
+      }
+      await expect(page).toHaveURL((url) => url.pathname === "/");
+      await expect(page.locator(".ipe-public-nav [aria-controls='ipe-account-menu']")).toHaveCount(0);
+      if (viewport.label === "desktop") {
+        const login = page.locator(".ipe-public-nav [data-ipe-login-focus]:visible");
+        await expect(login).toBeVisible();
+        await expect(login).toBeFocused();
+      } else {
+        // Guest Login is inside the collapsed mobile panel: the remaining
+        // hamburger is the correct keyboard focus destination.
+        const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+        await expect(hamburger).toBeFocused();
+        await page.keyboard.press("Enter");
+        await expect(page.locator("#ipe-mobile-navigation [data-ipe-login-focus]")).toBeVisible();
+      }
+    });
+  }
+
+  test("mobile-to-desktop resize restores focus to the surviving More toggle", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoOk(page, "/novels");
+    const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    await hamburger.click();
+    const item = page.locator("#ipe-mobile-navigation").getByRole("button", { name: /กระเป๋าเงิน|Wallet/ });
+    await item.focus();
+    await expect(item).toBeFocused();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.locator("#ipe-mobile-navigation")).toHaveCount(0);
+    const more = page.locator(".ipe-public-nav [aria-controls='ipe-more-menu']");
+    await expect(more).toBeVisible();
+    await expect(more).toBeFocused();
+    const result = await page.evaluate(() => ({ tag: document.activeElement?.tagName, inNav: Boolean(document.querySelector(".ipe-public-nav")?.contains(document.activeElement)) }));
+    expect(result).toEqual({ tag: "BUTTON", inNav: true });
+  });
+});
+
+
+test.describe("@local-fixture IPE-069R5L-R4C-R1 logout failure focus", () => {
+  test("mobile failed logout stays authenticated and keeps hamburger focus", async ({ page }) => {
+    await loginAs(page.context(), "user");
+    await page.setViewportSize({ width: 390, height: 844 });
+    let failures = 0;
+    await page.route("**/api/trpc/auth.logout*", async route => {
+      failures += 1;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { message: "Local synthetic failure", code: -32603, data: { code: "INTERNAL_SERVER_ERROR" } } }),
+      });
+    });
+    await gotoOk(page, "/novels");
+    const hamburger = page.locator(".ipe-public-nav [aria-controls='ipe-mobile-navigation']");
+    await hamburger.click();
+    const logout = page.locator("#ipe-mobile-navigation").getByRole("button", { name: /ออกจากระบบ|Logout/ });
+    await logout.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(/ออกจากระบบไม่สำเร็จ|Unable to sign out/)).toBeVisible();
+    expect(failures).toBeGreaterThan(0);
+    await expect(page).toHaveURL((url) => url.pathname === "/novels");
+    await expect(hamburger).toBeFocused();
+    await hamburger.click();
+    await expect(page.locator("#ipe-mobile-navigation").getByRole("button", { name: /โปรไฟล์|Profile/ })).toBeVisible();
   });
 });

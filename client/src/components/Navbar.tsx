@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
 import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart, Trophy, User as UserIcon, LifeBuoy, ChevronDown, Wallet } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { getLoginUrl } from "@/const";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -11,7 +12,7 @@ import { ACCOUNT_RECOVERY_NAV_HREF, shouldHideGlobalNavbar, shouldShowAccountRec
 import "../styles/public-storefront.css";
 
 export default function Navbar() {
-  const { user, logout, isAuthenticated } = useAuth();
+  const { user, logout, isAuthenticated, isLoggingOut } = useAuth();
   const { t, language } = useLanguage();
   const [location, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -21,6 +22,8 @@ export default function Navbar() {
   const accountRef = useRef<HTMLDivElement | null>(null);
   const mobileToggleRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLDivElement | null>(null);
+  const pendingBreakpointFocusRef = useRef<"desktop" | "mobile" | null>(null);
+  const pendingLogoutFocusRef = useRef(false);
 
   // IPE-069R5F (P2-02): crossing the lg breakpoint closes every navigation
   // layer (mobile menu + both dropdowns) so a resize never leaves a stale
@@ -33,6 +36,26 @@ export default function Navbar() {
   useEffect(() => {
     const mediaQuery = window.matchMedia("(min-width: 1024px)");
     const onChange = (event: MediaQueryListEvent) => {
+      // A focused item can disappear when its responsive navigation layer
+      // unmounts. Transfer focus to the surviving navigation control.
+      const active = document.activeElement;
+      const focusedInMobile = Boolean(active && mobilePanelRef.current?.contains(active));
+      const focusedInDesktop = Boolean(active && (
+        moreRef.current?.contains(active) || accountRef.current?.contains(active)
+      ));
+      // CSS can blur a focused hidden desktop item *before* matchMedia fires.
+      // In that case detect the previously open panel, not only activeElement.
+      const desktopPanelStillOpen = Boolean(
+        moreRef.current?.querySelector("#ipe-more-menu") ||
+        accountRef.current?.querySelector("#ipe-account-menu")
+      );
+      // CSS may move focus to BODY before matchMedia reports mobile->desktop.
+      // An attached, expanded mobile panel preserves the focus provenance.
+      const mobilePanelStillOpen = Boolean(mobilePanelRef.current);
+      pendingBreakpointFocusRef.current =
+        event.matches && (focusedInMobile || (active === document.body && mobilePanelStillOpen)) ? "desktop" :
+        !event.matches && (focusedInDesktop || (active === document.body && desktopPanelStillOpen)) ? "mobile" :
+        null;
       setIsDesktopViewport(event.matches);
       setMobileMenuOpen(false);
       setMoreOpen(false);
@@ -41,6 +64,22 @@ export default function Navbar() {
     mediaQuery.addEventListener("change", onChange);
     return () => mediaQuery.removeEventListener("change", onChange);
   }, []);
+
+  // Focus after React commits the responsive variant: focusing a control
+  // from matchMedia's callback can race with the DOM/CSS breakpoint update.
+  useEffect(() => {
+    const direction = pendingBreakpointFocusRef.current;
+    if (!direction) return;
+    pendingBreakpointFocusRef.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      const target = direction === "desktop"
+        ? moreRef.current?.querySelector<HTMLButtonElement>("[data-ipe-nav-toggle]") ??
+          document.querySelector<HTMLElement>(".ipe-public-nav .ipe-brand-mark")?.closest("button")
+        : mobileToggleRef.current;
+      if (target && target.getClientRects().length > 0) target.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isDesktopViewport]);
 
   // Reader (/read/*) and the entire Admin section (/admin, /admin/*) own
   // their own top-level navigation - see navbarVisibility.ts. Computed
@@ -54,6 +93,25 @@ export default function Navbar() {
     enabled: isAuthenticated && !navbarHidden,
   });
   const cartCount = cartData?.items?.length || 0;
+
+  // Successful logout replaces the authenticated Account toggle with guest
+  // links. Wait for both the guest render and the Home route before focusing
+  // the visible Login CTA; never steal focus if the logout request fails.
+  useEffect(() => {
+    if (!pendingLogoutFocusRef.current || isAuthenticated || navbarHidden || location !== "/") return;
+    const frame = window.requestAnimationFrame(() => {
+      const login = Array.from(document.querySelectorAll<HTMLAnchorElement>(".ipe-public-nav [data-ipe-login-focus]"))
+        .find((item) => item.getClientRects().length > 0);
+      // Mobile guest Login sits inside the closed hamburger panel; focus the
+      // surviving hamburger instead, so keyboard users can open that panel.
+      const target = login ?? mobileToggleRef.current;
+      if (target && target.getClientRects().length > 0) {
+        target.focus({ preventScroll: true });
+        pendingLogoutFocusRef.current = false;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isAuthenticated, navbarHidden, location]);
 
   // IPE-069R5A: dismiss every dropdown + the mobile menu on Escape, on any
   // outside pointer press, and when the route changes - focus returns to the
@@ -114,8 +172,37 @@ export default function Navbar() {
   }
 
   const handleLogout = async () => {
-    await logout();
-    navigate("/");
+    pendingLogoutFocusRef.current = true;
+    try {
+      await logout();
+      navigate("/");
+    } catch {
+      pendingLogoutFocusRef.current = false;
+      // A failed request must not navigate away or produce an unhandled rejection.
+      toast.error(language === "th" ? "ออกจากระบบไม่สำเร็จ กรุณาลองอีกครั้ง" : "Unable to sign out. Please try again.");
+    }
+  };
+
+  // Moving focus before unmounting a disclosure item preserves keyboard
+  // navigation on same-route clicks. Routes that hide this navbar instead
+  // receive focus on their page heading after the route commits.
+  const navigateFromMenu = (href: string, toggle: HTMLButtonElement | null) => {
+    const hidesNavbar = shouldHideGlobalNavbar(href);
+    if (!hidesNavbar) toggle?.focus();
+    navigate(href);
+    if (hidesNavbar) {
+      window.requestAnimationFrame(() => {
+        // AdminLayout has a visually hidden mobile H1 at desktop widths.
+        // Focus the first *visible* heading instead of that hidden element.
+        const heading = Array.from(document.querySelectorAll<HTMLElement>("main h1, main h2, h1, h2"))
+          .find((candidate) => candidate.getClientRects().length > 0 &&
+            getComputedStyle(candidate).visibility !== "hidden");
+        if (heading) {
+          heading.tabIndex = -1;
+          heading.focus({ preventScroll: true });
+        }
+      });
+    }
   };
 
   const isActive = (href: string) =>
@@ -186,9 +273,11 @@ export default function Navbar() {
         return (
           <button
             key={link.href}
-                        aria-current={active ? "page" : undefined}
+            aria-current={active ? "page" : undefined}
             onClick={() => {
-              navigate(link.href);
+              navigateFromMenu(link.href, variant === "mobile"
+                ? mobileToggleRef.current
+                : moreRef.current?.querySelector<HTMLButtonElement>("[data-ipe-nav-toggle]") ?? null);
               setMoreOpen(false);
               if (variant === "mobile") setMobileMenuOpen(false);
             }}
@@ -233,7 +322,10 @@ export default function Navbar() {
                   data-ipe-nav-toggle
                   aria-controls="ipe-more-menu"
                   aria-expanded={moreOpen}
-                  onClick={() => setMoreOpen((open) => !open)}
+                  onClick={() => {
+                    setAccountOpen(false);
+                    setMoreOpen((open) => !open);
+                  }}
                   className={`ipe-nav-link flex items-center gap-1 px-4 py-2 rounded-full transition text-sm whitespace-nowrap ${moreOpen || moreChildActive ? "ipe-nav-link-active" : ""}`}
                 >
                   {t("nav.more")}
@@ -269,7 +361,10 @@ export default function Navbar() {
                   aria-label={t("nav.account")}
                   aria-controls="ipe-account-menu"
                   aria-expanded={accountOpen}
-                  onClick={() => setAccountOpen((open) => !open)}
+                  onClick={() => {
+                    setMoreOpen(false);
+                    setAccountOpen((open) => !open);
+                  }}
                   className={`flex items-center gap-2 px-3 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm ${accountOpen || accountChildActive ? "ipe-nav-link-active" : ""}`}
                 >
                   <span className="ipe-account-avatar w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold">
@@ -293,9 +388,9 @@ export default function Navbar() {
                       return (
                         <button
                           key={item.href}
-                                                    aria-current={active ? "page" : undefined}
+                          aria-current={active ? "page" : undefined}
                           onClick={() => {
-                            navigate(item.href);
+                            navigateFromMenu(item.href, accountRef.current?.querySelector<HTMLButtonElement>("[data-ipe-nav-toggle]") ?? null);
                             setAccountOpen(false);
                           }}
                           className={`${dropdownItemClass} ${active ? "ipe-nav-link-active" : ""}`}
@@ -307,7 +402,9 @@ export default function Navbar() {
                     })}
                     <div className="border-t border-slate-100 my-1" />
                     <button
-                                            onClick={() => {
+                      disabled={isLoggingOut}
+                      onClick={() => {
+                        accountRef.current?.querySelector<HTMLButtonElement>("[data-ipe-nav-toggle]")?.focus();
                         setAccountOpen(false);
                         void handleLogout();
                       }}
@@ -321,7 +418,7 @@ export default function Navbar() {
               </div>
             ) : (
               <Button size="sm" asChild className="ipe-nav-cta rounded-full">
-                <a href={getLoginUrl()}>{t("nav.login")}</a>
+                <a data-ipe-login-focus href={getLoginUrl()}>{t("nav.login")}</a>
               </Button>
             )}
           </div>
@@ -376,7 +473,7 @@ export default function Navbar() {
                     key={link.href}
                     aria-current={isActive(link.href) ? "page" : undefined}
                     onClick={() => {
-                      navigate(link.href);
+                      navigateFromMenu(link.href, mobileToggleRef.current);
                       setMobileMenuOpen(false);
                     }}
                     className={`flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm ${isActive(link.href) ? "ipe-nav-link-active" : ""}`}
@@ -401,7 +498,7 @@ export default function Navbar() {
               {user?.role === "admin" && (
                 <button
                   onClick={() => {
-                    navigate("/admin");
+                    navigateFromMenu("/admin", mobileToggleRef.current);
                     setMobileMenuOpen(false);
                   }}
                   className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
@@ -422,7 +519,7 @@ export default function Navbar() {
                   </div>
                   <button
                     onClick={() => {
-                      navigate("/profile");
+                      navigateFromMenu("/profile", mobileToggleRef.current);
                       setMobileMenuOpen(false);
                     }}
                     className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
@@ -433,7 +530,7 @@ export default function Navbar() {
                   {showAccountRecoveryNavItem && (
                     <button
                       onClick={() => {
-                        navigate(ACCOUNT_RECOVERY_NAV_HREF);
+                        navigateFromMenu(ACCOUNT_RECOVERY_NAV_HREF, mobileToggleRef.current);
                         setMobileMenuOpen(false);
                       }}
                       className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
@@ -443,7 +540,12 @@ export default function Navbar() {
                     </button>
                   )}
                   <button
-                    onClick={handleLogout}
+                    disabled={isLoggingOut}
+                    onClick={() => {
+                      mobileToggleRef.current?.focus();
+                      setMobileMenuOpen(false);
+                      void handleLogout();
+                    }}
                     className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
                   >
                     <LogOut className="w-4 h-4" />
@@ -452,7 +554,7 @@ export default function Navbar() {
                 </div>
               ) : (
                 <Button asChild className="ipe-nav-cta rounded-full w-full">
-                  <a href={getLoginUrl()}>{t("nav.login")}</a>
+                  <a data-ipe-login-focus href={getLoginUrl()}>{t("nav.login")}</a>
                 </Button>
               )}
             </div>
