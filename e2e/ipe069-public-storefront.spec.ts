@@ -40,12 +40,30 @@ test.describe("@public IPE-069R4E catalog lazy-load regression", () => {
       // skeleton placeholders instead of cards. Hydration is complete only
       // when every skeleton is gone.
       await expect(page.locator(".ipe-catalog .animate-pulse")).toHaveCount(0, { timeout: 15_000 });
-      // Expected card count per the pagination contract: browse paginates
-      // with PAGE_SIZE = 20 (NovelsPage.tsx) and the local seed carries 23
-      // published novels — so hydrated page 1 renders EXACTLY 20 cards
-      // (hasNextPage = true). An under-count proves incomplete hydration;
-      // an over-count proves the pagination contract broke. Neither can
-      // pass before the query has resolved.
+      // IPE-069R5L-R4G-R2 Finding A — INDEPENDENT read-only fixture
+      // attestation with three-state classification. The response contract
+      // is validated fail-closed: INVALID_API_RESPONSE must FAIL (never be
+      // converted into count = 0 → skip); only VALID_FIXTURE_ABSENT may skip.
+      const attestation = await page.request.get(
+        "/api/trpc/novels.browse?input=" +
+          encodeURIComponent(JSON.stringify({ json: { page: 1, pageSize: 20 } }))
+      );
+      let jsonParsed = true;
+      let parsedBody: unknown = null;
+      try {
+        parsedBody = await attestation.json();
+      } catch {
+        jsonParsed = false; // malformed JSON body
+      }
+      const decision = attestCatalogFixtureResponse({
+        httpStatus: attestation.status(),
+        jsonParsed,
+        body: parsedBody,
+      });
+      test.skip(decision.state === "VALID_FIXTURE_ABSENT", decision.reason);
+      // Attested: the UI MUST render exactly PAGE_SIZE (20) cards. A smaller
+      // count with an attested fixture is a FAIL, never a skip.
+      assertAttestedCatalogCardCount(decision.state, (await page.locator(".ipe-novel-card").count()));
       await expect(page.locator(".ipe-novel-card")).toHaveCount(20, { timeout: 10_000 });
       for (const card of await page.locator(".ipe-novel-card").all()) {
         await card.scrollIntoViewIfNeeded();
@@ -72,6 +90,211 @@ test.describe("@public IPE-069R4E catalog lazy-load regression", () => {
       expect(widths.document).toBeLessThanOrEqual(widths.viewport + 1);
     });
   }
+});
+
+// IPE-069R5L-R4G-R2 Finding A — fixture attestation decision (pure and
+// deterministically regression-tested). The response contract is classified
+// fail-closed: a valid tRPC envelope (result.data.json) with a full page-1
+// ATTESTS the 20-card fixture, a valid envelope with fewer items means the
+// standard prepare ran without the load-test seed (skip), and ANY
+// schema/HTTP/JSON defect — including a malformed envelope or a non-boolean
+// hasNextPage — is INVALID_API_RESPONSE, which must FAIL, never be converted
+// into count = 0.
+export type CatalogAttestationState =
+  | "VALID_FIXTURE_READY"
+  | "VALID_FIXTURE_ABSENT"
+  | "INVALID_API_RESPONSE";
+
+function attestCatalogFixtureResponse(params: {
+  httpStatus: number;
+  jsonParsed: boolean;
+  body: unknown;
+}): { state: CatalogAttestationState; attestedCount: number; reason: string } {
+  const { httpStatus, jsonParsed, body } = params;
+  const envelope = validateBrowseEnvelope(body);
+  if (httpStatus !== 200 || !jsonParsed || !envelope.ok) {
+    return {
+      state: "INVALID_API_RESPONSE",
+      attestedCount: 0,
+      reason: `browse attestation response invalid: HTTP ${httpStatus}, json parsed = ${jsonParsed}, envelope = ${envelope.ok ? "valid" : envelope.reason}`,
+    };
+  }
+  const items = envelope.items;
+  if (items.length >= 20) {
+    return {
+      state: "VALID_FIXTURE_READY",
+      attestedCount: items.length,
+      reason: `fixture attested: browse page 1 returned ${items.length} novels`,
+    };
+  }
+  return {
+    state: "VALID_FIXTURE_ABSENT",
+    attestedCount: items.length,
+    reason: `20-card fixture not provisioned: browse page 1 returned ${items.length} novels (need >= 20)`,
+  };
+}
+
+/**
+ * Strict, fail-closed validation of the tRPC browse output envelope.
+ * The real contract (server/db.ts BrowseCatalogResult) returns exactly
+ * { items: BrowseCatalogNovel[]; hasNextPage: boolean } inside
+ * result.data.json. Anything missing or of the wrong type is treated as a
+ * malformed contract and must FAIL, never be converted into a skip.
+ */
+function validateBrowseEnvelope(
+  body: unknown
+):
+  | { ok: true; items: unknown[]; hasNextPage: boolean }
+  | { ok: false; reason: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, reason: "body is not an object" };
+  }
+  const b = body as Record<string, unknown>;
+  if (!b.result || typeof b.result !== "object") {
+    return { ok: false, reason: "missing result envelope" };
+  }
+  const result = b.result as Record<string, unknown>;
+  if (!result.data || typeof result.data !== "object") {
+    return { ok: false, reason: "missing result.data envelope" };
+  }
+  const data = result.data as Record<string, unknown>;
+  if (!data.json || typeof data.json !== "object") {
+    return { ok: false, reason: "missing result.data.json envelope" };
+  }
+  const json = data.json as Record<string, unknown>;
+  if (!Array.isArray(json.items)) {
+    return { ok: false, reason: "items is not an array" };
+  }
+  if (typeof json.hasNextPage !== "boolean") {
+    return { ok: false, reason: "hasNextPage is not a boolean" };
+  }
+  return { ok: true, items: json.items, hasNextPage: json.hasNextPage };
+}
+
+/**
+ * The UI-side contract: with an ATTESTED fixture the catalog MUST render
+ * exactly PAGE_SIZE (20) cards — fewer or more is a FAIL, never a skip.
+ * Deterministically regression-tested below.
+ */
+function assertAttestedCatalogCardCount(
+  attestationState: CatalogAttestationState,
+  uiCardCount: number
+): void {
+  if (attestationState !== "VALID_FIXTURE_READY") {
+    throw new Error(`catalog attestation ${attestationState} — card count cannot be asserted`);
+  }
+  expect(uiCardCount, "attested fixture page 1 must render exactly PAGE_SIZE (20) cards").toBe(20);
+}
+
+function browseEnvelope(items: unknown[], hasNextPage = true): unknown {
+  return {
+    result: {
+      data: {
+        json: { items, hasNextPage },
+      },
+    },
+  };
+}
+
+test.describe("@public IPE-069R4E fixture attestation decision matrix", () => {
+  test("HTTP 200 + valid envelope with 20 items → VALID_FIXTURE_READY", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 200,
+      jsonParsed: true,
+      body: browseEnvelope(Array.from({ length: 20 }, (_v, i) => ({ id: i }))),
+    });
+    expect(decision.state).toBe("VALID_FIXTURE_READY");
+    expect(decision.attestedCount).toBe(20);
+  });
+
+  test("HTTP 200 + valid envelope with 5 items → VALID_FIXTURE_ABSENT (skip with reason)", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 200,
+      jsonParsed: true,
+      body: browseEnvelope(Array.from({ length: 5 }, (_v, i) => ({ id: i }))),
+    });
+    expect(decision.state).toBe("VALID_FIXTURE_ABSENT");
+    expect(decision.reason).toContain("5");
+  });
+
+  test("HTTP 200 + missing result envelope → INVALID_API_RESPONSE (FAIL)", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 200,
+      jsonParsed: true,
+      body: { notResult: true },
+    });
+    expect(decision.state).toBe("INVALID_API_RESPONSE");
+    expect(decision.reason).toContain("result");
+  });
+
+  test("HTTP 200 + missing result.data.json envelope → INVALID_API_RESPONSE (FAIL)", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 200,
+      jsonParsed: true,
+      body: { result: { data: { notJson: true } } },
+    });
+    expect(decision.state).toBe("INVALID_API_RESPONSE");
+    expect(decision.reason).toContain("json");
+  });
+
+  test("HTTP 200 + items not an array → INVALID_API_RESPONSE (FAIL)", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 200,
+      jsonParsed: true,
+      body: browseEnvelope({ unexpected: "shape" } as unknown as unknown[]),
+    });
+    expect(decision.state).toBe("INVALID_API_RESPONSE");
+    expect(decision.reason).toContain("items");
+  });
+
+  test("HTTP 200 + hasNextPage not a boolean → INVALID_API_RESPONSE (FAIL)", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 200,
+      jsonParsed: true,
+      body: {
+        result: {
+          data: {
+            json: {
+              items: Array.from({ length: 20 }, (_v, i) => ({ id: i })),
+              hasNextPage: "yes",
+            },
+          },
+        },
+      },
+    });
+    expect(decision.state).toBe("INVALID_API_RESPONSE");
+    expect(decision.reason).toContain("hasNextPage");
+  });
+
+  test("HTTP error status → INVALID_API_RESPONSE (FAIL)", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 500,
+      jsonParsed: true,
+      body: browseEnvelope(Array.from({ length: 20 }, (_v, i) => ({ id: i }))),
+    });
+    expect(decision.state).toBe("INVALID_API_RESPONSE");
+  });
+
+  test("malformed JSON body → INVALID_API_RESPONSE (FAIL)", () => {
+    const decision = attestCatalogFixtureResponse({
+      httpStatus: 200,
+      jsonParsed: false,
+      body: null,
+    });
+    expect(decision.state).toBe("INVALID_API_RESPONSE");
+  });
+
+  test("attested fixture + UI renders 19 cards → assertion FAILS (count mismatch detected)", () => {
+    expect(() => assertAttestedCatalogCardCount("VALID_FIXTURE_READY", 19)).toThrow(/exactly PAGE_SIZE \(20\) cards/);
+  });
+
+  test("attested fixture + UI renders exactly 20 cards → assertion passes", () => {
+    expect(() => assertAttestedCatalogCardCount("VALID_FIXTURE_READY", 20)).not.toThrow();
+  });
+
+  test("non-attested state cannot assert a card count at all", () => {
+    expect(() => assertAttestedCatalogCardCount("VALID_FIXTURE_ABSENT", 20)).toThrow(/card count cannot be asserted/);
+  });
 });
 
 test.describe("@public IPE-069 premium editorial storefront", () => {

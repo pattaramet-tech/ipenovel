@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,26 +13,14 @@ import { buildRunEvidenceDir, createUniqueRunEvidenceDir, evidenceCompleteness, 
 // production cookie is ever used. The local-only guard runs before reading
 // any session cookie; Playwright traces and videos are disabled for this project.
 const testDir = path.dirname(fileURLToPath(import.meta.url));
-// The default must be writable in ordinary Linux/macOS/Windows checkouts,
-// not depend on a particular .worktrees directory nesting depth.
-const evidenceRoot = process.env.E2E_NAV_EVIDENCE_DIR?.trim() ||
-  path.join(tmpdir(), "IPE-069R5C-navbar");
-// IPE-069R5L-R4E-R2: evidence is isolated PER EXECUTION — every run writes
-// into its own run-<id> directory, so screenshots from earlier runs can
-// never be mistaken for this run's results and are preserved untouched.
-// IPE-069R5L-R4E-R3: the run directory is claimed ATOMICALLY and lazily (on
-// first screenshot write) through createUniqueRunEvidenceDir — a repeated
-// E2E_RUN_ID or a concurrent worker can never reuse the previous
-// execution's directory, and a run marker binds it to this execution.
-const runId = process.env.E2E_RUN_ID?.trim() ||
-  new Date().toISOString().replace(/[:.]/g, "-");
-let claimedRunEvidenceDir: string | null = null;
-function ensureRunEvidenceDir(): string {
-  if (claimedRunEvidenceDir) return claimedRunEvidenceDir;
-  claimedRunEvidenceDir = createUniqueRunEvidenceDir(evidenceRoot, runId);
-  writeRunMarker(claimedRunEvidenceDir, runId);
-  return claimedRunEvidenceDir;
-}
+// IPE-069R5L-R4G P2-02: the RUN-WIDE evidence directory is claimed ONCE by
+// the Playwright runner (playwright.config.ts top-level) and published to
+// every worker and retry via process.env inheritance — Guest/User/Admin
+// screenshots land in ONE directory, retries stay in it, and a repeated
+// E2E_RUN_ID across invocations received a fresh atomically-suffixed
+// directory instead of reusing stale evidence.
+const runId = process.env.IPE069_RUN_ID ?? "";
+const runEvidenceDir = process.env.IPE069_RUN_EVIDENCE_DIR ?? "";
 const cookiesFile = process.env.E2E_SESSION_COOKIES_FILE?.trim() || "";
 
 type LocalFixtureCookies = { cookieName: string; adminToken: string; userToken: string };
@@ -79,9 +68,16 @@ test.beforeEach(async ({ baseURL }) => {
     throw new Error("Local fixture-session file is missing required fields");
   }
   const checkoutRoot = path.resolve(testDir, "..");
-  const captures = path.resolve(evidenceRoot);
+  // IPE-069R5L-R4G P2-02: the run-wide directory claimed by the runner must
+  // stay outside the repository, and the run marker must still bind it to
+  // THIS invocation before any fixture cookie is attached.
+  const captures = path.resolve(runEvidenceDir);
   if (captures === checkoutRoot || captures.startsWith(checkoutRoot + path.sep)) {
     throw new Error("Fixture screenshots must be stored outside the repository");
+  }
+  const markerPath = path.join(runEvidenceDir, ".run-id");
+  if (!existsSync(markerPath) || readFileSync(markerPath, "utf8") !== runId) {
+    throw new Error("Run-wide evidence directory marker does not match this invocation");
   }
   cookies = { cookieName: c.cookieName, userToken: c.userToken, adminToken: c.adminToken };
 });
@@ -108,10 +104,8 @@ test.describe("@local-fixture IPE-069R5C navbar roles × viewports (local fixtur
           () => document.documentElement.scrollWidth - document.documentElement.clientWidth
         );
         expect(overflow, `${role} @${width}px overflow`).toBeLessThanOrEqual(1);
-        // IPE-069R5L-R4E-R2: the per-run directory is unique to this
-        // execution (run-<id>), so screenshots from earlier runs are
-        // preserved untouched and can never stand in for this run's results.
-        const runEvidenceDir = ensureRunEvidenceDir();
+        // IPE-069R5L-R4G P2-02: writes go to the RUN-WIDE directory
+        // claimed by the runner (shared across workers and retries).
         await page.screenshot({
           path: path.join(runEvidenceDir, `navbar-${role}-${width}.png`),
           fullPage: false,
@@ -523,7 +517,7 @@ test.describe("@local-fixture IPE-069R5L-R4B consolidated navbar repairs", () =>
     // An explicitly selected evidence path must be outside checkout (checked
     // in beforeEach), while the fallback always uses the OS temporary folder.
     if (!process.env.E2E_NAV_EVIDENCE_DIR?.trim()) {
-      expect(evidenceRoot).toBe(path.join(tmpdir(), expected));
+      expect(process.env.IPE069_RUN_EVIDENCE_DIR).toContain(expected);
     }
   });
 });
@@ -764,9 +758,14 @@ test.describe("@local-fixture IPE-069R5L-R4E-R3 evidence integrity (real path)",
     const result = evidenceCompletenessForRun(root, "new-run", required);
     expect(result.stale).toBe(true);
     expect(result.complete).toBe(false);
-    // Same files under the CORRECT run id: accepted as complete.
+    // IPE-069R5L-R4G P2-03: adopt the directory into the checking run —
+    // rewrite the marker to the run id under test, then the SAME files
+    // are accepted: stale=false, complete=true, missing=[].
+    writeRunMarker(root, "new-run");
     const accepted = evidenceCompletenessForRun(root, "new-run", required);
-    expect(accepted.stale).toBe(true);
+    expect(accepted.stale).toBe(false);
+    expect(accepted.complete).toBe(true);
+    expect(accepted.missing).toEqual([]);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -782,5 +781,48 @@ test.describe("@local-fixture IPE-069R5L-R4E-R3 evidence integrity (real path)",
     expect(result.complete).toBe(true);
     expect(result.missing).toEqual([]);
     rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a fresh worker process inherits the same run-wide evidence directory", () => {
+    // IPE-069R5L-R4G-R1 Finding 1: Playwright worker restarts spawn NEW
+    // processes. Simulate one deterministically — a brand-new node process
+    // reading ONLY the inherited environment must resolve to the SAME
+    // run-wide directory claimed by the runner.
+    const inherited = execFileSync(
+      process.execPath,
+      ["-e", "process.stdout.write(process.env.IPE069_RUN_EVIDENCE_DIR ?? 'MISSING')"],
+      { env: process.env, encoding: "utf8" }
+    );
+    expect(inherited).toBe(runEvidenceDir);
+    // And the run marker still binds that directory to this invocation.
+    expect(readFileSync(path.join(runEvidenceDir, ".run-id"), "utf8")).toBe(process.env.IPE069_RUN_ID);
+  });
+
+});
+
+
+// ---------------------------------------------------------------------------
+// IPE-069R5L-R4G P2-02 — run-wide evidence completeness. Declares the full
+// 21-screenshot set (Guest/User/Admin × 7 viewports) and requires EVERY
+// file from THIS invocation's claimed directory to exist. An incomplete
+// run fails here instead of reporting evidence complete.
+// ---------------------------------------------------------------------------
+test.describe("@local-fixture IPE-069R5L-R4G run-wide evidence completeness", () => {
+  test("all 21 role×viewport screenshots exist in the run-wide directory", () => {
+    const required: string[] = [];
+    for (const role of ["guest", "user", "admin"]) {
+      for (const width of [320, 390, 768, 1024, 1280, 1440, 1920]) {
+        required.push(`navbar-${role}-${width}.png`);
+      }
+    }
+    expect(required).toHaveLength(21);
+    const result = evidenceCompletenessForRun(
+      runEvidenceDir,
+      runId,
+      required
+    );
+    expect(result.stale, "run marker must match this invocation").toBe(false);
+    expect(result.missing, `missing screenshots: ${result.missing.join(", ")}`).toEqual([]);
+    expect(result.complete).toBe(true);
   });
 });
