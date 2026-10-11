@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gotoOk } from "./support/runtime";
 import { e2eBaseUrl } from "./support/env";
+import { buildRunEvidenceDir, createUniqueRunEvidenceDir, evidenceCompleteness, evidenceCompletenessForRun, writeRunMarker } from "./support/evidence";
 
 // IPE-069R5C — authenticated LOCAL navbar qualification. No live user or
 // production cookie is ever used. The local-only guard runs before reading
@@ -14,6 +16,22 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 // not depend on a particular .worktrees directory nesting depth.
 const evidenceRoot = process.env.E2E_NAV_EVIDENCE_DIR?.trim() ||
   path.join(tmpdir(), "IPE-069R5C-navbar");
+// IPE-069R5L-R4E-R2: evidence is isolated PER EXECUTION — every run writes
+// into its own run-<id> directory, so screenshots from earlier runs can
+// never be mistaken for this run's results and are preserved untouched.
+// IPE-069R5L-R4E-R3: the run directory is claimed ATOMICALLY and lazily (on
+// first screenshot write) through createUniqueRunEvidenceDir — a repeated
+// E2E_RUN_ID or a concurrent worker can never reuse the previous
+// execution's directory, and a run marker binds it to this execution.
+const runId = process.env.E2E_RUN_ID?.trim() ||
+  new Date().toISOString().replace(/[:.]/g, "-");
+let claimedRunEvidenceDir: string | null = null;
+function ensureRunEvidenceDir(): string {
+  if (claimedRunEvidenceDir) return claimedRunEvidenceDir;
+  claimedRunEvidenceDir = createUniqueRunEvidenceDir(evidenceRoot, runId);
+  writeRunMarker(claimedRunEvidenceDir, runId);
+  return claimedRunEvidenceDir;
+}
 const cookiesFile = process.env.E2E_SESSION_COOKIES_FILE?.trim() || "";
 
 type LocalFixtureCookies = { cookieName: string; adminToken: string; userToken: string };
@@ -90,9 +108,12 @@ test.describe("@local-fixture IPE-069R5C navbar roles × viewports (local fixtur
           () => document.documentElement.scrollWidth - document.documentElement.clientWidth
         );
         expect(overflow, `${role} @${width}px overflow`).toBeLessThanOrEqual(1);
-        mkdirSync(evidenceRoot, { recursive: true });
+        // IPE-069R5L-R4E-R2: the per-run directory is unique to this
+        // execution (run-<id>), so screenshots from earlier runs are
+        // preserved untouched and can never stand in for this run's results.
+        const runEvidenceDir = ensureRunEvidenceDir();
         await page.screenshot({
-          path: path.join(evidenceRoot, `navbar-${role}-${width}.png`),
+          path: path.join(runEvidenceDir, `navbar-${role}-${width}.png`),
           fullPage: false,
           animations: "disabled",
         });
@@ -656,5 +677,110 @@ test.describe("@local-fixture IPE-069R5L-R4C-R1 logout failure focus", () => {
     await expect(hamburger).toBeFocused();
     await hamburger.click();
     await expect(page.locator("#ipe-mobile-navigation").getByRole("button", { name: /โปรไฟล์|Profile/ })).toBeVisible();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// IPE-069R5L-R4E-R2 — evidence isolation regression. Old evidence must
+// never make an incomplete run look PASS: per-run directories are unique,
+// earlier runs are preserved untouched, and completeness is decided only
+// by the files the run itself declares.
+// ---------------------------------------------------------------------------
+test.describe("@local-fixture IPE-069R5L-R4E-R2 evidence isolation", () => {
+  test("unique run ids produce separate evidence directories; earlier runs stay untouched", () => {
+    const root = path.join(tmpdir(), "ipe069r5f-evidence-regression", `unique-dirs-${randomUUID()}`);
+    rmSync(root, { recursive: true, force: true });
+    const runA = buildRunEvidenceDir(root, "run-a");
+    const runB = buildRunEvidenceDir(root, "run-b");
+    expect(runA).not.toBe(runB);
+    mkdirSync(runA, { recursive: true });
+    writeFileSync(path.join(runA, "navbar-user-1440.png"), "old-run-evidence");
+    // Run B creates its own directory — run A's file is untouched.
+    mkdirSync(runB, { recursive: true });
+    expect(existsSync(path.join(runA, "navbar-user-1440.png"))).toBe(true);
+    expect(existsSync(path.join(runB, "navbar-user-1440.png"))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("an incomplete run directory fails the completeness check (cannot fake PASS)", () => {
+    const root = path.join(tmpdir(), "ipe069r5f-evidence-regression", `incomplete-${randomUUID()}`);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    writeFileSync(path.join(root, "navbar-user-320.png"), "partial");
+    const required = ["navbar-user-320.png", "navbar-user-1440.png", "navbar-admin-1920.png"];
+    const result = evidenceCompleteness(root, required);
+    expect(result.complete).toBe(false);
+    expect(result.missing).toEqual(["navbar-user-1440.png", "navbar-admin-1920.png"]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a complete run directory passes the completeness check", () => {
+    const root = path.join(tmpdir(), "ipe069r5f-evidence-regression", `complete-${randomUUID()}`);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    const required = ["navbar-user-320.png", "navbar-user-1440.png"];
+    required.forEach((file) => writeFileSync(path.join(root, file), "evidence"));
+    const result = evidenceCompleteness(root, required);
+    expect(result.complete).toBe(true);
+    expect(result.missing).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// IPE-069R5L-R4E-R3 — real-path regressions: duplicate run ids and stale
+// markers are rejected through the ACTUAL evidence creation path
+// (createUniqueRunEvidenceDir + run marker), not just the helpers.
+// ---------------------------------------------------------------------------
+test.describe("@local-fixture IPE-069R5L-R4E-R3 evidence integrity (real path)", () => {
+  test("duplicate E2E_RUN_ID claims a NEW directory — old screenshots cannot return", () => {
+    const root = path.join(tmpdir(), "ipe069r5f-evidence-regression", `duplicate-runid-${randomUUID()}`);
+    rmSync(root, { recursive: true, force: true });
+    // Execution 1: claims run-dup atomically and leaves an old screenshot.
+    const firstDir = createUniqueRunEvidenceDir(root, "dup");
+    writeRunMarker(firstDir, "dup");
+    writeFileSync(path.join(firstDir, "navbar-user-1440.png"), "old-run-evidence");
+    // Execution 2 repeats the SAME E2E_RUN_ID: it must be given a DIFFERENT
+    // directory (suffixed), free of the old screenshot.
+    const secondDir = createUniqueRunEvidenceDir(root, "dup");
+    expect(secondDir).not.toBe(firstDir);
+    expect(existsSync(path.join(secondDir, "navbar-user-1440.png"))).toBe(false);
+    // And the old execution's evidence is preserved untouched.
+    expect(readFileSync(path.join(firstDir, "navbar-user-1440.png"), "utf8")).toBe("old-run-evidence");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a stale run marker blocks completeness even when all files exist", () => {
+    const root = path.join(tmpdir(), "ipe069r5f-evidence-regression", `stale-marker-${randomUUID()}`);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    // Directory written by an OLDER execution (marker = old run id) with
+    // every required file present — completeness must still refuse it.
+    writeRunMarker(root, "old-run");
+    const required = ["navbar-user-320.png", "navbar-user-1440.png"];
+    required.forEach((file) => writeFileSync(path.join(root, file), "old-evidence"));
+    const result = evidenceCompletenessForRun(root, "new-run", required);
+    expect(result.stale).toBe(true);
+    expect(result.complete).toBe(false);
+    // Same files under the CORRECT run id: accepted as complete.
+    const accepted = evidenceCompletenessForRun(root, "new-run", required);
+    expect(accepted.stale).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("evidenceCompletenessForRun accepts only the current execution's marker", () => {
+    const root = path.join(tmpdir(), "ipe069r5f-evidence-regression", `current-marker-${randomUUID()}`);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    writeRunMarker(root, "this-run");
+    const required = ["navbar-user-320.png", "navbar-user-1440.png"];
+    required.forEach((file) => writeFileSync(path.join(root, file), "fresh-evidence"));
+    const result = evidenceCompletenessForRun(root, "this-run", required);
+    expect(result.stale).toBe(false);
+    expect(result.complete).toBe(true);
+    expect(result.missing).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
   });
 });

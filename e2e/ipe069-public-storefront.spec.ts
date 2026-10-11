@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { gotoOk, watchRuntimeFailures } from "./support/runtime";
+import { e2eBaseUrl } from "./support/env";
 
 // IPE-069R2D: the storefront renders progressively — the SPA shell arrives
 // first, then the tRPC home/catalog/detail payloads hydrate the sections.
@@ -16,6 +17,62 @@ const viewports = [
   { width: 390, height: 844 },
   { width: 320, height: 720 },
 ] as const;
+
+// IPE-069R4E P2-01 regression: lazy catalog covers must SETTLE (complete)
+// on mobile and desktop after scrolling the whole grid into view — the
+// suite requires the local seed with 20 load-test novels; on other targets
+// it self-skips (card-count guard below).
+test.describe("@public IPE-069R4E catalog lazy-load regression", () => {
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
+    test(`catalog with 20 seeded cards settles all lazy covers at ${viewport.width}px`, async ({ page }) => {
+      // Local-only: the 20 load-test novels come from the local seed. On
+      // staging/preview the catalog content differs, so this test self-skips.
+      const target = new URL(e2eBaseUrl);
+      test.skip(
+        target.hostname !== "localhost" && target.hostname !== "127.0.0.1",
+        "20-card lazy-load regression requires the local seed"
+      );
+      await page.setViewportSize(viewport);
+      await gotoOk(page, "/novels");
+      await expect(page.locator(".ipe-public.ipe-catalog")).toBeVisible();
+      // IPE-069R5L-R4E-R4 — query-loaded signal: while trpc.novels.browse is
+      // resolving its FIRST load (isLoading), the page renders 10 pulse
+      // skeleton placeholders instead of cards. Hydration is complete only
+      // when every skeleton is gone.
+      await expect(page.locator(".ipe-catalog .animate-pulse")).toHaveCount(0, { timeout: 15_000 });
+      // Expected card count per the pagination contract: browse paginates
+      // with PAGE_SIZE = 20 (NovelsPage.tsx) and the local seed carries 23
+      // published novels — so hydrated page 1 renders EXACTLY 20 cards
+      // (hasNextPage = true). An under-count proves incomplete hydration;
+      // an over-count proves the pagination contract broke. Neither can
+      // pass before the query has resolved.
+      await expect(page.locator(".ipe-novel-card")).toHaveCount(20, { timeout: 10_000 });
+      for (const card of await page.locator(".ipe-novel-card").all()) {
+        await card.scrollIntoViewIfNeeded();
+      }
+      await page.waitForFunction(
+        () => {
+          const images = Array.from(
+            document.querySelectorAll<HTMLImageElement>(".ipe-novel-card img")
+          );
+          return images.length > 0 && images.every((image) => image.complete);
+        },
+        undefined,
+        { timeout: 15_000 }
+      );
+      const broken = await page.locator(".ipe-novel-card img").evaluateAll(
+        (images) => images.filter((image) => (image as HTMLImageElement).naturalWidth <= 0).length
+      );
+      expect(broken, "broken catalog covers").toBe(0);
+      // No horizontal overflow after the full grid hydrated.
+      const widths = await page.evaluate(() => ({
+        document: document.documentElement.scrollWidth,
+        viewport: document.documentElement.clientWidth,
+      }));
+      expect(widths.document).toBeLessThanOrEqual(widths.viewport + 1);
+    });
+  }
+});
 
 test.describe("@public IPE-069 premium editorial storefront", () => {
   test("home, catalog and published detail keep one H1 and no horizontal overflow", async ({ page }) => {
@@ -53,25 +110,38 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
         path: "/novels",
         key: "catalog",
         // Catalog is backed by the novels browse query — wait for the
-        // server-rendered card list (not just the shell), for every card
-        // image to finish loading, and for the card count to settle so the
-        // overflow check + capture see the fully hydrated grid.
+        // server-rendered card list (not just the shell). Covers use
+        // loading="lazy", so cards below the fold never START fetching until
+        // scrolled into view: nudge every card through the viewport BEFORE
+        // the completeness wait, otherwise the wait itself prevents the
+        // loads it is waiting for.
         ready: async () => {
           await expect(page.locator(".ipe-public.ipe-catalog")).toBeVisible();
           await expect(page.locator(".ipe-novel-card").first()).toBeVisible();
+          // Wait for the card count to stabilize before triggering lazy
+          // loads — a mid-load count would miss below-the-fold cards.
+          await expect.poll(
+            () => page.locator(".ipe-novel-card").count(),
+            { timeout: 10_000 }
+          ).toBeGreaterThanOrEqual(1);
+          for (const card of await page.locator(".ipe-novel-card").all()) {
+            await card.scrollIntoViewIfNeeded();
+          }
+          await expect(page.locator(".ipe-novel-card img").first()).toBeAttached();
           await page.waitForFunction(
             () => {
               const images = Array.from(
                 document.querySelectorAll<HTMLImageElement>(".ipe-novel-card img")
               );
+              // complete covers both loaded covers and covers that errored
+              // while loading — settled either way.
               return images.every((image) => image.complete);
             },
             undefined,
             { timeout: 10_000 }
           );
-          // complete can be true even when the browser could not decode an
-          // image (e.g. a preview image host returning HTML). Fail explicitly
-          // on broken images rather than timing out or silently accepting them.
+          // Broken-image detection: a completed cover must decode with real
+          // pixels — completed-but-empty (naturalWidth 0) fails explicitly.
           const brokenImages = await page.locator(".ipe-novel-card img").evaluateAll(
             (images) => images.filter((image) => (image as HTMLImageElement).naturalWidth <= 0).length
           );
