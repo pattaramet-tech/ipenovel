@@ -15,6 +15,21 @@ async function holdAfterProbeWrite(): Promise<void> {
   }
 }
 
+async function waitUntilRetryRelease(): Promise<void> {
+  const releaseFile = process.env.E2E_RETRY_RELEASE_FILE ?? "";
+  if (!releaseFile) {
+    await holdAfterProbeWrite();
+    return;
+  }
+  const deadline = Date.now() + 20_000;
+  while (!existsSync(releaseFile)) {
+    if (Date.now() > deadline) {
+      throw new Error("retry release was not signaled: " + releaseFile);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 test.describe("@local-fixture IPE-069R5L-R4G-R2 real retry/worker replacement", () => {
   test.beforeEach(() => {
     test.skip(
@@ -45,7 +60,7 @@ test.describe("@local-fixture IPE-069R5L-R4G-R2 real retry/worker replacement", 
           2
         )
       );
-      await holdAfterProbeWrite();
+      await waitUntilRetryRelease();
       expect(
         info.retry,
         "attempt 0 fails intentionally for the retry qualification"

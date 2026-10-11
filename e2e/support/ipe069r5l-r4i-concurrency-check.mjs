@@ -47,9 +47,17 @@ function runPlaywright(label, evidenceRoot, extraEnv = {}) {
       "--output",
       outputDir,
     ],
-    { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] },
+    {
+      cwd: repoRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    },
   );
   let out = "";
+  child.on("error", (error) => {
+    out += error.code + " " + error.message;
+  });
   child.stdout.on("data", (chunk) => {
     out += chunk.toString();
   });
@@ -115,18 +123,65 @@ function outsideRepo(dir) {
   return resolved !== repoRoot && !resolved.startsWith(repoRoot + path.sep);
 }
 
+function stopProcessTree(child) {
+  if (process.platform === "win32") {
+    return new Promise((resolve, reject) => {
+      const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+      killer.on("error", reject);
+      killer.on("close", (code) => {
+        if (code === 0 || code === 128 || code === 255) resolve();
+        else reject(new Error("taskkill exited " + code));
+      });
+    });
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+  return Promise.resolve();
+}
+
+async function assertSpawnErrorIsHandled() {
+  const missing = path.join(os.tmpdir(), "ipe069r4i-missing-" + process.pid);
+  await new Promise((resolve, reject) => {
+    const child = spawn(missing, [], { stdio: "ignore" });
+    let settled = false;
+    child.on("error", (error) => {
+      settled = true;
+      if (error.code === "ENOENT") resolve();
+      else reject(error);
+    });
+    child.on("close", () => {
+      if (!settled) reject(new Error("missing command exited without an error event"));
+    });
+  });
+  console.log("PASS a missing command reports ENOENT on its error event");
+}
+
 async function scenarioA(stamp) {
   fs.rmSync(legacyProbe, { force: true });
   const rootA = path.join(os.tmpdir(), "ipe069r4i-a-" + stamp);
   const rootB = path.join(os.tmpdir(), "ipe069r4i-b-" + stamp);
+  const releaseFile = path.join(os.tmpdir(), "ipe069r4i-release-" + stamp);
+  fs.rmSync(releaseFile, { force: true });
   console.log("SCENARIO_A roots " + rootA + " | " + rootB);
-  const first = runPlaywright("A", rootA);
-  const second = runPlaywright("B", rootB);
-  const seen = await pollUntil(20000, () => {
-    const probes = [...findProbes(rootA), ...findProbes(rootB)];
-    return probes.length >= 2 ? probes : null;
-  });
+  const releaseEnv = { E2E_RETRY_RELEASE_FILE: releaseFile };
+  const first = runPlaywright("A", rootA, releaseEnv);
+  const second = runPlaywright("B", rootB, releaseEnv);
+  let seen = null;
+  try {
+    seen = await pollUntil(20000, () => {
+      const probes = [...findProbes(rootA), ...findProbes(rootB)];
+      return probes.length >= 2 ? probes : null;
+    });
+  } finally {
+    fs.writeFileSync(releaseFile, "release");
+  }
   const [left, right] = await Promise.all([first.done, second.done]);
+  fs.rmSync(releaseFile, { force: true });
   assert(seen !== null && seen.length >= 2, "scenario A observed two in-directory probes");
   assert(seen[0] !== seen[1], "scenario A probes are different paths");
   assert(qualificationPassed(left), "scenario A invocation A completed its retry");
@@ -149,15 +204,7 @@ async function scenarioAInterrupted(stamp) {
   const killed = runPlaywright("killed", rootA, { E2E_RETRY_HOLD_MS: "1500" });
   const probe = await pollUntil(20000, () => findProbes(rootA)[0] ?? null);
   assert(probe !== null, "scenario A interrupt observed the owned probe before kill");
-  await new Promise((resolve, reject) => {
-    const killer = spawn("taskkill", ["/PID", String(killed.child.pid), "/T", "/F"], {
-      stdio: "ignore",
-    });
-    killer.on("close", (code) => {
-      if (code === 0 || code === 128 || code === 255) resolve();
-      else reject(new Error("taskkill exited " + code));
-    });
-  });
+  await stopProcessTree(killed.child);
   await killed.done;
   assert(fs.existsSync(probe), "scenario A interrupt left the killed run probe in place");
   const killedMarker = markers(rootA).find((item) => item.runId === "ci");
@@ -270,6 +317,7 @@ async function scenarioD(stamp) {
 const stamp = Date.now().toString();
 const kept = [];
 try {
+  await assertSpawnErrorIsHandled();
   kept.push(await scenarioA(stamp));
   kept.push(await scenarioAInterrupted(stamp + "k"));
   kept.push(await scenarioB(stamp + "b"));
