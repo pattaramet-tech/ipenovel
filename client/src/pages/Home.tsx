@@ -6,6 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { Sparkles, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { usePublicStorefrontPageThemeProps } from "@/contexts/PublicThemeContext";
 import { toast } from "sonner";
 import React, { useMemo } from "react";
 import NovelCard from "@/components/NovelCard";
@@ -77,7 +78,7 @@ function BannerCarousel({ banners, learnMoreLabel }: { banners: any[]; learnMore
                 key={index}
                 onClick={() => setCurrentIndex(index)}
                 className={`w-2 h-2 rounded-full transition-all duration-300 ${
-                  index === currentIndex ? "bg-white w-6" : "bg-white/50 hover:bg-white/75"
+                  index === currentIndex ? "bg-white/90 w-6" : "bg-white/50 hover:bg-white/75"
                 }`}
                 aria-label={`Go to banner ${index + 1}`}
               />
@@ -178,6 +179,7 @@ export default function Home() {
     ogType: "website",
     jsonLd: websiteJsonLd,
   });
+  const publicThemeProps = usePublicStorefrontPageThemeProps();
 
   // Show error toast if query fails
   React.useEffect(() => {
@@ -190,7 +192,7 @@ export default function Home() {
   // Handle error state
   if (error) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
+      <div className="ipe-public min-h-screen flex items-center justify-center" {...publicThemeProps}>
         <Card className="p-8 max-w-md text-center">
           <p className="text-red-600 font-semibold mb-4">Failed to load content</p>
           <p className="text-muted-foreground mb-6">Please refresh the page or try again later.</p>
@@ -209,7 +211,7 @@ export default function Home() {
   const freeLabel = t("home.free");
 
   return (
-    <div className="ipe-public ipe-home min-h-screen">
+    <div className="ipe-public ipe-home min-h-screen" {...publicThemeProps}>
       {/* Main Content - Mobile First */}
       <div className="ipe-page-container pt-8 sm:pt-10 md:pt-12 pb-[calc(3rem+env(safe-area-inset-bottom))] sm:pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-[calc(5rem+env(safe-area-inset-bottom))]">
         <header className="mb-6 sm:mb-8">

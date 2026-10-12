@@ -17,9 +17,17 @@
  *     episode title, font/theme/TOC controls); see Navbar.tsx's prior
  *     inline comment for the stacking-sticky-headers issue this avoided.
  */
+function normalizeStorefrontPath(location: string): string {
+  const bare = location.split(/[?#]/)[0] ?? "";
+  const lower = bare.toLowerCase();
+  if (lower.length > 1 && lower.endsWith("/")) return lower.slice(0, -1);
+  return lower;
+}
+
 export function shouldHideGlobalNavbar(location: string): boolean {
-  if (location.startsWith("/read/")) return true;
-  if (location === "/admin" || location.startsWith("/admin/")) return true;
+  const path = normalizeStorefrontPath(location);
+  if (path.startsWith("/read/")) return true;
+  if (path === "/admin" || path.startsWith("/admin/")) return true;
   return false;
 }
 
@@ -48,4 +56,29 @@ export const ACCOUNT_RECOVERY_NAV_HREF = "/account/recovery";
  */
 export function shouldShowAccountRecoveryNavItem(isAuthenticated: boolean): boolean {
   return isAuthenticated;
+}
+
+export function isPublicStorefrontPath(location: string): boolean {
+  const path = normalizeStorefrontPath(location);
+  if (path === "/" || path === "/novels") return true;
+  const match = /^\/novels\/([^/]+)$/.exec(path);
+  return match !== null && match[1].length > 0;
+}
+
+export function shouldThemePublicNavbar(location: string): boolean {
+  const path = normalizeStorefrontPath(location);
+  if (shouldHideGlobalNavbar(path)) return false;
+  if (path === "/workspace" || path.startsWith("/workspace/")) return false;
+  if (
+    path === "/login" ||
+    path === "/account/upgrade-login" ||
+    path === "/account/recovery"
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function publicToasterTheme(location: string, resolved: "light" | "dark"): "light" | "dark" {
+  return isPublicStorefrontPath(location) ? resolved : "light";
 }

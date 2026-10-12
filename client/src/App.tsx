@@ -47,9 +47,11 @@ import WalletPage from "@/pages/WalletPage";
 import SportsVotesPage from "@/pages/SportsVotesPage";
 import AdminSportsVotesPage from "@/pages/AdminSportsVotesPage";
 import ReaderPage from "@/pages/ReaderPage";
-import { Route, Switch } from "wouter";
+import { Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { PublicThemeProvider, usePublicTheme } from "./contexts/PublicThemeContext";
+import { publicToasterTheme } from "./components/navbarVisibility";
 import Navbar from "./components/Navbar";
 import MigrationGate from "./components/MigrationGate";
 import MaintenanceAnnouncementBanner from "./components/MaintenanceAnnouncementBanner";
@@ -134,14 +136,26 @@ function Router() {
   );
 }
 
+function AppChrome() {
+  const [location] = useLocation();
+  const { resolved } = usePublicTheme();
+  const toasterTheme = publicToasterTheme(location, resolved);
+
+  return (
+    <TooltipProvider>
+      <Toaster theme={toasterTheme} />
+      <Router />
+    </TooltipProvider>
+  );
+}
+
 function App() {
   return (
     <ErrorBoundary>
       <ThemeProvider defaultTheme="light">
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
+        <PublicThemeProvider>
+          <AppChrome />
+        </PublicThemeProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

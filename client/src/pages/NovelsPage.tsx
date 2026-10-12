@@ -14,6 +14,7 @@ import { keepPreviousData } from "@tanstack/react-query";
 import NovelCard, { type NovelCardBadge } from "@/components/NovelCard";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl } from "@/lib/seo";
+import { usePublicStorefrontPageThemeProps } from "@/contexts/PublicThemeContext";
 
 const NOVELS_LIST_TITLE = "รายการนิยาย | IpeNovel";
 // Canonical intentionally omits sort/filter/page query params - they're
@@ -219,6 +220,7 @@ export default function NovelsPage() {
     canonical: NOVELS_LIST_CANONICAL,
     ogType: "website",
   });
+  const publicThemeProps = usePublicStorefrontPageThemeProps();
 
   // Get display title based on current sort/filter
   const getPageTitle = () => {
@@ -275,7 +277,7 @@ export default function NovelsPage() {
   );
 
   return (
-    <div className="ipe-public ipe-catalog min-h-screen">
+    <div className="ipe-public ipe-catalog min-h-screen" {...publicThemeProps}>
       {/* Header */}
       <div className="ipe-catalog-header border-b py-6 sm:py-9">
         <div className="ipe-page-container">

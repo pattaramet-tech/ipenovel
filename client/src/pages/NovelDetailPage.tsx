@@ -19,10 +19,12 @@ import {
 } from "@/utils/episodeUtils";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl, buildNovelMetaDescription, SITE_NAME } from "@/lib/seo";
+import { usePublicStorefrontPageThemeProps } from "@/contexts/PublicThemeContext";
 
 export default function NovelDetailPage() {
   const { identifier } = useParams<{ identifier: string }>();
   const [, setLocation] = useLocation();
+  const publicThemeProps = usePublicStorefrontPageThemeProps();
   const { user } = useAuth();
   const { t, language } = useLanguage();
   const [selectedEpisodes, setSelectedEpisodes] = useState<number[]>([]);
@@ -599,19 +601,22 @@ export default function NovelDetailPage() {
   // Early returns AFTER all hooks have been called
   if (!validNovelId) {
     return (
-      <div className="container py-8">
+      <div className="ipe-public min-h-screen" {...publicThemeProps}>
+        <div className="container py-8">
         <Card className="p-8 text-center">
           <h1 className="text-2xl font-bold mb-4">Novel Not Found</h1>
           <p className="text-muted-foreground mb-6">Invalid novel identifier.</p>
           <Button onClick={() => setLocation("/novels")}>{t("common.back")}</Button>
         </Card>
+        </div>
       </div>
     );
   }
 
   if (novelLoading) {
     return (
-      <div className="container py-8">
+      <div className="ipe-public min-h-screen" {...publicThemeProps}>
+        <div className="container py-8">
         <Skeleton className="h-8 w-1/4 mb-6" />
         <div className="grid md:grid-cols-3 gap-8">
           <div className="md:col-span-1">
@@ -624,6 +629,7 @@ export default function NovelDetailPage() {
             <Skeleton className="h-4 w-1/2" />
           </div>
         </div>
+        </div>
       </div>
     );
   }
@@ -633,7 +639,8 @@ export default function NovelDetailPage() {
   
   if (isNotFound || novelError || !novel || !novel.novel) {
     return (
-      <div className="container py-8">
+      <div className="ipe-public min-h-screen" {...publicThemeProps}>
+        <div className="container py-8">
         <Card className="p-8 text-center">
           <h1 className="text-2xl font-bold mb-4">ไม่สามารถดูนิยายเรื่องนี้ได้</h1>
           <p className="text-muted-foreground mb-6">
@@ -641,12 +648,13 @@ export default function NovelDetailPage() {
           </p>
           <Button onClick={() => setLocation("/novels")}>กลับไปยังรายการนิยาย</Button>
         </Card>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="ipe-public ipe-detail min-h-screen">
+    <div className="ipe-public ipe-detail min-h-screen" {...publicThemeProps}>
       <div className="ipe-detail-container py-6 md:py-10">
         {/* Back Button */}
         <Button variant="ghost" onClick={() => setLocation("/novels")} className="mb-6 -ml-2 hover:bg-slate-100">
