@@ -47,3 +47,9 @@
 @media(min-width:1024px){.ipe-public .ipe-page-container,.ipe-public .ipe-detail-container{padding-inline:32px}.ipe-public .ipe-detail-hero,.ipe-public .ipe-detail-episode-section{padding:36px}}
 @media(max-width:639px){.ipe-public .ipe-home-banner-caption{padding:14px 16px}.ipe-public .ipe-detail-hero,.ipe-public .ipe-detail-episode-section{padding:16px}.ipe-public .ipe-detail-cover{max-width:200px}.ipe-public-nav .ipe-brand-name{display:none}}
 @media(prefers-reduced-motion:reduce){.ipe-public .ipe-novel-card,.ipe-public-nav *{animation:none!important;transition-duration:.01ms!important}.ipe-public .ipe-novel-card:hover{transform:none}}
+.ipe-public-nav .ipe-nav-link-active{color:var(--ipe-navy);background:#ebe4d7;font-weight:600}
+.ipe-public-nav .ipe-nav-dropdown{background:var(--ipe-surface);border:1px solid var(--ipe-border);box-shadow:0 12px 28px rgb(23 34 56 / 12%)}
+.ipe-public-nav .ipe-nav-dropdown-item{color:var(--ipe-secondary);border-radius:8px}
+.ipe-public-nav .ipe-nav-dropdown-item:hover{background:#f0ebe3;color:var(--ipe-navy)}
+.ipe-public-nav .ipe-nav-dropdown-item.ipe-nav-link-active{color:var(--ipe-navy);background:#ebe4d7;font-weight:600}
+.ipe-public-nav .ipe-account-avatar{background:var(--ipe-navy);color:#fff;border:1px solid var(--ipe-gold)}
