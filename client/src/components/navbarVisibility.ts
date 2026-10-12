@@ -17,9 +17,17 @@
  *     episode title, font/theme/TOC controls); see Navbar.tsx's prior
  *     inline comment for the stacking-sticky-headers issue this avoided.
  */
+function normalizeStorefrontPath(location: string): string {
+  const bare = location.split(/[?#]/)[0] ?? "";
+  const lower = bare.toLowerCase();
+  if (lower.length > 1 && lower.endsWith("/")) return lower.slice(0, -1);
+  return lower;
+}
+
 export function shouldHideGlobalNavbar(location: string): boolean {
-  if (location.startsWith("/read/")) return true;
-  if (location === "/admin" || location.startsWith("/admin/")) return true;
+  const path = normalizeStorefrontPath(location);
+  if (path.startsWith("/read/")) return true;
+  if (path === "/admin" || path.startsWith("/admin/")) return true;
   return false;
 }
 
@@ -50,28 +58,27 @@ export function shouldShowAccountRecoveryNavItem(isAuthenticated: boolean): bool
   return isAuthenticated;
 }
 
-/** True for `/`, `/novels`, and `/novels/:identifier` (single segment only). */
 export function isPublicStorefrontPath(location: string): boolean {
-  if (location === "/" || location === "/novels") return true;
-  const match = /^\/novels\/([^/]+)$/.exec(location);
+  const path = normalizeStorefrontPath(location);
+  if (path === "/" || path === "/novels") return true;
+  const match = /^\/novels\/([^/]+)$/.exec(path);
   return match !== null && match[1].length > 0;
 }
 
-/** Themed navbar + theme selector; excludes workspace, auth screens, reader, admin. */
 export function shouldThemePublicNavbar(location: string): boolean {
-  if (shouldHideGlobalNavbar(location)) return false;
-  if (location === "/workspace" || location.startsWith("/workspace/")) return false;
+  const path = normalizeStorefrontPath(location);
+  if (shouldHideGlobalNavbar(path)) return false;
+  if (path === "/workspace" || path.startsWith("/workspace/")) return false;
   if (
-    location === "/login" ||
-    location === "/account/upgrade-login" ||
-    location === "/account/recovery"
+    path === "/login" ||
+    path === "/account/upgrade-login" ||
+    path === "/account/recovery"
   ) {
     return false;
   }
   return true;
 }
 
-/** Toasts follow the public page canvas, not the navbar. Cart and profile may keep a dark navbar while their bodies stay light. */
 export function publicToasterTheme(location: string, resolved: "light" | "dark"): "light" | "dark" {
   return isPublicStorefrontPath(location) ? resolved : "light";
 }

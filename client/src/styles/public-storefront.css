@@ -86,4 +86,9 @@
 .ipe-public-nav[data-public-theme="dark"] .hover\:bg-slate-100:hover,.ipe-public-nav[data-public-theme="dark"] .hover\:bg-slate-50:hover{background-color:var(--ipe-hover)!important}
 .ipe-public[data-public-theme="dark"] .border-slate-100,.ipe-public[data-public-theme="dark"] .border-slate-200,.ipe-public-nav[data-public-theme="dark"] .border-slate-100,.ipe-public-nav[data-public-theme="dark"] .border-slate-200{border-color:var(--ipe-border)!important}
 .ipe-public[data-public-theme="dark"] .text-blue-600,.ipe-public-nav[data-public-theme="dark"] .text-blue-600{color:var(--ipe-link)!important}
+.ipe-public[data-public-theme="dark"] .bg-blue-50,.ipe-public[data-public-theme="dark"] .hover\:bg-blue-50:hover,.ipe-public[data-public-theme="dark"] .hover\:bg-purple-50:hover,.ipe-public[data-public-theme="dark"] .hover\:bg-slate-200:hover,.ipe-public-nav[data-public-theme="dark"] .hover\:bg-slate-200:hover{background-color:var(--ipe-hover)!important}
+.ipe-public[data-public-theme="dark"] .bg-white\/85,.ipe-public[data-public-theme="dark"] .hover\:bg-white:hover{background-color:var(--ipe-surface)!important}
+.ipe-public[data-public-theme="dark"] .text-blue-700:not(.bg-blue-100){color:var(--ipe-link)!important}
+.ipe-public[data-public-theme="dark"] .text-purple-700:not(.bg-purple-100){color:#D8B4FE!important}
+.ipe-public[data-public-theme="dark"] .hover\:text-red-500:hover{color:#ef4444!important}
 .ipe-public[data-public-theme="dark"] .border-blue-600{border-color:var(--ipe-link)!important}

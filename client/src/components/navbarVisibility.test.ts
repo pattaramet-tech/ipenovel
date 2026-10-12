@@ -41,6 +41,11 @@ describe("shouldHideGlobalNavbar", () => {
     expect(shouldHideGlobalNavbar("/administrator-guide")).toBe(false);
   });
 
+  it("hides the navbar when the reader path only differs by case or a trailing slash", () => {
+    expect(shouldHideGlobalNavbar("/READ/1")).toBe(true);
+    expect(shouldHideGlobalNavbar("/read/1/")).toBe(true);
+  });
+
   it("does not treat a route that merely starts with 'read' as a Reader route", () => {
     expect(shouldHideGlobalNavbar("/readme")).toBe(false);
   });
@@ -63,7 +68,7 @@ describe("ACCOUNT_RECOVERY_NAV_HREF", () => {
 });
 
 describe("isPublicStorefrontPath", () => {
-  it.each(["/", "/novels", "/novels/4230170"])("is true for %s", (location) => {
+  it.each(["/", "/novels", "/novels/", "/novels/4230170", "/novels/4230170/", "/NOVELS/Example"])("is true for %s", (location) => {
     expect(isPublicStorefrontPath(location)).toBe(true);
   });
 
@@ -75,6 +80,7 @@ describe("isPublicStorefrontPath", () => {
     "/login",
     "/cart",
     "/novels/a/b",
+    "/novels/a/b/",
   ])("is false for %s", (location) => {
     expect(isPublicStorefrontPath(location)).toBe(false);
   });
@@ -89,7 +95,10 @@ describe("shouldThemePublicNavbar", () => {
     "/workspace",
     "/workspace/intake",
     "/login",
+    "/login/",
+    "/Login",
     "/account/recovery",
+    "/account/recovery/",
     "/account/upgrade-login",
     "/read/1",
     "/admin",
@@ -102,11 +111,13 @@ describe("publicToasterTheme", () => {
   it("follows the resolved theme on storefront pages", () => {
     expect(publicToasterTheme("/", "dark")).toBe("dark");
     expect(publicToasterTheme("/novels/example", "dark")).toBe("dark");
+    expect(publicToasterTheme("/novels/", "dark")).toBe("dark");
     expect(publicToasterTheme("/", "light")).toBe("light");
   });
 
   it("stays light on cart, profile, workspace, and admin even when the preference is dark", () => {
     expect(publicToasterTheme("/cart", "dark")).toBe("light");
+    expect(publicToasterTheme("/cart/", "dark")).toBe("light");
     expect(publicToasterTheme("/orders", "dark")).toBe("light");
     expect(publicToasterTheme("/profile", "dark")).toBe("light");
     expect(publicToasterTheme("/workspace", "dark")).toBe("light");

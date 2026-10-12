@@ -45,9 +45,7 @@ export function writeBrowserPublicThemePreference(
 ): void {
   try {
     writePublicThemePreference(getStorage(), preference);
-  } catch {
-    // Accessing storage itself can throw. The in-memory preference still updates.
-  }
+  } catch {}
 }
 
 export function readPublicThemePreference(storage: Storage | null | undefined): PublicThemePreference {
@@ -66,9 +64,7 @@ export function writePublicThemePreference(
   if (!storage) return;
   try {
     storage.setItem(PUBLIC_THEME_STORAGE_KEY, preference);
-  } catch {
-    // Storage failures must not escape or block UI updates.
-  }
+  } catch {}
 }
 
 export function publicDarkThemeAttribute(

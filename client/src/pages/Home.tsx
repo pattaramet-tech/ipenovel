@@ -78,7 +78,7 @@ function BannerCarousel({ banners, learnMoreLabel }: { banners: any[]; learnMore
                 key={index}
                 onClick={() => setCurrentIndex(index)}
                 className={`w-2 h-2 rounded-full transition-all duration-300 ${
-                  index === currentIndex ? "bg-white w-6" : "bg-white/50 hover:bg-white/75"
+                  index === currentIndex ? "bg-white/90 w-6" : "bg-white/50 hover:bg-white/75"
                 }`}
                 aria-label={`Go to banner ${index + 1}`}
               />
