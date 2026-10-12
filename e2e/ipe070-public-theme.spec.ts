@@ -110,13 +110,32 @@ test.describe("@public IPE-070 public theme", () => {
     const routes: { path: string; note: string }[] = [];
     for (const pathName of ["/workspace", "/admin", "/read/1", "/cart"]) {
       await page.goto(pathName, { waitUntil: "domcontentloaded" });
+      if (pathName === "/workspace") {
+        await expect(page).toHaveURL(/\/$/);
+        await expect(page.locator(".ipe-public.ipe-home")).toBeVisible();
+      } else if (pathName === "/admin") {
+        await expect(page).toHaveURL(/\/login$/);
+        await expect(page.getByRole("heading", { name: "เข้าสู่ระบบ" })).toBeVisible();
+      } else if (pathName === "/read/1") {
+        await expect(page).toHaveURL(/\/read\/1$/);
+        await expect(page.getByRole("button", { name: "Go to Login" })).toBeVisible();
+        await expect(page.getByText("Not logged in")).toBeVisible();
+      } else {
+        await expect(page).toHaveURL(/\/cart$/);
+        await expect(page.locator(".ipe-public-nav")).toBeVisible();
+        await expect(page.getByText("กรุณาเข้าสู่ระบบเพื่อดำเนินการต่อ")).toBeVisible();
+      }
       const snapshot = await page.evaluate(() => {
-        const outside = document.querySelector("main, [data-admin-shell], .min-h-screen") ?? document.body;
+        const shell = document.querySelector("main, [data-admin-shell], .min-h-screen");
+        const outside = shell && !shell.closest(".ipe-public") && !shell.classList.contains("ipe-public")
+          ? shell
+          : document.body;
         const style = getComputedStyle(outside);
         const probe = document.createElement("div");
         probe.className = "bg-background text-primary";
         outside.appendChild(probe);
         const probeStyle = getComputedStyle(probe);
+        const canvas = document.querySelector(".ipe-public");
         const result = {
           url: location.pathname,
           htmlDark: document.documentElement.classList.contains("dark"),
@@ -128,18 +147,33 @@ test.describe("@public IPE-070 public theme", () => {
           primaryVar: style.getPropertyValue("--primary").trim(),
           probeBackground: probeStyle.backgroundColor,
           probeColor: probeStyle.color,
+          bodyBackground: getComputedStyle(document.body).backgroundColor,
+          canvasBackground: canvas ? getComputedStyle(canvas).backgroundColor : "",
         };
         probe.remove();
         return result;
       });
       routes.push({ path: pathName, note: JSON.stringify(snapshot) });
-      expect(snapshot.htmlDark).toBe(false);
-      expect(snapshot.probeBackground).toBe(lightBody);
-      if (pathName === "/cart") {
+      expect(snapshot.htmlDark, pathName).toBe(false);
+      expect(snapshot.probeBackground, pathName).toBe(lightBody);
+      expect(snapshot.bodyBackground, pathName).toBe(lightBody);
+      if (pathName === "/workspace") {
+        expect(snapshot.url).toBe("/");
+        expect(snapshot.publicRootCount).toBe(1);
+        expect(snapshot.publicDark).toBe(2);
+        expect(snapshot.canvasBackground).toBe("rgb(18, 24, 32)");
+      } else if (pathName === "/admin") {
+        expect(snapshot.url).toBe("/login");
+        expect(snapshot.publicDark).toBe(0);
+        expect(snapshot.publicRootCount).toBe(0);
+      } else if (pathName === "/cart") {
+        expect(snapshot.url).toBe("/cart");
         expect(snapshot.publicDark).toBe(1);
         expect(snapshot.publicRootCount).toBe(0);
       } else {
+        expect(snapshot.url).toBe("/read/1");
         expect(snapshot.publicDark).toBe(0);
+        expect(snapshot.publicRootCount).toBe(0);
       }
     }
 

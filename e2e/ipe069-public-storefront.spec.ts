@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { gotoOk, watchRuntimeFailures } from "./support/runtime";
-import { e2eBaseUrl } from "./support/env";
+import { e2eBaseUrl, novelIdentifier } from "./support/env";
 
 // IPE-069R2D: the storefront renders progressively — the SPA shell arrives
 // first, then the tRPC home/catalog/detail payloads hydrate the sections.
@@ -9,7 +9,6 @@ import { e2eBaseUrl } from "./support/env";
 // below before capture. The novel identifier stays overridable via
 // E2E_NOVEL_IDENTIFIER (no API mutation is ever performed — read-only UI
 // checks only).
-const novelIdentifier = process.env.E2E_NOVEL_IDENTIFIER?.trim() || "4230170";
 
 const viewports = [
   { width: 1440, height: 900 },
@@ -350,25 +349,39 @@ test.describe("@public IPE-069 premium editorial storefront", () => {
           for (const card of await page.locator(".ipe-novel-card").all()) {
             await card.scrollIntoViewIfNeeded();
           }
-          await expect(page.locator(".ipe-novel-card img").first()).toBeAttached();
           await page.waitForFunction(
             () => {
               const images = Array.from(
                 document.querySelectorAll<HTMLImageElement>(".ipe-novel-card img")
               );
-              // complete covers both loaded covers and covers that errored
-              // while loading — settled either way.
               return images.every((image) => image.complete);
             },
             undefined,
             { timeout: 10_000 }
           );
-          // Broken-image detection: a completed cover must decode with real
-          // pixels — completed-but-empty (naturalWidth 0) fails explicitly.
-          const brokenImages = await page.locator(".ipe-novel-card img").evaluateAll(
-            (images) => images.filter((image) => (image as HTMLImageElement).naturalWidth <= 0).length
+          const covers = await page.locator(".ipe-novel-card").evaluateAll((cards) =>
+            cards.map((card) => {
+              const heading = card.querySelector("h3")?.textContent?.trim() ?? "";
+              const images = Array.from(card.querySelectorAll("img")) as HTMLImageElement[];
+              const placeholder = card.querySelector(".ipe-cover-placeholder span")?.textContent?.trim() ?? "";
+              return {
+                heading,
+                imageCount: images.length,
+                broken: images.filter((image) => image.naturalWidth <= 0).length,
+                placeholder,
+              };
+            })
           );
-          expect(brokenImages, "Catalog images completed with zero naturalWidth").toBe(0);
+          for (const cover of covers) {
+            if (cover.imageCount > 0) {
+              expect(cover.broken, cover.heading).toBe(0);
+              expect(cover.placeholder).toBe("");
+            } else if (cover.heading) {
+              expect(cover.placeholder).toBe(cover.heading);
+            } else {
+              expect(cover.placeholder).toBe("ไม่มีภาพปก");
+            }
+          }
           await expect(page.locator(".ipe-novel-card").first()).toBeVisible();
         },
       },

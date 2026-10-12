@@ -82,4 +82,68 @@ test.describe("@local-fixture authenticated public surfaces stay outside the sto
 
     runtime.assertClean();
   });
+
+  test("admin workspace and admin stay light, then the public home stays dark", async ({ page, context }) => {
+    const runtime = watchRuntimeFailures(page);
+    const cookies = readFixtureCookies();
+    const target = new URL(e2eBaseUrl);
+    await context.addCookies([
+      { name: cookies.cookieName, value: cookies.adminToken, url: target.origin },
+    ]);
+    await page.addInitScript(() => {
+      localStorage.setItem("ipenovel.public-theme", "dark");
+    });
+
+    const expectLightShell = async () => {
+      const paint = await page.evaluate(() => {
+        const probe = document.createElement("div");
+        probe.className = "bg-background text-primary";
+        document.body.appendChild(probe);
+        const background = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return {
+          background,
+          htmlDark: document.documentElement.classList.contains("dark"),
+        };
+      });
+      expect(paint.background).toBe("oklch(1 0 0)");
+      expect(paint.htmlDark).toBe(false);
+    };
+
+    await gotoOk(page, "/workspace");
+    await expect(page.getByRole("heading", { name: "Editorial Board" })).toBeVisible();
+    await expect(page).toHaveURL(/\/workspace$/);
+    await expect(page.locator(".ipe-public")).toHaveCount(0);
+    await expect(page.locator("[data-public-theme='dark']")).toHaveCount(0);
+    await expectLightShell();
+
+    await gotoOk(page, "/admin");
+    await expect(page.getByRole("heading", { name: "Admin Panel" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Dashboard Overview" })).toBeVisible();
+    await expect(page).toHaveURL(/\/admin$/);
+    await expect(page.locator(".ipe-public")).toHaveCount(0);
+    await expect(page.locator("[data-public-theme='dark']")).toHaveCount(0);
+    await expectLightShell();
+
+    await gotoOk(page, "/");
+    await expect(page.locator(".ipe-public").first()).toHaveAttribute("data-public-theme", "dark");
+    await expect(page.locator(".ipe-public-nav").first()).toHaveAttribute("data-public-theme", "dark");
+    const home = await page.locator(".ipe-public.ipe-home").evaluate((element) => {
+      const style = getComputedStyle(element);
+      const probe = document.createElement("div");
+      probe.className = "bg-background";
+      element.appendChild(probe);
+      const probeBackground = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return {
+        canvas: style.getPropertyValue("--ipe-canvas").trim().toLowerCase(),
+        backgroundColor: style.backgroundColor,
+        probeBackground,
+      };
+    });
+    expect(home.canvas).toBe("#121820");
+    expect(home.backgroundColor).toBe("rgb(18, 24, 32)");
+    expect(home.probeBackground).toBe("rgb(18, 24, 32)");
+    runtime.assertClean();
+  });
 });
