@@ -33,6 +33,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "nav.accountRecovery": "กู้คืนบัญชีเดิม",
     "nav.more": "เพิ่มเติม",
     "nav.account": "บัญชี",
+    "nav.theme.light": "สว่าง",
+    "nav.theme.dark": "มืด",
+    "nav.theme.system": "ตามระบบ",
+    "nav.theme.menu": "ธีม",
 
     // Daily check-in
     "checkin.title": "เช็กอินรายวัน รับคูปองส่วนลด",
@@ -580,6 +584,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "nav.accountRecovery": "Recover Old Account",
     "nav.more": "More",
     "nav.account": "Account",
+    "nav.theme.light": "Light",
+    "nav.theme.dark": "Dark",
+    "nav.theme.system": "System",
+    "nav.theme.menu": "Theme",
 
     // Daily check-in
     "checkin.title": "Daily Check-in: Get a Discount Coupon",

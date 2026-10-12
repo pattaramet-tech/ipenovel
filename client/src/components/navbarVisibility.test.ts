@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_RECOVERY_NAV_HREF, shouldHideGlobalNavbar, shouldShowAccountRecoveryNavItem } from "./navbarVisibility";
+import {
+  ACCOUNT_RECOVERY_NAV_HREF,
+  isPublicStorefrontPath,
+  publicToasterTheme,
+  shouldHideGlobalNavbar,
+  shouldShowAccountRecoveryNavItem,
+  shouldThemePublicNavbar,
+} from "./navbarVisibility";
 
 describe("shouldHideGlobalNavbar", () => {
   it.each([
@@ -52,5 +59,57 @@ describe("shouldShowAccountRecoveryNavItem", () => {
 describe("ACCOUNT_RECOVERY_NAV_HREF", () => {
   it("points at the lowercase /account/recovery route", () => {
     expect(ACCOUNT_RECOVERY_NAV_HREF).toBe("/account/recovery");
+  });
+});
+
+describe("isPublicStorefrontPath", () => {
+  it.each(["/", "/novels", "/novels/4230170"])("is true for %s", (location) => {
+    expect(isPublicStorefrontPath(location)).toBe(true);
+  });
+
+  it.each([
+    "/workspace",
+    "/admin",
+    "/admin/users",
+    "/read/1",
+    "/login",
+    "/cart",
+    "/novels/a/b",
+  ])("is false for %s", (location) => {
+    expect(isPublicStorefrontPath(location)).toBe(false);
+  });
+});
+
+describe("shouldThemePublicNavbar", () => {
+  it.each(["/cart", "/orders", "/profile"])("is true for %s", (location) => {
+    expect(shouldThemePublicNavbar(location)).toBe(true);
+  });
+
+  it.each([
+    "/workspace",
+    "/workspace/intake",
+    "/login",
+    "/account/recovery",
+    "/account/upgrade-login",
+    "/read/1",
+    "/admin",
+  ])("is false for %s", (location) => {
+    expect(shouldThemePublicNavbar(location)).toBe(false);
+  });
+});
+
+describe("publicToasterTheme", () => {
+  it("follows the resolved theme on storefront pages", () => {
+    expect(publicToasterTheme("/", "dark")).toBe("dark");
+    expect(publicToasterTheme("/novels/example", "dark")).toBe("dark");
+    expect(publicToasterTheme("/", "light")).toBe("light");
+  });
+
+  it("stays light on cart, profile, workspace, and admin even when the preference is dark", () => {
+    expect(publicToasterTheme("/cart", "dark")).toBe("light");
+    expect(publicToasterTheme("/orders", "dark")).toBe("light");
+    expect(publicToasterTheme("/profile", "dark")).toBe("light");
+    expect(publicToasterTheme("/workspace", "dark")).toBe("light");
+    expect(publicToasterTheme("/admin", "dark")).toBe("light");
   });
 });

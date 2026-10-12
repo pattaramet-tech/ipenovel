@@ -2,13 +2,21 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
 import { BookOpen, ShoppingCart, LogOut, Menu, X, Settings, Heart, Trophy, User as UserIcon, LifeBuoy, ChevronDown, Wallet } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { getLoginUrl } from "@/const";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
-import { ACCOUNT_RECOVERY_NAV_HREF, shouldHideGlobalNavbar, shouldShowAccountRecoveryNavItem } from "./navbarVisibility";
+import {
+  ACCOUNT_RECOVERY_NAV_HREF,
+  shouldHideGlobalNavbar,
+  shouldShowAccountRecoveryNavItem,
+  shouldThemePublicNavbar,
+} from "./navbarVisibility";
+import PublicThemeSelector, { createThemeMenuKeyDownHandler } from "./PublicThemeSelector";
+import { usePublicTheme } from "@/contexts/PublicThemeContext";
+import { publicDarkThemeAttribute } from "@/lib/publicTheme";
 import "../styles/public-storefront.css";
 
 export default function Navbar() {
@@ -18,7 +26,11 @@ export default function Navbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement | null>(null);
+  const themeDesktopRef = useRef<HTMLDivElement | null>(null);
+  const themeMobileRef = useRef<HTMLDivElement | null>(null);
+  const themeMenuItemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const accountRef = useRef<HTMLDivElement | null>(null);
   const mobileToggleRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLDivElement | null>(null);
@@ -60,6 +72,7 @@ export default function Navbar() {
       setMobileMenuOpen(false);
       setMoreOpen(false);
       setAccountOpen(false);
+      setThemeMenuOpen(false);
     };
     mediaQuery.addEventListener("change", onChange);
     return () => mediaQuery.removeEventListener("change", onChange);
@@ -86,7 +99,21 @@ export default function Navbar() {
   // before the early return below so the hidden-navbar branch never fires
   // a cart query it doesn't render, without skipping any hook call.
   const navbarHidden = shouldHideGlobalNavbar(location);
+  const showThemedNavbar = shouldThemePublicNavbar(location);
   const showAccountRecoveryNavItem = shouldShowAccountRecoveryNavItem(isAuthenticated);
+  const { resolved: publicThemeResolved } = usePublicTheme();
+  const navThemeProps = publicDarkThemeAttribute(publicThemeResolved, showThemedNavbar);
+
+  const themeMenuKeyDown = useMemo(
+    () =>
+      createThemeMenuKeyDownHandler(themeMenuOpen, setThemeMenuOpen, themeMenuItemRefs, "[data-ipe-theme-toggle]"),
+    [themeMenuOpen],
+  );
+
+  const openThemeMenu = () => {
+    setMoreOpen(false);
+    setAccountOpen(false);
+  };
 
   // Get cart count - not needed at all when the navbar itself won't render.
   const { data: cartData } = trpc.cart.get.useQuery(undefined, {
@@ -121,12 +148,20 @@ export default function Navbar() {
     setMoreOpen(false);
     setAccountOpen(false);
     setMobileMenuOpen(false);
+    setThemeMenuOpen(false);
   }, [location]);
 
   useEffect(() => {
-    if (!moreOpen && !accountOpen && !mobileMenuOpen) return;
+    if (!moreOpen && !accountOpen && !mobileMenuOpen && !themeMenuOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (themeMenuOpen) {
+        setThemeMenuOpen(false);
+        const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-ipe-theme-toggle]")).find(
+          (button) => button.getClientRects().length > 0,
+        );
+        trigger?.focus();
+      }
       if (moreOpen) {
         setMoreOpen(false);
         moreRef.current?.querySelector<HTMLButtonElement>("[data-ipe-nav-toggle]")?.focus();
@@ -143,6 +178,11 @@ export default function Navbar() {
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target) return;
+      if (themeMenuOpen &&
+          !themeDesktopRef.current?.contains(target) &&
+          !themeMobileRef.current?.contains(target)) {
+        setThemeMenuOpen(false);
+      }
       if (moreOpen && !moreRef.current?.contains(target)) setMoreOpen(false);
       if (accountOpen && !accountRef.current?.contains(target)) setAccountOpen(false);
       if (mobileMenuOpen &&
@@ -157,7 +197,7 @@ export default function Navbar() {
       window.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown, true);
     };
-  }, [moreOpen, accountOpen, mobileMenuOpen]);
+  }, [moreOpen, accountOpen, mobileMenuOpen, themeMenuOpen]);
 
   // The Reader page has its own sticky header (back button, title, font/theme/TOC
   // controls) and the Admin section owns its own top bar/sidebar (AdminLayout) -
@@ -292,7 +332,7 @@ export default function Navbar() {
   );
 
   return (
-    <nav aria-label="Public navigation" className="ipe-public-nav sticky top-0 z-50">
+    <nav aria-label="Public navigation" className="ipe-public-nav sticky top-0 z-50" {...navThemeProps}>
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between h-16 gap-4">
           {/* Logo - Mobile First */}
@@ -324,6 +364,7 @@ export default function Navbar() {
                   aria-expanded={moreOpen}
                   onClick={() => {
                     setAccountOpen(false);
+                    setThemeMenuOpen(false);
                     setMoreOpen((open) => !open);
                   }}
                   className={`ipe-nav-link flex items-center gap-1 px-4 py-2 rounded-full transition text-sm whitespace-nowrap ${moreOpen || moreChildActive ? "ipe-nav-link-active" : ""}`}
@@ -338,6 +379,18 @@ export default function Navbar() {
 
           {/* Right Section - Desktop */}
           <div className="hidden lg:flex items-center gap-3">
+            {showThemedNavbar && (
+              <PublicThemeSelector
+                variant="desktop"
+                open={themeMenuOpen}
+                onOpenChange={setThemeMenuOpen}
+                onOpenMenu={openThemeMenu}
+                showMenu={themeMenuOpen && isDesktopViewport}
+                rootRef={themeDesktopRef}
+                menuItemRefs={themeMenuItemRefs}
+                onMenuKeyDown={themeMenuKeyDown}
+              />
+            )}
             <LanguageSwitcher />
 
             <button
@@ -363,6 +416,7 @@ export default function Navbar() {
                   aria-expanded={accountOpen}
                   onClick={() => {
                     setMoreOpen(false);
+                    setThemeMenuOpen(false);
                     setAccountOpen((open) => !open);
                   }}
                   className={`flex items-center gap-2 px-3 py-2 rounded-full text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-medium transition text-sm ${accountOpen || accountChildActive ? "ipe-nav-link-active" : ""}`}
@@ -425,6 +479,18 @@ export default function Navbar() {
 
           {/* Mobile Right Section */}
           <div className="lg:hidden flex items-center gap-2">
+            {showThemedNavbar && (
+              <PublicThemeSelector
+                variant="mobile"
+                open={themeMenuOpen}
+                onOpenChange={setThemeMenuOpen}
+                onOpenMenu={openThemeMenu}
+                showMenu={themeMenuOpen && !isDesktopViewport}
+                rootRef={themeMobileRef}
+                menuItemRefs={themeMenuItemRefs}
+                onMenuKeyDown={themeMenuKeyDown}
+              />
+            )}
             <LanguageSwitcher />
 
             <button

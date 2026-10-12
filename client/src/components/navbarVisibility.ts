@@ -49,3 +49,29 @@ export const ACCOUNT_RECOVERY_NAV_HREF = "/account/recovery";
 export function shouldShowAccountRecoveryNavItem(isAuthenticated: boolean): boolean {
   return isAuthenticated;
 }
+
+/** True for `/`, `/novels`, and `/novels/:identifier` (single segment only). */
+export function isPublicStorefrontPath(location: string): boolean {
+  if (location === "/" || location === "/novels") return true;
+  const match = /^\/novels\/([^/]+)$/.exec(location);
+  return match !== null && match[1].length > 0;
+}
+
+/** Themed navbar + theme selector; excludes workspace, auth screens, reader, admin. */
+export function shouldThemePublicNavbar(location: string): boolean {
+  if (shouldHideGlobalNavbar(location)) return false;
+  if (location === "/workspace" || location.startsWith("/workspace/")) return false;
+  if (
+    location === "/login" ||
+    location === "/account/upgrade-login" ||
+    location === "/account/recovery"
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** Toasts follow the public page canvas, not the navbar. Cart and profile may keep a dark navbar while their bodies stay light. */
+export function publicToasterTheme(location: string, resolved: "light" | "dark"): "light" | "dark" {
+  return isPublicStorefrontPath(location) ? resolved : "light";
+}
