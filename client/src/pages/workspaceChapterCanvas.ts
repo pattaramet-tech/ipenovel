@@ -303,6 +303,32 @@ export function chapterCanvasFindingRange(
   return { start: nodeStart + rawStart, end: nodeStart + rawEnd };
 }
 
+/** Absolute canvas ranges for Author findings. Stale keys and invalid offsets are omitted. */
+export function authorCanvasFindings(
+  paragraphs: readonly ChapterCanvasParagraph[],
+  findings: readonly {
+    sourceTabId?: string | null;
+    paragraphKey?: string | null;
+    startOffset?: number | null;
+    endOffset?: number | null;
+    token?: string | null;
+  }[],
+  sourceTabId: string,
+) {
+  const ranges: Array<{ startOffset: number; endOffset: number; token: string }> = [];
+  for (const finding of findings) {
+    if (finding.sourceTabId !== sourceTabId) continue;
+    const range = chapterCanvasFindingRange(paragraphs, finding);
+    if (!range || range.end <= range.start) continue;
+    ranges.push({
+      startOffset: range.start,
+      endOffset: range.end,
+      token: String(finding.token ?? ""),
+    });
+  }
+  return ranges;
+}
+
 /** Canvas offset of the start of a paragraph node (clamped). */
 export function chapterCanvasParagraphStartOffset(
   paragraphs: readonly ChapterCanvasParagraph[],

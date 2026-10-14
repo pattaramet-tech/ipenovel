@@ -22,6 +22,7 @@ import {
 import { getDb } from "../db";
 import { normalizeEpisodeRange } from "../services/readerService";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { assertAuthorEditorialWrite, type AuthorGrantLock } from "./authorEditorialGrant";
 import {
   analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
@@ -177,9 +178,18 @@ async function requireWorkItem(
   db: any,
   actorUserId: number,
   workspaceId: number,
-  workItemId: number
+  workItemId: number,
+  authorGrant?: AuthorGrantLock,
 ) {
-  await requireWorkspacePlatformAdmin(db, actorUserId);
+  if (authorGrant) {
+    await assertAuthorEditorialWrite(
+      db,
+      { actorUserId, workspaceId, workItemId },
+      authorGrant,
+    );
+  } else {
+    await requireWorkspacePlatformAdmin(db, actorUserId);
+  }
   const [row] = await db
     .select({
       workItem: workspaceEditorialWorkItems,
@@ -794,13 +804,16 @@ export async function getEditorialApprovalReadModel(input: {
   actorUserId: number;
   workspaceId: number;
   workItemId: number;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   const context = await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.authorGrant ? { lock: false } : undefined,
   );
   const draft = await latestDraft(db, input.workItemId);
   if (!draft) {
@@ -918,13 +931,16 @@ export async function approveEditorialDraft(input: {
   expectedCheckerRunId: number;
   expectedQcEvidenceSha256: string;
   idempotencyKey: string;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.authorGrant ? { lock: false } : undefined,
   );
 
   const result = await db.transaction(async (tx: any) => {
@@ -938,6 +954,15 @@ export async function approveEditorialDraft(input: {
       throw new WorkspaceEditorialApprovalError(
         "WORK_ITEM_NOT_FOUND",
         "Editorial work item was removed before approval."
+      );
+    }
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        { lock: true },
       );
     }
 
@@ -1064,13 +1089,16 @@ export async function stageEditorialEpisodeDraft(input: {
   expectedDraftVersion: number;
   expectedDraftSha256: string;
   idempotencyKey: string;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.authorGrant ? { lock: false } : undefined,
   );
 
   const result = await db.transaction(async (tx: any) => {
@@ -1090,7 +1118,8 @@ export async function stageEditorialEpisodeDraft(input: {
       tx,
       input.actorUserId,
       input.workspaceId,
-      input.workItemId
+      input.workItemId,
+      input.authorGrant ? { lock: true } : undefined,
     );
     const draft = await latestDraft(tx, input.workItemId);
     if (!draft) {

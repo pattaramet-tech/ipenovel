@@ -137,7 +137,7 @@ function chapterEditorClipboardParagraphs(data: DataTransfer) {
  * is applied on every change; the save boundary stays the replace_tab Draft
  * command with explicit paragraph identity.
  */
-function ChapterEditorCanvas({
+export function ChapterEditorCanvas({
   value,
   flatFindings,
   highlight,
