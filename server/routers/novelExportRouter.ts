@@ -8,7 +8,8 @@
  * 50MB Express JSON body limit, and export sizes are fail-closed bounded.
  */
 
-import { adminProcedure, router } from "../_core/trpc";
+import { authorContentProcedure, router } from "../_core/trpc";
+import { assertCatalogNovelVisible, rethrowCatalogAccess } from "../authz/catalogAccess";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -56,13 +57,22 @@ const thaiNovelOptionsInput = z.object({
 
 const thaiNovelExportInput = exportSelectionInput.merge(thaiNovelOptionsInput);
 
+async function guardExportNovel(actorUserId: number, novelId: number) {
+  try {
+    await assertCatalogNovelVisible(actorUserId, novelId);
+  } catch (error) {
+    rethrowCatalogAccess(error);
+  }
+}
+
 export const novelExportRouter = router({
   /**
    * Metadata/preview for an export selection - item count, skipped
    * episodes, estimated bytes and active limits. No content over the wire.
    */
-  preview: adminProcedure.input(exportSelectionInput).query(async ({ input }) => {
+  preview: authorContentProcedure.input(exportSelectionInput).query(async ({ input, ctx }) => {
     try {
+      await guardExportNovel(ctx.user.id, input.novelId);
       return await buildNovelExportPreview(input);
     } catch (error) {
       throw toTrpcError(error);
@@ -70,10 +80,11 @@ export const novelExportRouter = router({
   }),
 
   /** Single published episode as UTF-8 .txt (same serializer as ZIP entries). */
-  downloadTxt: adminProcedure
+  downloadTxt: authorContentProcedure
     .input(z.object({ novelId: z.number().int().positive(), episodeId: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
+        await guardExportNovel(ctx.user.id, input.novelId);
         const result = await buildNovelTxtExport(input.novelId, input.episodeId);
         return {
           filename: result.filename,
@@ -87,8 +98,9 @@ export const novelExportRouter = router({
     }),
 
   /** Whole-novel or explicit-subset ZIP package (import-contract compatible). */
-  downloadZip: adminProcedure.input(exportSelectionInput).mutation(async ({ input }) => {
+  downloadZip: authorContentProcedure.input(exportSelectionInput).mutation(async ({ input, ctx }) => {
     try {
+      await guardExportNovel(ctx.user.id, input.novelId);
       const result = await buildNovelZipExport(input);
       return {
         filename: result.filename,
@@ -105,7 +117,7 @@ export const novelExportRouter = router({
     }
   }),
 
-  limits: adminProcedure.query(() => ({
+  limits: authorContentProcedure.query(() => ({
     maxItems: MAX_EXPORT_ITEMS,
     maxPerItemBytes: MAX_EXPORT_PER_ITEM_BYTES,
     maxTotalBytes: MAX_EXPORT_TOTAL_BYTES,
@@ -119,8 +131,9 @@ export const novelExportRouter = router({
    * uses. Also returns bounded published-episode metadata for the UI scope
    * selector. No TXT content over the wire.
    */
-  thaiNovelPreview: adminProcedure.input(thaiNovelExportInput).query(async ({ input }) => {
+  thaiNovelPreview: authorContentProcedure.input(thaiNovelExportInput).query(async ({ input, ctx }) => {
     try {
+      await guardExportNovel(ctx.user.id, input.novelId);
       return await buildThaiNovelExportPreview(input, input);
     } catch (error) {
       throw toTrpcError(error);
@@ -128,8 +141,9 @@ export const novelExportRouter = router({
   }),
 
   /** Flat-root ZIP of upload-ready TXT files (no manifest, no contents/). */
-  thaiNovelDownloadZip: adminProcedure.input(thaiNovelExportInput).mutation(async ({ input }) => {
+  thaiNovelDownloadZip: authorContentProcedure.input(thaiNovelExportInput).mutation(async ({ input, ctx }) => {
     try {
+      await guardExportNovel(ctx.user.id, input.novelId);
       const result = await buildThaiNovelZipExport(input, input);
       return {
         filename: result.filename,

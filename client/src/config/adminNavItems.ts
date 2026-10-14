@@ -195,6 +195,31 @@ export function getAdminNavItemsFlat(): NavItem[] {
   return adminNavSections.flatMap(section => section.items);
 }
 
+/** Catalog routes an author account may open. Platform routes stay off this list. */
+export const AUTHOR_CATALOG_HREFS = [
+  "/admin/novels",
+  "/admin/episodes",
+  "/admin/import-episodes",
+  "/admin/bulk-upload",
+  "/admin/author-analytics",
+] as const;
+
+export function isAuthorCatalogRoute(location: string): boolean {
+  return AUTHOR_CATALOG_HREFS.some(
+    (href) => location === href || location.startsWith(`${href}/`)
+  );
+}
+
+export function authorCatalogNavSections(): NavSection[] {
+  const allowed = new Set<string>(AUTHOR_CATALOG_HREFS);
+  return [
+    {
+      title: "Author",
+      items: getAdminNavItemsFlat().filter((item) => allowed.has(item.href)),
+    },
+  ];
+}
+
 export function isAdminRouteActive(location: string, href: string): boolean {
   return href === "/admin"
     ? location === "/admin"

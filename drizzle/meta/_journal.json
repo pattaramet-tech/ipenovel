@@ -449,6 +449,13 @@
       "when": 1791400000000,
       "tag": "0063_workspace_editorial_draft_index_compaction",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "5",
+      "when": 1791500000000,
+      "tag": "0064_author_account_role",
+      "breakpoints": true
     }
   ]
 }

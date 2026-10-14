@@ -8,6 +8,14 @@ import * as novelExportService from "./services/novelExport.service";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
+vi.mock("./authz/catalogAccess", async () => {
+  const actual = await vi.importActual<typeof import("./authz/catalogAccess")>("./authz/catalogAccess");
+  return {
+    ...actual,
+    assertCatalogNovelVisible: vi.fn(async () => undefined),
+  };
+});
+
 vi.mock("./db", async () => {
   const actual = await vi.importActual<typeof import("./db")>("./db");
   return { ...actual };

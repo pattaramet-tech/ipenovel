@@ -2,7 +2,8 @@
  * File Router - tRPC routes for episode file management
  */
 
-import { protectedProcedure, adminProcedure, router } from "../_core/trpc";
+import { protectedProcedure, adminProcedure, authorContentProcedure, router } from "../_core/trpc";
+import { CatalogAccessError, rethrowCatalogAccess, withCatalogEpisodeWrite } from "../authz/catalogAccess";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as fileService from "../services/fileService";
@@ -31,7 +32,7 @@ export const fileRouter = router({
    * Admin: Upload episode file
    * Stores file in S3 and updates episode record
    */
-  uploadEpisodeFile: adminProcedure
+  uploadEpisodeFile: authorContentProcedure
     .input(
       z.object({
         episodeId: z.number(),
@@ -40,18 +41,9 @@ export const fileRouter = router({
         mimeType: z.string(),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
-        // Verify episode exists
-        const episode = await db.getEpisodeById(input.episodeId);
-        if (!episode) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
-        }
-
-        // Decode base64 to buffer
         const fileBuffer = Buffer.from(input.fileBase64, "base64");
-
-        // Validate file
         const validation = fileService.validateEpisodeFile(input.fileName, input.mimeType, fileBuffer.length);
         if (!validation.valid) {
           throw new TRPCError({
@@ -60,14 +52,14 @@ export const fileRouter = router({
           });
         }
 
-        // Upload file
-        const { url, key } = await fileService.uploadEpisodeFile(input.episodeId, input.fileName, fileBuffer, input.mimeType);
-
-        // Update episode with file URL and metadata
-        await db.updateEpisode(input.episodeId, {
-          fileUrl: url,
-          fileMimeType: input.mimeType,
-          fileSize: fileBuffer.length,
+        const { url, key } = await withCatalogEpisodeWrite(ctx.user.id, input.episodeId, async (tx) => {
+          const uploaded = await fileService.uploadEpisodeFile(input.episodeId, input.fileName, fileBuffer, input.mimeType);
+          await db.updateEpisode(input.episodeId, {
+            fileUrl: uploaded.url,
+            fileMimeType: input.mimeType,
+            fileSize: fileBuffer.length,
+          }, tx);
+          return uploaded;
         });
 
         return {
@@ -76,6 +68,12 @@ export const fileRouter = router({
           fileKey: key,
         };
       } catch (error: any) {
+        if (error instanceof CatalogAccessError && error.code === "NOT_FOUND") {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
+        }
+        if (error instanceof CatalogAccessError) {
+          rethrowCatalogAccess(error);
+        }
         if (error instanceof TRPCError) {
           throw error;
         }

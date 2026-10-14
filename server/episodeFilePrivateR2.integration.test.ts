@@ -70,7 +70,8 @@ describe.sequential("Episode files on private R2 (real disposable test database)
     const episode = await createTestEpisode(novel.id, { price: "50.00", isFree: false });
     const buyer = await createTestUser();
     const stranger = await createTestUser();
-    const adminCaller = appRouter.createCaller(makeContext(999999, "admin"));
+    const admin = await createTestUser({ role: "admin" });
+    const adminCaller = appRouter.createCaller(makeContext(admin.id, "admin"));
 
     const uploadResult = await adminCaller.files.uploadEpisodeFile({
       episodeId: episode.id,
@@ -111,7 +112,7 @@ describe.sequential("Episode files on private R2 (real disposable test database)
     // directly-inserted entitlement row ourselves before deleting its
     // parent episode/novel/user rows.
     await testDb.delete(episodePurchases).where(eq(episodePurchases.episodeId, episode.id));
-    await deleteFixtures({ episodeIds: [episode.id], novelIds: [novel.id], userIds: [buyer.id, stranger.id] });
+    await deleteFixtures({ episodeIds: [episode.id], novelIds: [novel.id], userIds: [buyer.id, stranger.id, admin.id] });
   }, 30000);
 
   it("free episode: no purchase required, but the raw r2p: reference is still never returned to the client", async () => {
@@ -122,7 +123,8 @@ describe.sequential("Episode files on private R2 (real disposable test database)
     const novel = await createTestNovel();
     const episode = await createTestEpisode(novel.id, { price: "0.00", isFree: true });
     const anyUser = await createTestUser();
-    const adminCaller = appRouter.createCaller(makeContext(999999, "admin"));
+    const admin = await createTestUser({ role: "admin" });
+    const adminCaller = appRouter.createCaller(makeContext(admin.id, "admin"));
 
     await adminCaller.files.uploadEpisodeFile({
       episodeId: episode.id,
@@ -137,7 +139,7 @@ describe.sequential("Episode files on private R2 (real disposable test database)
     expect(downloadUrl).toBe("https://signed.example/episodes/2/free.pdf?X-Amz-Signature=fake2");
     expect(downloadUrl).not.toMatch(/^r2p:/);
 
-    await deleteFixtures({ episodeIds: [episode.id], novelIds: [novel.id], userIds: [anyUser.id] });
+    await deleteFixtures({ episodeIds: [episode.id], novelIds: [novel.id], userIds: [anyUser.id, admin.id] });
   }, 30000);
 
   it("free episode with a legacy https:// fileUrl (pre-existing data) is returned unchanged - no regression", async () => {
@@ -169,7 +171,8 @@ describe.sequential("Episode files on private R2 (real disposable test database)
 
     const novel = await createTestNovel();
     const episode = await createTestEpisode(novel.id, { price: "20.00", isFree: false });
-    const adminCaller = appRouter.createCaller(makeContext(999999, "admin"));
+    const admin = await createTestUser({ role: "admin" });
+    const adminCaller = appRouter.createCaller(makeContext(admin.id, "admin"));
 
     const uploadResult = await adminCaller.files.uploadEpisodeFile({
       episodeId: episode.id,
@@ -199,6 +202,6 @@ describe.sequential("Episode files on private R2 (real disposable test database)
     expect(storedEpisode.fileUrl).toBe(uploadResult.fileUrl);
     expect(storedEpisode.fileUrl).not.toMatch(/^https?:\/\//);
 
-    await deleteFixtures({ episodeIds: [episode.id], novelIds: [novel.id] });
+    await deleteFixtures({ episodeIds: [episode.id], novelIds: [novel.id], userIds: [admin.id] });
   }, 30000);
 });

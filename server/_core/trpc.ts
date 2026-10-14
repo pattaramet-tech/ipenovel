@@ -306,3 +306,33 @@ export const adminProcedure = t.procedure.use(
     });
   }),
 );
+
+/**
+ * Author-or-admin catalog procedures. This is a separate guard from
+ * adminProcedure. Platform, payment, user, and Workspace routes stay on
+ * adminProcedure and still reject every author.
+ *
+ * Admins take the same session shape they already had. Authors additionally
+ * fail closed when their session is a completed account-merge Source.
+ */
+export const authorContentProcedure = t.procedure.use(
+  t.middleware(async opts => {
+    const { ctx, next } = opts;
+    if (!ctx.user || (ctx.user.role !== "admin" && ctx.user.role !== "author")) {
+      throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+    }
+    if (await isCompletedAccountMergeSource(ctx.user)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: ACCOUNT_MERGED_RELOGIN_REQUIRED_MESSAGE,
+        cause: { code: ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE },
+      });
+    }
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+      },
+    });
+  }),
+);

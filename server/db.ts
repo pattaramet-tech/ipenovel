@@ -571,11 +571,14 @@ export async function getNovelSeoData(novelId: number) {
  * Get all novels for admin (including archived)
  * Used by admin pages to manage all novels
  */
-export async function getAllNovelsForAdmin(limit?: number, offset?: number) {
+export async function getAllNovelsForAdmin(limit?: number, offset?: number, ownerUserId?: number) {
   const db = await getDb();
   if (!db) return [];
-  // Return ALL novels (published and archived) for admin management
-  let query: any = db.select().from(novels).orderBy(desc(novels.createdAt));
+  // Return ALL novels (published and archived) for admin management.
+  // An author owner id limits the list to novels.authorUserId.
+  let query: any = db.select().from(novels);
+  if (ownerUserId != null) query = query.where(eq(novels.authorUserId, ownerUserId));
+  query = query.orderBy(desc(novels.createdAt));
   if (limit) query = query.limit(limit);
   if (offset) query = query.offset(offset);
   return query;
@@ -588,7 +591,7 @@ export async function getAllNovelsForAdmin(limit?: number, offset?: number) {
  * exact/prefix title matches, then everything else by newest first.
  * Also includes archived novels (admin-only), unlike the public list.
  */
-export async function searchNovelsForAdmin(query?: string, limit: number = 30) {
+export async function searchNovelsForAdmin(query?: string, limit: number = 30, ownerUserId?: number) {
   const db = await getDb();
   if (!db) return [];
 
@@ -607,7 +610,10 @@ export async function searchNovelsForAdmin(query?: string, limit: number = 30) {
     if (numericId !== null) {
       conditions.push(eq(novels.id, numericId));
     }
-    dbQuery = dbQuery.where(or(...conditions));
+    const textMatch = or(...conditions);
+    dbQuery = dbQuery.where(
+      ownerUserId != null ? and(eq(novels.authorUserId, ownerUserId), textMatch) : textMatch
+    );
     dbQuery = dbQuery.orderBy(
       sql`CASE
         WHEN ${novels.id} = ${numericId ?? -1} THEN 0
@@ -619,6 +625,7 @@ export async function searchNovelsForAdmin(query?: string, limit: number = 30) {
       desc(novels.createdAt)
     );
   } else {
+    if (ownerUserId != null) dbQuery = dbQuery.where(eq(novels.authorUserId, ownerUserId));
     dbQuery = dbQuery.orderBy(desc(novels.createdAt));
   }
 
@@ -815,14 +822,14 @@ export async function createNovel(data: {
   return { id: insertedId } as any;
 }
 
-export async function updateNovel(novelId: number, data: any) {
-  const db = await getDb();
+export async function updateNovel(novelId: number, data: any, tx?: any) {
+  const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
   await db.update(novels).set(data).where(eq(novels.id, novelId));
 }
 
-export async function deleteNovel(novelId: number) {
-  const db = await getDb();
+export async function deleteNovel(novelId: number, tx?: any) {
+  const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
   await db.delete(novels).where(eq(novels.id, novelId));
 }
@@ -840,17 +847,30 @@ export async function deleteNovel(novelId: number) {
  * unowned novel) keeps the original unguarded admin delete behavior and
  * never guesses an owner from the free-text novels.author.
  */
+async function assertCatalogActorMayDelete(actorUserId: number, ownerUserId: number | null, tx: any) {
+  const actor = await lockUserRowForUpdate(actorUserId, tx);
+  if (!actor || (actor.role !== "admin" && actor.role !== "author")) {
+    throw Object.assign(new Error("Catalog access is no longer valid"), { statusCode: 403 });
+  }
+  if (actor.role === "admin") return;
+  if (ownerUserId == null || ownerUserId !== actor.id) {
+    throw Object.assign(new Error("Novel not found"), { statusCode: 404 });
+  }
+}
+
 export async function deleteNovelGuarded(
-  novelId: number
+  novelId: number,
+  actorUserId?: number
 ): Promise<{ deleted: boolean }> {
   const database = await getDb();
   if (!database) throw new Error("Database not available");
-  return deleteNovelGuardedWithDb(database, novelId);
+  return deleteNovelGuardedWithDb(database, novelId, actorUserId);
 }
 
 export async function deleteNovelGuardedWithDb(
   database: any,
-  novelId: number
+  novelId: number,
+  actorUserId?: number
 ): Promise<{ deleted: boolean }> {
   // Initial non-locking owner read.
   const [initial] = await database
@@ -859,18 +879,40 @@ export async function deleteNovelGuardedWithDb(
     .where(eq(novels.id, novelId))
     .limit(1);
   if (!initial) {
-    return { deleted: false };
+    if (actorUserId == null) return { deleted: false };
+    return database.transaction(async (tx: any) => {
+      await assertCatalogActorMayDelete(actorUserId, null, tx);
+      return { deleted: false };
+    });
   }
 
   // Legacy NULL-owner novel: no Author account to guard — preserve the
   // existing admin delete behavior without guessing an owner from text.
   if (initial.authorUserId == null) {
-    await database.delete(novels).where(eq(novels.id, novelId));
-    return { deleted: true };
+    if (actorUserId == null) {
+      await database.delete(novels).where(eq(novels.id, novelId));
+      return { deleted: true };
+    }
+    return database.transaction(async (tx: any) => {
+      await assertCatalogActorMayDelete(actorUserId, null, tx);
+      const [current] = await tx
+        .select({ authorUserId: novels.authorUserId })
+        .from(novels)
+        .where(eq(novels.id, novelId))
+        .limit(1);
+      if (!current || current.authorUserId != null) {
+        throw new Error("Novel ownership changed during delete - failing closed");
+      }
+      await tx.delete(novels).where(eq(novels.id, novelId));
+      return { deleted: true };
+    });
   }
 
   const ownerUserId = initial.authorUserId;
   await database.transaction(async (tx: any) => {
+    if (actorUserId != null) {
+      await assertCatalogActorMayDelete(actorUserId, ownerUserId, tx);
+    }
     // Guard + lock the OWNER user row (USER → NOVEL lock order).
     await assertAccountMergeClassifiedMutationAllowed(ownerUserId, tx);
 
@@ -899,6 +941,21 @@ export async function getAllEpisodes() {
   return db.select().from(episodes).orderBy(desc(episodes.createdAt));
 }
 
+export async function getEpisodesForAuthor(authorUserId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const owned = await db
+    .select({ id: novels.id })
+    .from(novels)
+    .where(eq(novels.authorUserId, authorUserId));
+  if (owned.length === 0) return [];
+  return db
+    .select()
+    .from(episodes)
+    .where(inArray(episodes.novelId, owned.map((novel) => novel.id)))
+    .orderBy(desc(episodes.createdAt));
+}
+
 export interface AdminEpisodesListParams {
   page?: number;
   pageSize?: number;
@@ -908,6 +965,7 @@ export interface AdminEpisodesListParams {
   sortOrder?: "asc" | "desc";
   saleMode?: "chapter" | "package";
   isPublished?: boolean;
+  ownerUserId?: number;
 }
 
 /**
@@ -937,6 +995,7 @@ export async function getAdminEpisodesList(params: AdminEpisodesListParams = {})
     const pattern = `%${params.search.trim()}%`;
     conditions.push(or(like(episodes.title, pattern), like(episodes.episodeNumber, pattern)));
   }
+  if (params.ownerUserId != null) conditions.push(eq(novels.authorUserId, params.ownerUserId));
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
   const sortColumns = {
@@ -976,6 +1035,9 @@ export async function getAdminEpisodesList(params: AdminEpisodesListParams = {})
   listQuery = listQuery.orderBy(orderFn(sortColumn)).limit(pageSize).offset(offset);
 
   let countQuery: any = db.select({ total: count() }).from(episodes);
+  if (params.ownerUserId != null) {
+    countQuery = countQuery.innerJoin(novels, eq(episodes.novelId, novels.id));
+  }
   if (whereClause) countQuery = countQuery.where(whereClause);
 
   const [rows, countRows] = await Promise.all([listQuery, countQuery]);
@@ -1004,8 +1066,8 @@ export async function createEpisode(data: {
   isPublished?: boolean;
   publishedAt?: Date;
   sortOrder?: number;
-}) {
-  const db = await getDb();
+}, tx?: any) {
+  const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
   if (!data.episodeNumber || !data.episodeNumber.trim()) {
     throw new Error("Episode number is required");
@@ -1047,8 +1109,8 @@ export async function createEpisode(data: {
   return { id: insertedId } as any;
 }
 
-export async function updateEpisode(episodeId: number, data: any) {
-  const db = await getDb();
+export async function updateEpisode(episodeId: number, data: any, tx?: any) {
+  const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
 
   // Auto-calculate wordCount if content is being updated
@@ -1059,8 +1121,8 @@ export async function updateEpisode(episodeId: number, data: any) {
   await db.update(episodes).set(data).where(eq(episodes.id, episodeId));
 }
 
-export async function deleteEpisode(episodeId: number) {
-  const db = await getDb();
+export async function deleteEpisode(episodeId: number, tx?: any) {
+  const db = tx ?? (await getDb());
   if (!db) throw new Error("Database not available");
   await db.delete(episodes).where(eq(episodes.id, episodeId));
 }
@@ -2964,6 +3026,10 @@ export async function createAuthorOwnedNovelWithDb(
   // inspection → Author identity resolution → novel insert → commit.
   return db.transaction(async (tx: any) => {
     await assertAccountMergeClassifiedMutationAllowed(userId, tx);
+    const actor = await lockUserRowForUpdate(userId, tx);
+    if (!actor || (actor.role !== "admin" && actor.role !== "author")) {
+      throw Object.assign(new Error("Catalog access is no longer valid"), { statusCode: 403 });
+    }
     const profile = await resolveEffectiveAuthorNameWithDb(tx, userId);
     if (!profile) {
       throw Object.assign(
@@ -3146,6 +3212,10 @@ export async function bulkCreateNovelsWithDb(
         authorUserId,
         undefined,
         async (tx: any) => {
+          const actor = await lockUserRowForUpdate(authorUserId, tx);
+          if (!actor || (actor.role !== "admin" && actor.role !== "author")) {
+            throw Object.assign(new Error("Catalog access is no longer valid"), { statusCode: 403 });
+          }
           const profile = await resolveEffectiveAuthorNameWithDb(tx, authorUserId);
           if (!profile) {
             throw new Error("Author identity is required");
@@ -3169,11 +3239,38 @@ export async function bulkCreateNovelsWithDb(
       );
       success.push({ rowIndex: i, novelId, title: row.title });
     } catch (error) {
+      if (isCatalogAuthorizationError(error)) throw error;
       errors.push({ rowIndex: i, error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}` });
     }
   }
 
   return { success, errors };
+}
+
+function isCatalogAuthorizationError(error: unknown) {
+  const coded = error as { code?: string; statusCode?: number } | null;
+  return coded?.statusCode === 403 || coded?.code === "FORBIDDEN" || coded?.code === "NOT_FOUND";
+}
+
+async function insertCatalogEpisode(
+  actorUserId: number | undefined,
+  novelId: number,
+  values: {
+    novelId: number;
+    episodeNumber: string;
+    title: string;
+    price: string;
+    isFree: boolean;
+    fileUrl: string;
+  }
+) {
+  if (actorUserId == null) {
+    const database = await getDb();
+    if (!database) throw new Error("Database not available");
+    return database.insert(episodes).values(values);
+  }
+  const { withCatalogNovelWrite } = await import("./authz/catalogAccess");
+  return withCatalogNovelWrite(actorUserId, novelId, async (tx) => tx.insert(episodes).values(values));
 }
 
 /**
@@ -3182,7 +3279,8 @@ export async function bulkCreateNovelsWithDb(
  */
 export async function bulkCreateEpisodes(
   novelId: number,
-  rows: Array<{ title: string; episodeNumber: string; price: string; fileUrl: string }>
+  rows: Array<{ title: string; episodeNumber: string; price: string; fileUrl: string }>,
+  actorUserId?: number
 ): Promise<{
   success: Array<{ rowIndex: number; episodeId: number; title: string; price: string }>;
   errors: Array<{ rowIndex: number; error: string }>;
@@ -3228,7 +3326,7 @@ export async function bulkCreateEpisodes(
       // Determine if free based on price
       const isFree = priceNum === 0;
 
-      const result = await db.insert(episodes).values({
+      const result = await insertCatalogEpisode(actorUserId, novelId, {
         novelId,
         episodeNumber: row.episodeNumber.trim(),
         title: row.title.trim(),
@@ -3240,6 +3338,7 @@ export async function bulkCreateEpisodes(
       const episodeId = (result as any).insertId;
       success.push({ rowIndex: i, episodeId, title: row.title, price: row.price });
     } catch (error) {
+      if (isCatalogAuthorizationError(error)) throw error;
       errors.push({ rowIndex: i, error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}` });
     }
   }
@@ -3252,12 +3351,17 @@ export async function bulkCreateEpisodes(
  * Trim spaces and case-insensitive comparison
  * Returns null if no match, throws error if multiple matches
  */
-export async function findNovelByTitle(title: string): Promise<{ id: number; title: string } | null> {
+export async function findNovelByTitle(
+  title: string,
+  ownerUserId?: number
+): Promise<{ id: number; title: string } | null> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   const normalizedTitle = title.trim().toLowerCase();
-  const allNovels = await db.select().from(novels);
+  const allNovels = ownerUserId == null
+    ? await db.select().from(novels)
+    : await db.select().from(novels).where(eq(novels.authorUserId, ownerUserId));
   
   const matches = allNovels.filter((n: any) => n.title.trim().toLowerCase() === normalizedTitle);
 
@@ -3277,7 +3381,9 @@ export async function findNovelByTitle(title: string): Promise<{ id: number; tit
  * CSV format: novelTitle,title,episodeNumber,price,fileUrl
  */
 export async function bulkCreateEpisodesWithNovelTitle(
-  rows: Array<{ novelTitle: string; title: string; episodeNumber: string; price: string; fileUrl: string }>
+  rows: Array<{ novelTitle: string; title: string; episodeNumber: string; price: string; fileUrl: string }>,
+  actorUserId?: number,
+  ownerUserId?: number
 ): Promise<{
   success: Array<{ rowIndex: number; episodeId: number; novelTitle: string; episodeTitle: string; novelId: number; price: string }>;
   errors: Array<{ rowIndex: number; error: string }>;
@@ -3326,7 +3432,7 @@ export async function bulkCreateEpisodesWithNovelTitle(
 
     try {
       // Find novel by title
-      const novel = await findNovelByTitle(row.novelTitle);
+      const novel = await findNovelByTitle(row.novelTitle, ownerUserId);
       if (!novel) {
         errors.push({ rowIndex: i, error: `No novel found with title "${row.novelTitle}"` });
         continue;
@@ -3336,7 +3442,7 @@ export async function bulkCreateEpisodesWithNovelTitle(
       const isFree = priceNum === 0;
 
       // Create episode
-      const result = await db.insert(episodes).values({
+      const result = await insertCatalogEpisode(actorUserId, novel.id, {
         novelId: novel.id,
         episodeNumber: row.episodeNumber.trim(),
         title: row.title.trim(),
@@ -3355,6 +3461,7 @@ export async function bulkCreateEpisodesWithNovelTitle(
         price: row.price,
       });
     } catch (error) {
+      if (isCatalogAuthorizationError(error)) throw error;
       errors.push({
         rowIndex: i,
         error: `Failed to create: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -8482,7 +8589,7 @@ export type AdminUsersListRow = {
   name: string | null;
   email: string | null;
   loginMethod: string | null;
-  role: "user" | "admin";
+  role: "user" | "author" | "admin";
   googleConnected: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -8545,7 +8652,7 @@ export async function getAdminUsersList(options: {
   page: number;
   pageSize: 20 | 50 | 100;
   search?: string;
-  role?: "user" | "admin";
+  role?: "user" | "author" | "admin";
   googleConnection?: "connected" | "not_connected";
   sortBy?: "id" | "name" | "email" | "createdAt" | "lastSignedIn";
   sortOrder?: "asc" | "desc";
@@ -8982,7 +9089,7 @@ export async function lockAdminRoleRows(tx: any): Promise<Array<{ id: number }>>
 export async function lockUserRowForUpdate(
   userId: number,
   tx: any
-): Promise<{ id: number; name: string | null; role: "user" | "admin"; openId: string } | undefined> {
+): Promise<{ id: number; name: string | null; role: "user" | "author" | "admin"; openId: string } | undefined> {
   const rawResult: any = await tx.execute(
     sql`SELECT id, name, role, openId FROM users WHERE id = ${userId} FOR UPDATE`
   );
@@ -9000,7 +9107,7 @@ export async function lockUserRowForUpdate(
  *  page by design (see server/routers.ts's admin.users.update input
  *  schema, which has no fields for them at all). */
 export async function updateAdminUserFields(
-  params: { userId: number; expectedRole: "user" | "admin"; name?: string | null; role?: "user" | "admin" },
+  params: { userId: number; expectedRole: "user" | "author" | "admin"; name?: string | null; role?: "user" | "author" | "admin" },
   tx: any
 ): Promise<boolean> {
   const updates: Record<string, unknown> = { updatedAt: new Date() };

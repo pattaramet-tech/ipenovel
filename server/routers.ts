@@ -2,6 +2,11 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, authenticatedProcedure, mergeAwareAuthenticatedProcedure, router } from "./_core/trpc";
+import {
+  ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE,
+  ACCOUNT_MERGED_RELOGIN_REQUIRED_MESSAGE,
+  isCompletedAccountMergeSource,
+} from "./_core/accountMergeSessionGate";
 import { evaluateGoogleConnectionCutoff } from "./_core/env";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -73,6 +78,14 @@ import {
   startAccountMergeGuard,
 } from "./services/accountMergeGuardService";
 import { updateAdminUserProfile, AdminUserManagementError } from "./services/adminUserManagementService";
+import {
+  assertCatalogNovelVisible,
+  assertCatalogNovelsVisible,
+  CatalogAccessError,
+  rethrowCatalogAccess,
+  withCatalogEpisodeWrite,
+  withCatalogNovelWrite,
+} from "./authz/catalogAccess";
 import { workspaceRouter } from "./workspace/router";
 import { nqaAdminRouter } from "./nqa/admin/router";
 
@@ -87,6 +100,23 @@ import { nqaAdminRouter } from "./nqa/admin/router";
 const adminProcedure = authenticatedProcedure.use(async ({ ctx, next }) => {
   if (ctx.user.role !== "admin") {
     throw new TRPCError({ code: "FORBIDDEN" });
+  }
+  return next({ ctx });
+});
+
+// Same session shape as adminProcedure above. Anonymous callers stay
+// UNAUTHORIZED. A signed-in user stays FORBIDDEN. Authors are allowed only
+// here. adminProcedure is unchanged and still rejects every author.
+const authorCatalogProcedure = authenticatedProcedure.use(async ({ ctx, next }) => {
+  if (ctx.user.role !== "admin" && ctx.user.role !== "author") {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+  if (await isCompletedAccountMergeSource(ctx.user)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: ACCOUNT_MERGED_RELOGIN_REQUIRED_MESSAGE,
+      cause: { code: ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE },
+    });
   }
   return next({ ctx });
 });
@@ -107,6 +137,43 @@ async function requireAdminAuthorIdentity(userId: number) {
     userId: profile.userId,
     displayName: profile.effectiveAuthorName,
   };
+}
+
+function catalogOwnerId(user: { id: number; role: string }) {
+  return user.role === "author" ? user.id : undefined;
+}
+
+async function resolveBulkEpisodeNovelIds(rows: Array<{ novelTitle: string }>, ownerUserId?: number) {
+  const ids: number[] = [];
+  for (const row of rows) {
+    const novel = await db.findNovelByTitle(row.novelTitle, ownerUserId);
+    if (novel) ids.push(novel.id);
+  }
+  return ids;
+}
+
+function mapEpisodeCatalogMutation(error: unknown): never {
+  if (error instanceof CatalogAccessError && error.code === "NOT_FOUND") {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
+  }
+  if (error instanceof TRPCError && error.code === "NOT_FOUND") {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
+  }
+  mapCatalogMutation(error);
+}
+
+function mapCatalogMutation(error: unknown): never {
+  const statusCode = (error as { statusCode?: number } | null)?.statusCode;
+  if (statusCode === 403) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Catalog access is no longer valid" });
+  }
+  if (statusCode === 404) {
+    throw new TRPCError({ code: "NOT_FOUND", message: (error as Error).message });
+  }
+  if (statusCode === 400) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: (error as Error).message });
+  }
+  rethrowCatalogAccess(error);
 }
 
 // ============ ACCOUNT RECOVERY HELPERS ============
@@ -1629,7 +1696,7 @@ export const appRouter = router({
             page: z.number().int().positive().default(1),
             pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).default(20),
             search: z.string().trim().max(200).optional(),
-            role: z.enum(["user", "admin"]).optional(),
+            role: z.enum(["user", "author", "admin"]).optional(),
             googleConnection: z.enum(["connected", "not_connected"]).optional(),
             sortBy: z.enum(["id", "name", "email", "createdAt", "lastSignedIn"]).optional(),
             sortOrder: z.enum(["asc", "desc"]).optional(),
@@ -1651,7 +1718,7 @@ export const appRouter = router({
           z.object({
             userId: z.number().int().positive(),
             name: z.union([z.string().max(255), z.null()]).optional(),
-            role: z.enum(["user", "admin"]).optional(),
+            role: z.enum(["user", "author", "admin"]).optional(),
             reason: z.string().trim().min(5, "A reason is required").max(500),
             confirmText: z.string().optional(),
           })
@@ -1709,12 +1776,13 @@ export const appRouter = router({
     // AdminEpisodeImportPage.tsx and AdminNovelManagePage.tsx, which already
     // scope it to one novelId client-side. New code should use the paginated
     // admin.episodes.list (list view) / admin.episodes.detail (single row).
-    getAllEpisodes: adminProcedure.query(async () => {
+    getAllEpisodes: authorCatalogProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role === "author") return db.getEpisodesForAuthor(ctx.user.id);
       return db.getAllEpisodes();
     }),
 
     novels: router({
-      uploadCover: adminProcedure
+      uploadCover: authorCatalogProcedure
         .input(
           z.object({
             fileName: z.string().min(1),
@@ -1752,9 +1820,14 @@ export const appRouter = router({
       // getEpisodesByNovelId). Episode counts come from a single grouped
       // aggregate query; the actual episode list is a separate paginated
       // admin.episodes.list({ novelId }) call from the client.
-      detail: adminProcedure
+      detail: authorCatalogProcedure
         .input(z.object({ novelId: z.number() }))
-        .query(async ({ input }) => {
+        .query(async ({ input, ctx }) => {
+          try {
+            await assertCatalogNovelVisible(ctx.user.id, input.novelId);
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
           // publicOnly=false - admins can view archived novels too.
           const novel = await db.getNovelById(input.novelId, false);
           if (!novel) throw new TRPCError({ code: "NOT_FOUND" });
@@ -1771,23 +1844,24 @@ export const appRouter = router({
           };
         }),
 
-      list: adminProcedure
+      list: authorCatalogProcedure
         .input(
           z.object({
             q: z.string().trim().max(200).optional(),
             limit: z.number().int().positive().max(50).optional(),
           }).optional()
         )
-        .query(async ({ input }) => {
+        .query(async ({ input, ctx }) => {
+          const ownerUserId = catalogOwnerId(ctx.user);
           // No input at all - preserve the original unlimited full-list
           // behavior for existing callers (e.g. AdminNovelsPage).
           if (!input?.q && !input?.limit) {
-            return db.getAllNovelsForAdmin();
+            return db.getAllNovelsForAdmin(undefined, undefined, ownerUserId);
           }
-          return db.searchNovelsForAdmin(input.q, input.limit ?? 30);
+          return db.searchNovelsForAdmin(input.q, input.limit ?? 30, ownerUserId);
         }),
 
-      create: adminProcedure
+      create: authorCatalogProcedure
         .input(
           z.object({
             title: z.string(),
@@ -1804,16 +1878,20 @@ export const appRouter = router({
           // the locked user row — caller-supplied author identity is
           // ignored and a concurrent rename cannot leave a stale byline.
           const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
-          return db.createAuthorOwnedNovel(authorIdentity.userId, {
-            title: input.title,
-            description: input.description,
-            coverImageUrl: input.coverImageUrl,
-            publicationStatus: input.publicationStatus,
-            storyStatus: input.storyStatus,
-          });
+          try {
+            return await db.createAuthorOwnedNovel(authorIdentity.userId, {
+              title: input.title,
+              description: input.description,
+              coverImageUrl: input.coverImageUrl,
+              publicationStatus: input.publicationStatus,
+              storyStatus: input.storyStatus,
+            });
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
         }),
 
-      update: adminProcedure
+      update: authorCatalogProcedure
         .input(
           z.object({
             novelId: z.number(),
@@ -1824,40 +1902,57 @@ export const appRouter = router({
             storyStatus: z.enum(["ongoing", "finished"]).optional(),
           })
         )
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
           const { novelId, ...data } = input;
-          // Regenerate slug when title changes to keep slug in sync
-          if (data.title) {
-            const newSlug = await db.generateUniqueSlug(data.title, novelId);
-            await db.updateNovel(novelId, { ...data, slug: newSlug });
-          } else {
-            await db.updateNovel(novelId, data);
+          try {
+            await withCatalogNovelWrite(ctx.user.id, novelId, async (tx) => {
+              if (data.title) {
+                const newSlug = await db.generateUniqueSlug(data.title, novelId, tx);
+                await db.updateNovel(novelId, { ...data, slug: newSlug }, tx);
+              } else {
+                await db.updateNovel(novelId, data, tx);
+              }
+            });
+          } catch (error) {
+            mapCatalogMutation(error);
           }
           return { success: true };
         }),
 
-      delete: adminProcedure
+      delete: authorCatalogProcedure
         .input(z.object({ novelId: z.number() }))
-        .mutation(async ({ input }) => {
-          // IPE-063R5 (P2): guarded delete — the novel's actual owner
-          // (novels.authorUserId) sits under the account-merge barrier with
-          // owner revalidation; legacy NULL-owner novels keep their delete
-          // behavior without guessing an owner.
-          const result = await db.deleteNovelGuarded(input.novelId);
-          return { success: result.deleted };
+        .mutation(async ({ input, ctx }) => {
+          try {
+            const result = await db.deleteNovelGuarded(input.novelId, ctx.user.id);
+            return { success: result.deleted };
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
         }),
 
-      publish: adminProcedure
+      publish: authorCatalogProcedure
         .input(z.object({ novelId: z.number() }))
-        .mutation(async ({ input }) => {
-          await db.updateNovel(input.novelId, { publicationStatus: "published" });
+        .mutation(async ({ input, ctx }) => {
+          try {
+            await withCatalogNovelWrite(ctx.user.id, input.novelId, async (tx) => {
+              await db.updateNovel(input.novelId, { publicationStatus: "published" }, tx);
+            });
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
           return { success: true };
         }),
 
-      unpublish: adminProcedure
+      unpublish: authorCatalogProcedure
         .input(z.object({ novelId: z.number() }))
-        .mutation(async ({ input }) => {
-          await db.updateNovel(input.novelId, { publicationStatus: "archived" });
+        .mutation(async ({ input, ctx }) => {
+          try {
+            await withCatalogNovelWrite(ctx.user.id, input.novelId, async (tx) => {
+              await db.updateNovel(input.novelId, { publicationStatus: "archived" }, tx);
+            });
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
           return { success: true };
         }),
     }),
@@ -1866,7 +1961,7 @@ export const appRouter = router({
       // Paginated, lightweight list for the admin episodes page - never
       // returns `content` (see db.getAdminEpisodesList for why). Search/
       // filter/sort all happen in the DB query, not client-side.
-      list: adminProcedure
+      list: authorCatalogProcedure
         .input(
           z.object({
             page: z.number().int().positive().optional(),
@@ -1879,23 +1974,29 @@ export const appRouter = router({
             isPublished: z.boolean().optional(),
           }).optional()
         )
-        .query(async ({ input }) => {
-          return db.getAdminEpisodesList(input ?? {});
+        .query(async ({ input, ctx }) => {
+          return db.getAdminEpisodesList({ ...(input ?? {}), ownerUserId: catalogOwnerId(ctx.user) });
         }),
 
       // Full episode row (content/fileUrl included) - only fetched when an
       // admin actually opens one episode to edit, not for the list view.
-      detail: adminProcedure
+      detail: authorCatalogProcedure
         .input(z.object({ episodeId: z.number() }))
-        .query(async ({ input }) => {
-          const episode = await db.getEpisodeById(input.episodeId);
-          if (!episode) {
-            throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
+        .query(async ({ input, ctx }) => {
+          let episode;
+          try {
+            episode = await db.getEpisodeById(input.episodeId);
+            if (!episode) {
+              throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
+            }
+            await assertCatalogNovelVisible(ctx.user.id, episode.novelId);
+          } catch (error) {
+            mapEpisodeCatalogMutation(error);
           }
           return episode;
         }),
 
-      create: adminProcedure
+      create: authorCatalogProcedure
         .input(
           z.object({
             novelId: z.number(),
@@ -1915,12 +2016,17 @@ export const appRouter = router({
             sortOrder: z.number().optional(),
           })
         )
-        .mutation(async ({ input }) => {
-          const result = await db.createEpisode(input);
-          return result;
+        .mutation(async ({ input, ctx }) => {
+          try {
+            return await withCatalogNovelWrite(ctx.user.id, input.novelId, async (tx) => {
+              return db.createEpisode(input, tx);
+            });
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
         }),
 
-      update: adminProcedure
+      update: authorCatalogProcedure
         .input(
           z.object({
             episodeId: z.number(),
@@ -1938,16 +2044,28 @@ export const appRouter = router({
             sortOrder: z.number().optional(),
           })
         )
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
           const { episodeId, ...data } = input;
-          await db.updateEpisode(episodeId, data);
+          try {
+            await withCatalogEpisodeWrite(ctx.user.id, episodeId, async (tx) => {
+              await db.updateEpisode(episodeId, data, tx);
+            });
+          } catch (error) {
+            mapEpisodeCatalogMutation(error);
+          }
           return { success: true };
         }),
 
-      delete: adminProcedure
+      delete: authorCatalogProcedure
         .input(z.object({ episodeId: z.number() }))
-        .mutation(async ({ input }) => {
-          await db.deleteEpisode(input.episodeId);
+        .mutation(async ({ input, ctx }) => {
+          try {
+            await withCatalogEpisodeWrite(ctx.user.id, input.episodeId, async (tx) => {
+              await db.deleteEpisode(input.episodeId, tx);
+            });
+          } catch (error) {
+            mapEpisodeCatalogMutation(error);
+          }
           return { success: true };
         }),
 
@@ -1960,7 +2078,7 @@ export const appRouter = router({
       // dryRun: true parses + validates the zip (including reading every
       // referenced .txt file) without writing to the database, so the admin
       // UI can show a preview/error list before committing.
-      importPackageZip: adminProcedure
+      importPackageZip: authorCatalogProcedure
         .input(
           z.object({
             novelId: z.number(),
@@ -1974,7 +2092,12 @@ export const appRouter = router({
             dryRun: z.boolean().default(true),
           })
         )
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
+          try {
+            await assertCatalogNovelVisible(ctx.user.id, input.novelId);
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
           const base64Data = input.zipBase64.includes(",") ? input.zipBase64.split(",")[1] : input.zipBase64;
           const zipBuffer = Buffer.from(base64Data, "base64");
 
@@ -2012,7 +2135,7 @@ export const appRouter = router({
             };
           }
 
-          const summary = await packageZipImportService.importPackageRows(input.novelId, parsed.rows, input.mode);
+          const summary = await packageZipImportService.importPackageRows(input.novelId, parsed.rows, input.mode, ctx.user.id);
 
           return {
             manifestFileName: parsed.manifestFileName,
@@ -2035,7 +2158,7 @@ export const appRouter = router({
       // PACKAGE ZIP IMPORT" section) instead of one novelId supplied for the
       // whole ZIP. importPackageZip/parsePackageZip/importPackageRows above
       // are untouched - this is a fully separate code path.
-      importMultiNovelPackageZip: adminProcedure
+      importMultiNovelPackageZip: authorCatalogProcedure
         .input(
           z.object({
             zipBase64: z.string(),
@@ -2047,7 +2170,8 @@ export const appRouter = router({
             novelIdOverrideMap: z.record(z.string(), z.number()).optional(),
           })
         )
-        .mutation(async ({ input }) => {
+        .mutation(async ({ input, ctx }) => {
+          const ownerUserId = catalogOwnerId(ctx.user);
           const base64Data = input.zipBase64.includes(",") ? input.zipBase64.split(",")[1] : input.zipBase64;
           const zipBuffer = Buffer.from(base64Data, "base64");
 
@@ -2059,11 +2183,17 @@ export const appRouter = router({
           }
 
           if (input.dryRun) {
-            const preview = await packageZipImportService.buildMultiNovelImportPreview(
-              parsed,
-              input.mode,
-              input.novelIdOverrideMap
-            );
+            let preview;
+            try {
+              preview = await packageZipImportService.buildMultiNovelImportPreview(
+                parsed,
+                input.mode,
+                input.novelIdOverrideMap,
+                ownerUserId
+              );
+            } catch (error) {
+              mapCatalogMutation(error);
+            }
 
             return {
               manifestFileName: preview.manifestFileName,
@@ -2085,11 +2215,18 @@ export const appRouter = router({
             };
           }
 
-          const summary = await packageZipImportService.importMultiNovelPackageRows(
-            parsed.rows,
-            input.mode,
-            input.novelIdOverrideMap
-          );
+          let summary;
+          try {
+            summary = await packageZipImportService.importMultiNovelPackageRows(
+              parsed.rows,
+              input.mode,
+              input.novelIdOverrideMap,
+              ownerUserId,
+              ctx.user.id
+            );
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
 
           return {
             manifestFileName: parsed.manifestFileName,
@@ -2758,7 +2895,7 @@ export const appRouter = router({
     }),
 
     bulkUpload: router({
-      novels: adminProcedure
+      novels: authorCatalogProcedure
         .input(z.object({ rows: z.array(z.object({ title: z.string() })) }))
         .mutation(async ({ input, ctx }) => {
           // IPE-063R3 (P1+P2): fail fast without an identity, then pass only
@@ -2766,10 +2903,14 @@ export const appRouter = router({
           // own account-merge-barriered transaction (partial-success
           // contract preserved, no cached name across inserts).
           const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
-          return db.bulkCreateNovels(input.rows, { userId: authorIdentity.userId });
+          try {
+            return await db.bulkCreateNovels(input.rows, { userId: authorIdentity.userId });
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
         }),
 
-      episodes: adminProcedure
+      episodes: authorCatalogProcedure
         .input(z.object({
           novelId: z.number(),
           rows: z.array(z.object({
@@ -2779,11 +2920,16 @@ export const appRouter = router({
             fileUrl: z.string().refine(isValidStoredFileRef, { message: STORED_FILE_REF_MESSAGE }),
           })),
         }))
-        .mutation(async ({ input }) => {
-          return db.bulkCreateEpisodes(input.novelId, input.rows);
+        .mutation(async ({ input, ctx }) => {
+          try {
+            await assertCatalogNovelVisible(ctx.user.id, input.novelId);
+            return await db.bulkCreateEpisodes(input.novelId, input.rows, ctx.user.id);
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
         }),
 
-      episodesWithNovelTitle: adminProcedure
+      episodesWithNovelTitle: authorCatalogProcedure
         .input(z.object({
           rows: z.array(z.object({
             novelTitle: z.string(),
@@ -2793,13 +2939,20 @@ export const appRouter = router({
             fileUrl: z.string().refine(isValidStoredFileRef, { message: STORED_FILE_REF_MESSAGE }),
           })),
         }))
-        .mutation(async ({ input }) => {
-          return db.bulkCreateEpisodesWithNovelTitle(input.rows);
+        .mutation(async ({ input, ctx }) => {
+          try {
+            const ownerUserId = catalogOwnerId(ctx.user);
+            const novelIds = await resolveBulkEpisodeNovelIds(input.rows, ownerUserId);
+            await assertCatalogNovelsVisible(ctx.user.id, novelIds);
+            return await db.bulkCreateEpisodesWithNovelTitle(input.rows, ctx.user.id, ownerUserId);
+          } catch (error) {
+            mapCatalogMutation(error);
+          }
         }),
     }),
 
     authorAnalytics: router({
-      summary: adminProcedure
+      summary: authorCatalogProcedure
         .input(
           z.object({
             period: z.enum(["all", "today", "7d", "30d", "month", "custom_month"]).default("month"),
@@ -2824,7 +2977,7 @@ export const appRouter = router({
     // authenticated admin (ctx.user.id) — no userId / authorUserId / target
     // argument exists, so one admin can never mutate another's identity.
     authorProfile: router({
-      get: adminProcedure.query(async ({ ctx }) => {
+      get: authorCatalogProcedure.query(async ({ ctx }) => {
         const profile = await db.resolveEffectiveAuthorName(ctx.user.id);
         if (!profile) {
           throw new TRPCError({
@@ -2834,7 +2987,7 @@ export const appRouter = router({
         }
         return profile;
       }),
-      update: adminProcedure
+      update: authorCatalogProcedure
         .input(
           z.object({
             // Empty string clears the pen name (falls back to account name).

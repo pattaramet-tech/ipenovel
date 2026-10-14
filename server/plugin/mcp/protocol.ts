@@ -88,7 +88,7 @@ export const PLUGIN_MCP_SERVER_NAME = "ipenovel-plugin";
 export type McpDispatchDependencies = {
   auditSink: PluginAuditSink;
   now: () => Date;
-  loadUserDisplay: (userId: number) => Promise<{ name: string | null; role: "user" | "admin" } | null>;
+  loadUserDisplay: (userId: number) => Promise<{ name: string | null; role: "user" | "author" | "admin" } | null>;
   /** Tenant read loaders (001C) - server-side boundary implementations. */
   workspaceTools: WorkspaceToolDeps;
   /** Editorial read/mutation deps (001D) - tenant proof + real Workspace services. */
@@ -105,7 +105,7 @@ export type McpDispatchOutcome =
  */
 export async function defaultLoadUserDisplay(
   userId: number
-): Promise<{ name: string | null; role: "user" | "admin" } | null> {
+): Promise<{ name: string | null; role: "user" | "author" | "admin" } | null> {
   return findPluginUserDisplay(userId);
 }
 

@@ -59,7 +59,7 @@ export type PluginPrincipal = z.infer<typeof PluginPrincipalSchema>;
 export type WhoamiResult = {
   userId: number;
   name: string | null;
-  role: "user" | "admin";
+  role: "user" | "author" | "admin";
   scope: string;
   clientId: string;
 };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { resolveAdminAccessState } from "@/_core/hooks/adminAccess";
+import { resolveCatalogFetchState } from "@/_core/hooks/catalogAccess";
 import AdminLayout from "@/components/AdminLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -37,7 +37,7 @@ export default function AdminAuthorAnalyticsPage() {
   });
 
   const shouldFetch =
-    resolveAdminAccessState({ loading: authLoading, user, authMeError }) === "allowed";
+    resolveCatalogFetchState({ loading: authLoading, user, authMeError }) === "allowed";
 
   const {
     data,

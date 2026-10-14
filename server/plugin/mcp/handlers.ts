@@ -28,7 +28,7 @@ export type WhoamiToolDeps = {
    * implementation (see mcp/protocol.ts wiring) reads via the same db
    * override-aware singleton every other server feature uses.
    */
-  loadUserDisplay: (userId: number) => Promise<{ name: string | null; role: "user" | "admin" } | null>;
+  loadUserDisplay: (userId: number) => Promise<{ name: string | null; role: "user" | "author" | "admin" } | null>;
 };
 
 export async function handleIdentityWhoami(

@@ -1,6 +1,7 @@
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import * as db from "../db";
+import { assertCatalogNovelsVisible, withCatalogEpisodeWrite, withCatalogNovelWrite } from "../authz/catalogAccess";
 import { normalizeEpisodeRange } from "./readerService";
 
 // ============ LIMITS (configurable via env, sane defaults) ============
@@ -606,7 +607,8 @@ export function classifyImportRow(existingEpisodes: any[], row: PackageImportRow
 export async function importPackageRows(
   novelId: number,
   rows: PackageImportRow[],
-  mode: "create_only" | "upsert"
+  mode: "create_only" | "upsert",
+  actorUserId?: number
 ): Promise<PackageImportSummary> {
   const existingEpisodes = await db.getEpisodesByNovelId(novelId);
   const errors: PackageImportRowError[] = [];
@@ -642,17 +644,24 @@ export async function importPackageRows(
         // Never include `fileUrl` in this payload - omitting the key (not
         // setting it to null) is what preserves any existing legacy file
         // link during a plaintext sync.
-        await db.updateEpisode(existing.id, {
+        const updatePayload = {
           title: row.episodeTitle,
           price: row.price,
           isFree: row.isFree,
           isPublished: row.isPublished,
-          saleMode: "package",
+          saleMode: "package" as const,
           content: row.content,
           contentFormat: row.contentFormat,
           description: row.description,
           sortOrder: row.sortOrder,
-        });
+        };
+        if (actorUserId == null) {
+          await db.updateEpisode(existing.id, updatePayload);
+        } else {
+          await withCatalogEpisodeWrite(actorUserId, existing.id, async (tx) => {
+            await db.updateEpisode(existing.id, updatePayload, tx);
+          });
+        }
         successCount++;
         updatedCount++;
         if (hadFileUrl) preservedFileUrlCount++;
@@ -670,19 +679,22 @@ export async function importPackageRows(
       }
 
       // action === "create_new"
-      const created = await db.createEpisode({
+      const createPayload = {
         novelId,
         episodeNumber: row.episodeNumber,
         title: row.episodeTitle,
         price: row.price,
         isFree: row.isFree,
         isPublished: row.isPublished,
-        saleMode: "package",
+        saleMode: "package" as const,
         content: row.content,
         contentFormat: row.contentFormat,
         description: row.description,
         sortOrder: row.sortOrder,
-      });
+      };
+      const created = actorUserId == null
+        ? await db.createEpisode(createPayload)
+        : await withCatalogNovelWrite(actorUserId, novelId, async (tx) => db.createEpisode(createPayload, tx));
       successCount++;
       createdCount++;
       results.push({
@@ -1371,9 +1383,10 @@ export interface MultiNovelImportPreview {
 export async function buildMultiNovelImportPreview(
   parsed: MultiNovelPackageImportParseResult,
   mode: "create_only" | "upsert",
-  novelIdOverrideMap?: Record<string, number>
+  novelIdOverrideMap?: Record<string, number>,
+  ownerUserId?: number
 ): Promise<MultiNovelImportPreview> {
-  const adminNovelsRaw = await db.getAllNovelsForAdmin();
+  const adminNovelsRaw = await db.getAllNovelsForAdmin(undefined, undefined, ownerUserId);
   const adminNovels: AdminNovelForMatching[] = (adminNovelsRaw as any[]).map((n) => ({ id: n.id, title: n.title }));
 
   const resolvedRows = resolveNovelMatchForRows(parsed.rows, adminNovels, novelIdOverrideMap);
@@ -1559,9 +1572,11 @@ export interface MultiNovelImportSummary {
 export async function importMultiNovelPackageRows(
   parsedRows: MultiNovelPackageImportRow[],
   mode: "create_only" | "upsert",
-  novelIdOverrideMap?: Record<string, number>
+  novelIdOverrideMap?: Record<string, number>,
+  ownerUserId?: number,
+  actorUserId?: number
 ): Promise<MultiNovelImportSummary> {
-  const adminNovelsRaw = await db.getAllNovelsForAdmin();
+  const adminNovelsRaw = await db.getAllNovelsForAdmin(undefined, undefined, ownerUserId);
   const adminNovels: AdminNovelForMatching[] = (adminNovelsRaw as any[]).map((n) => ({ id: n.id, title: n.title }));
 
   const resolvedRows = resolveNovelMatchForRows(parsedRows, adminNovels, novelIdOverrideMap);
@@ -1593,6 +1608,10 @@ export async function importMultiNovelPackageRows(
     else rowsByNovel.set(novelId, [row]);
   }
 
+  if (ownerUserId != null) {
+    await assertCatalogNovelsVisible(ownerUserId, Array.from(rowsByNovel.keys()));
+  }
+
   for (const [novelId, novelRows] of Array.from(rowsByNovel.entries())) {
     // Duplicate-range check scoped to this novel's rows in this batch,
     // mirroring parsePackageZip's seenNumbers guard but per-novel instead of
@@ -1617,7 +1636,7 @@ export async function importMultiNovelPackageRows(
       dedupedRows.push(row);
     }
 
-    const summary = await importPackageRows(novelId, dedupedRows, mode);
+    const summary = await importPackageRows(novelId, dedupedRows, mode, actorUserId);
     successCount += summary.successCount;
     createdCount += summary.createdCount;
     updatedCount += summary.updatedCount;

@@ -134,6 +134,16 @@ describe("resolveNovelMatchForRows - pure matching logic (no DB)", () => {
     expect(resolved.novelMatchStatus).toBe("matched");
     expect(resolved.matchedNovelId).toBe(11);
   });
+
+  it("does not apply a title override to a novel id outside the supplied corpus", () => {
+    const [resolved] = resolveNovelMatchForRows(
+      [makeRow({ novelMatchTitle: "ไม่มีนิยายนี้ในระบบ" })],
+      adminNovels,
+      { "ไม่มีนิยายนี้ในระบบ": 999 }
+    );
+    expect(resolved.novelMatchStatus).toBe("not_found");
+    expect(resolved.matchedNovelId).toBeUndefined();
+  });
 });
 
 describe("parseMultiNovelPackageZip - row-level validation (no DB)", () => {

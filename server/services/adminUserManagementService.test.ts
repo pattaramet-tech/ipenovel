@@ -33,7 +33,7 @@ function fakeDatabase(targetRow?: any) {
 const NON_OWNER_OPEN_ID = "test-non-owner-openid";
 
 function fakeUserRow(
-  overrides: Partial<{ id: number; role: "user" | "admin"; name: string | null; openId: string }> = {}
+  overrides: Partial<{ id: number; role: "user" | "author" | "admin"; name: string | null; openId: string }> = {}
 ) {
   return { id: 1, role: "user" as const, name: "Somchai", openId: NON_OWNER_OPEN_ID, ...overrides };
 }
@@ -55,12 +55,12 @@ const VALID_ACTOR_ROW = { id: 9, name: "Admin Nine", role: "admin" as const, ope
 function mockUserLocks(
   rows: Record<
     number,
-    { id: number; name: string | null; role: "user" | "admin"; openId?: string } | undefined
+    { id: number; name: string | null; role: "user" | "author" | "admin"; openId?: string } | undefined
   >
 ) {
   const merged: Record<
     number,
-    { id: number; name: string | null; role: "user" | "admin"; openId?: string } | undefined
+    { id: number; name: string | null; role: "user" | "author" | "admin"; openId?: string } | undefined
   > = {
     9: VALID_ACTOR_ROW,
     ...rows,
@@ -274,6 +274,72 @@ describe("updateAdminUserProfile", () => {
       expect.objectContaining({ safeMetadata: expect.objectContaining({ googleConnected: true }) }),
       expect.anything()
     );
+  });
+
+  it("assigns the author role to a Google-linked user and records author as the new role", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 9 }]);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "user" }) });
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue({ id: 1, provider: "google" } as any);
+    const updateSpy = vi.spyOn(db, "updateAdminUserFields").mockResolvedValue(true);
+    vi.spyOn(db, "insertAdminUserAuditLog").mockResolvedValue(undefined);
+
+    const result = await updateAdminUserProfile({
+      actorAdminId: 9,
+      userId: 2,
+      role: "author",
+      reason: "assign author",
+      confirmText: "CHANGE ROLE 2",
+    });
+
+    expect(result).toEqual({ id: 2, name: "Somchai", role: "author" });
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 2, role: "author", expectedRole: "user" }),
+      expect.anything()
+    );
+  });
+
+  it("refuses the author role when the user has no linked Google identity", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 9 }]);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "user" }) });
+    vi.spyOn(db, "getAuthIdentityByUserAndProvider").mockResolvedValue(undefined as any);
+    const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+
+    await expect(
+      updateAdminUserProfile({
+        actorAdminId: 9,
+        userId: 2,
+        role: "author",
+        reason: "assign author",
+        confirmText: "CHANGE ROLE 2",
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses demoting the last admin to author", async () => {
+    vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue(fakeDatabase() as any);
+    vi.spyOn(db, "lockAdminRoleRows").mockResolvedValue([{ id: 2 }]);
+    mockUserLocks({ 2: fakeUserRow({ id: 2, role: "admin" }) });
+    const updateSpy = vi.spyOn(db, "updateAdminUserFields");
+
+    await expect(
+      updateAdminUserProfile({
+        actorAdminId: 9,
+        userId: 2,
+        role: "author",
+        reason: "demote last admin",
+        confirmText: "CHANGE ROLE 2",
+      })
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Cannot demote the last remaining admin",
+    });
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 
   it("[concurrent change] updateAdminUserFields loses its conditional UPDATE (returns false) -> CONFLICT, no audit log written", async () => {

@@ -17,7 +17,7 @@ import { sql } from "drizzle-orm";
 
 /**
  * Core user table backing auth flow.
- * Extended with role-based access control for admin/user distinction.
+ * Extended with role-based access control for admin, author, and user.
  */
 export const users = mysqlTable(
   "users",
@@ -28,7 +28,7 @@ export const users = mysqlTable(
     email: varchar("email", { length: 320 }),
     loginMethod: varchar("loginMethod", { length: 64 }),
     passwordHash: varchar("passwordHash", { length: 255 }),
-    role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+    role: mysqlEnum("role", ["user", "author", "admin"]).default("user").notNull(),
     // IPE-063R1: pen name / author display name, kept separate from the
     // account name. Nullable — legacy admins have no explicit author name
     // and fall back to their account name.
