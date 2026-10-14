@@ -9,6 +9,7 @@ import { useState, useRef } from "react";
 import { toast } from "sonner";
 import { SectionHeader, StatusBadge, EmptyState, FormSection } from "@/components/AdminComponents";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { isCatalogOperatorRole } from "@/_core/hooks/catalogAccess";
 import { useLocation } from "wouter";
 import SafeImage from "@/components/SafeImage";
 
@@ -23,7 +24,7 @@ export default function AdminNovelsPage() {
   // authoritative DB-effective pen name (admin.authorProfile.get), not the
   // session account name — the server stores the effective name on create.
   const authorProfileQuery = trpc.admin.authorProfile.get.useQuery(undefined, {
-    enabled: !!user && user.role === "admin",
+    enabled: isCatalogOperatorRole(user?.role),
     retry: 1,
   });
   const authorProfileReady = authorProfileQuery.isSuccess;
@@ -46,7 +47,7 @@ export default function AdminNovelsPage() {
 
   const { data: novels, isLoading, refetch } = trpc.admin.novels.list.useQuery(
     undefined,
-    { enabled: !!user && user.role === "admin" }
+    { enabled: isCatalogOperatorRole(user?.role) }
   );
 
   const createMutation = trpc.admin.novels.create.useMutation({
@@ -150,7 +151,7 @@ export default function AdminNovelsPage() {
     }
   };
 
-  if (!isAuthenticated || user?.role !== "admin") {
+  if (!isAuthenticated || !isCatalogOperatorRole(user?.role)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">

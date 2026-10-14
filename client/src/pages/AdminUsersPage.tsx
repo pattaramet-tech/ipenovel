@@ -44,7 +44,7 @@ import { computePaginationClamp } from "./adminUsersPagination";
 
 type SortColumn = "id" | "name" | "email" | "createdAt" | "lastSignedIn";
 type SortOrder = "asc" | "desc";
-type RoleFilter = "user" | "admin";
+type RoleFilter = "user" | "author" | "admin";
 type GoogleFilter = "connected" | "not_connected";
 
 type AdminUserRow = {
@@ -52,7 +52,7 @@ type AdminUserRow = {
   name: string | null;
   email: string | null;
   loginMethod: string | null;
-  role: "user" | "admin";
+  role: "user" | "author" | "admin";
   googleConnected: boolean;
   createdAt: string | Date;
   updatedAt: string | Date;
@@ -76,12 +76,10 @@ function formatBangkokDate(value: string | Date | null | undefined): string {
   });
 }
 
-function roleBadge(role: "user" | "admin") {
-  return role === "admin" ? (
-    <Badge className="bg-purple-100 text-purple-800">Admin</Badge>
-  ) : (
-    <Badge className="bg-slate-100 text-slate-700">User</Badge>
-  );
+function roleBadge(role: "user" | "author" | "admin") {
+  if (role === "admin") return <Badge className="bg-purple-100 text-purple-800">Admin</Badge>;
+  if (role === "author") return <Badge className="bg-amber-100 text-amber-800">Author</Badge>;
+  return <Badge className="bg-slate-100 text-slate-700">User</Badge>;
 }
 
 function googleBadge(connected: boolean) {
@@ -179,7 +177,7 @@ export default function AdminUsersPage() {
   // ---- Edit dialog ----
   const [editingUser, setEditingUser] = useState<AdminUserRow | null>(null);
   const [editName, setEditName] = useState("");
-  const [editRole, setEditRole] = useState<"user" | "admin">("user");
+  const [editRole, setEditRole] = useState<"user" | "author" | "admin">("user");
   const [editReason, setEditReason] = useState("");
   const [editConfirmText, setEditConfirmText] = useState("");
 
@@ -272,6 +270,14 @@ export default function AdminUsersPage() {
               className="text-xs"
             >
               Admin
+            </Button>
+            <Button
+              size="sm"
+              variant={roleFilter === "author" ? "default" : "outline"}
+              onClick={() => setRoleFilter(roleFilter === "author" ? "" : "author")}
+              className="text-xs"
+            >
+              Author
             </Button>
             <Button
               size="sm"
@@ -485,12 +491,13 @@ export default function AdminUsersPage() {
               </div>
               <div>
                 <Label htmlFor="edit-role">Role</Label>
-                <Select value={editRole} onValueChange={(v) => setEditRole(v as "user" | "admin")}>
+                <Select value={editRole} onValueChange={(v) => setEditRole(v as "user" | "author" | "admin")}>
                   <SelectTrigger id="edit-role" className="mt-1 w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="user">User</SelectItem>
+                    <SelectItem value="author">Author</SelectItem>
                     <SelectItem value="admin">Admin</SelectItem>
                   </SelectContent>
                 </Select>

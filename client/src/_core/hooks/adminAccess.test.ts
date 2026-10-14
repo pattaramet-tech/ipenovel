@@ -18,6 +18,7 @@ describe("resolveAdminAccessState", () => {
 
   it("a user exists but role !== 'admin' -> 'forbidden'", () => {
     expect(resolveAdminAccessState({ loading: false, user: { role: "user" } })).toBe("forbidden");
+    expect(resolveAdminAccessState({ loading: false, user: { role: "author" } })).toBe("forbidden");
   });
 
   it("role is null -> 'forbidden' (not 'allowed')", () => {

@@ -81,6 +81,26 @@ describe("IPE-063 admin-as-author router contract", () => {
 
   it("does not transfer author ownership when another admin edits a novel (H)", async () => {
     const updateSpy = vi.spyOn(db, "updateNovel").mockResolvedValue(undefined);
+    vi.spyOn(db, "getDb").mockResolvedValue({
+      transaction: async (fn: (tx: any) => Promise<void>) =>
+        fn({
+          select: () => ({
+            from: () => ({
+              where: () => ({
+                limit: () => ({
+                  for: async () => [{ id: 44, authorUserId: 10 }],
+                }),
+              }),
+            }),
+          }),
+        }),
+    } as any);
+    vi.spyOn(db, "lockUserRowForUpdate").mockResolvedValue({
+      id: 88,
+      name: "Editor Eight",
+      role: "admin",
+      openId: "editor-eight",
+    });
     const caller = appRouter.createCaller(contextFor(fakeUser({ id: 88, name: "Editor Eight" })));
 
     await caller.admin.novels.update({
@@ -90,7 +110,8 @@ describe("IPE-063 admin-as-author router contract", () => {
       authorUserId: 88,
     } as any);
 
-    expect(updateSpy).toHaveBeenCalledWith(44, {
+    expect(updateSpy.mock.calls[0]?.[0]).toBe(44);
+    expect(updateSpy.mock.calls[0]?.[1]).toEqual({
       description: "Edited by another admin",
     });
   });
@@ -309,6 +330,7 @@ describe("IPE-063R3 guarded author-owned creation (P1 + P2 serialization)", () =
       [{ id: 7 }],
       [],
       [],
+      [userRow ? { id: userRow.id, role: "admin", name: userRow.name, openId: "test-open-id" } : []],
     ];
     const selectQueue: any[][] = [
       [userRow ?? []].flat().length && userRow ? [userRow] : [],

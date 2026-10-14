@@ -532,7 +532,7 @@ export async function insertPluginAuditLog(input: {
 /** Minimal identity display fields for identity.whoami - nothing else. */
 export async function findPluginUserDisplay(
   userId: number
-): Promise<{ name: string | null; role: "user" | "admin" } | null> {
+): Promise<{ name: string | null; role: "user" | "author" | "admin" } | null> {
   const db = await requirePluginDb();
   const rows = await db
     .select({ name: users.name, role: users.role })

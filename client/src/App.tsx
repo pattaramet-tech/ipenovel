@@ -55,7 +55,7 @@ import { publicToasterTheme } from "./components/navbarVisibility";
 import Navbar from "./components/Navbar";
 import MigrationGate from "./components/MigrationGate";
 import MaintenanceAnnouncementBanner from "./components/MaintenanceAnnouncementBanner";
-import WorkspacePage from "./pages/WorkspacePage";
+import WorkspaceRoutePage from "./pages/WorkspaceRoutePage";
 import WorkspaceIntakePage from "./pages/WorkspaceIntakePage";
 
 function Router() {
@@ -95,7 +95,7 @@ function Router() {
         <Route path={"/wallet"} component={WalletPage} />
         <Route path={"/payment/:orderId"} component={PaymentPage} />
         <Route path={"/sports-votes"} component={SportsVotesPage} />
-        <Route path={"/workspace"} component={WorkspacePage} />
+        <Route path={"/workspace"} component={WorkspaceRoutePage} />
         <Route path={"/workspace/intake"} component={WorkspaceIntakePage} />
         <Route path={"/admin"} component={AdminDashboard} />
         <Route path={"/admin/novels/:novelId"} component={AdminNovelManagePage} />

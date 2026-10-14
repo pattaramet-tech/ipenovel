@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   adminNavSections,
+  authorCatalogNavSections,
   getAdminNavItemsFlat,
   getAdminRouteTitle,
   isAdminRouteActive,
+  isAuthorCatalogRoute,
 } from "./adminNavItems";
 
 const expectedSections = ["Main", "Sales", "Content", "Marketing", "System"];
@@ -63,5 +65,19 @@ describe("admin navigation configuration", () => {
     expect(isAdminRouteActive("/admin", "/admin")).toBe(true);
     expect(isAdminRouteActive("/admin/orders", "/admin")).toBe(false);
     expect(isAdminRouteActive("/admin/users", "/admin")).toBe(false);
+  });
+
+  it("shows an author only the catalog sections", () => {
+    expect(authorCatalogNavSections().flatMap((section) => section.items.map((item) => item.href))).toEqual([
+      "/admin/author-analytics",
+      "/admin/novels",
+      "/admin/episodes",
+      "/admin/import-episodes",
+      "/admin/bulk-upload",
+    ]);
+    expect(isAuthorCatalogRoute("/admin/novels/12")).toBe(true);
+    expect(isAuthorCatalogRoute("/admin/users")).toBe(false);
+    expect(isAuthorCatalogRoute("/admin/payments")).toBe(false);
+    expect(isAuthorCatalogRoute("/workspace")).toBe(false);
   });
 });

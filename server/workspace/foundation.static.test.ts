@@ -25,7 +25,12 @@ describe("workspace M01 static safety", () => {
 
   it("registers a dedicated /workspace page without changing legacy routes", () => {
     const app = source("client/src/App.tsx");
-    expect(app).toContain('<Route path={"/workspace"} component={WorkspacePage} />');
+    expect(app).toContain('import WorkspaceRoutePage from "./pages/WorkspaceRoutePage"');
+    expect(app).toContain('<Route path={"/workspace"} component={WorkspaceRoutePage} />');
+    const adapter = source("client/src/pages/WorkspaceRoutePage.tsx");
+    expect(adapter).toContain('import WorkspacePage from "./WorkspacePage"');
+    expect(adapter).toContain('import AuthorWorkspacePage from "./AuthorWorkspacePage"');
+    expect(adapter).toContain('user?.role === "author"');
     expect(app).toContain('<Route path={"/admin"} component={AdminDashboard} />');
   });
 

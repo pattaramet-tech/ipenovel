@@ -14,9 +14,12 @@ describe("AdminAuthorAnalyticsPage source contract", () => {
     expect(source).not.toMatch(/author(User)?Id\s*:/);
   });
 
-  it("gates the query with the shared admin access resolver", () => {
-    expect(source).toContain('resolveAdminAccessState({ loading: authLoading, user, authMeError }) === "allowed"');
+  it("enables analytics and profile queries for a catalog operator, not the platform-admin gate", () => {
+    expect(source).toContain('resolveCatalogFetchState({ loading: authLoading, user, authMeError }) === "allowed"');
+    expect(source).not.toContain("resolveAdminAccessState");
+    expect(source).toContain("trpc.admin.authorAnalytics.summary.useQuery");
     expect(source).toContain("{ enabled: shouldFetch }");
+    expect(source).toContain("enabled: shouldFetch");
   });
 
   it("labels wishlist as a current-state metric rather than period sales", () => {

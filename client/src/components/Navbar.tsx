@@ -271,6 +271,10 @@ export default function Navbar() {
       ? [{ label: t("nav.accountRecovery"), href: ACCOUNT_RECOVERY_NAV_HREF, icon: LifeBuoy }]
       : []),
     ...(user?.role === "admin" ? [{ label: t("nav.admin"), href: "/admin", icon: Settings }] : []),
+    ...(user?.role === "author" ? [
+            { label: "My Novels", href: "/admin/novels", icon: BookOpen },
+            { label: "My Workspace", href: "/workspace", icon: BookOpen },
+          ] : []),
   ];
   const accountChildActive = accountItems.some((item) => isActive(item.href));
   // Account names are nullable; keep a meaningful visible label for users
@@ -571,6 +575,30 @@ export default function Navbar() {
                 >
                   <Settings className="w-4 h-4" />
                   {t("nav.admin")}
+                </button>
+              )}
+              {user?.role === "author" && (
+                <button
+                  onClick={() => {
+                    navigateFromMenu("/admin/novels", mobileToggleRef.current);
+                    setMobileMenuOpen(false);
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  My Novels
+                </button>
+              )}
+              {user?.role === "author" && (
+                <button
+                  onClick={() => {
+                    navigateFromMenu("/workspace", mobileToggleRef.current);
+                    setMobileMenuOpen(false);
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium transition text-sm"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  My Workspace
                 </button>
               )}
 

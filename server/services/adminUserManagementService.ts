@@ -40,7 +40,7 @@ function unwrapRows(rawResult: any): any[] {
 export type UpdateAdminUserResult = {
   id: number;
   name: string | null;
-  role: "user" | "admin";
+  role: "user" | "author" | "admin";
 };
 
 /**
@@ -164,7 +164,7 @@ export async function updateAdminUserProfile(params: {
   actorAdminId: number;
   userId: number;
   name?: string | null;
-  role?: "user" | "admin";
+  role?: "user" | "author" | "admin";
   reason: string;
   confirmText?: string;
 }): Promise<UpdateAdminUserResult> {
@@ -196,7 +196,7 @@ export async function updateAdminUserProfile(params: {
 
     const lockedById = new Map<
       number,
-      { id: number; name: string | null; role: "user" | "admin"; openId: string }
+      { id: number; name: string | null; role: "user" | "author" | "admin"; openId: string }
     >();
     for (const id of idsToLock) {
       const row = await db.lockUserRowForUpdate(id, tx);
@@ -255,7 +255,7 @@ export async function updateAdminUserProfile(params: {
         throw new AdminUserManagementError("FORBIDDEN", "Admins cannot change their own role");
       }
 
-      if (target.role === "admin" && params.role === "user") {
+      if (target.role === "admin" && params.role !== "admin") {
         // Configured-owner protection - see this function's own "OWNER
         // PROTECTION" docstring above. Checked using target.openId from
         // the SAME locked row read in Step 2 - never a second query,
@@ -279,12 +279,22 @@ export async function updateAdminUserProfile(params: {
         }
       }
 
-      if (target.role === "user" && params.role === "admin") {
+      if (params.role === "admin" && target.role !== "admin") {
         const identity = await db.getAuthIdentityByUserAndProvider(target.id, "google", tx);
         if (!identity) {
           throw new AdminUserManagementError(
             "FORBIDDEN",
             "User must have a linked Google identity before being promoted to admin"
+          );
+        }
+      }
+
+      if (target.role === "user" && params.role === "author") {
+        const identity = await db.getAuthIdentityByUserAndProvider(target.id, "google", tx);
+        if (!identity) {
+          throw new AdminUserManagementError(
+            "FORBIDDEN",
+            "User must have a linked Google identity before being assigned the author role"
           );
         }
       }
@@ -359,7 +369,7 @@ export async function updateAdminUserProfile(params: {
     return {
       id: params.userId,
       name: nameChanged ? (params.name ?? null) : (target.name ?? null),
-      role: roleChanged ? (params.role as "user" | "admin") : target.role,
+      role: roleChanged ? (params.role as "user" | "author" | "admin") : target.role,
     };
   });
 }

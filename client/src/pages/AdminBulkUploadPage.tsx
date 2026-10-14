@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { isCatalogOperatorRole } from "@/_core/hooks/catalogAccess";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -29,7 +30,7 @@ export default function AdminBulkUploadPage() {
   // Queries
   const { data: novels } = trpc.admin.novels.list.useQuery(
     undefined,
-    { enabled: !!user && user.role === "admin" }
+    { enabled: isCatalogOperatorRole(user?.role) }
   );
 
   // Mutations
@@ -75,7 +76,7 @@ export default function AdminBulkUploadPage() {
     },
   });
 
-  if (!isAuthenticated || user?.role !== "admin") {
+  if (!isAuthenticated || !isCatalogOperatorRole(user?.role)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">

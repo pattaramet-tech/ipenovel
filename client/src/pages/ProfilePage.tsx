@@ -273,8 +273,8 @@ export default function ProfilePage() {
               <div className="w-5 h-5 text-slate-400 mt-1" />
               <div className="flex-1">
                 <p className="text-sm text-muted-foreground">สถานะ</p>
-                <Badge className={displayUser?.role === "admin" ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"}>
-                  {displayUser?.role === "admin" ? "Admin" : "User"}
+                <Badge className={displayUser?.role === "admin" ? "bg-purple-100 text-purple-700" : displayUser?.role === "author" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-700"}>
+                  {displayUser?.role === "admin" ? "Admin" : displayUser?.role === "author" ? "Author" : "User"}
                 </Badge>
               </div>
             </div>

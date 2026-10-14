@@ -10,8 +10,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   adminNavSections,
+  authorCatalogNavSections,
   getAdminRouteTitle,
   isAdminRouteActive,
+  isAuthorCatalogRoute,
 } from "@/config/adminNavItems";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import {
@@ -49,7 +51,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
 
   // The single rule for admin access - see adminAccess.ts. Also used by
   // AdminDashboard (to gate its own queries) so the two can never disagree.
-  const accessState = resolveAdminAccessState({ loading, user, authMeError });
+  const adminAccess = resolveAdminAccessState({ loading, user, authMeError });
+  const accessState =
+    user?.role === "author" && isAuthorCatalogRoute(location) ? "allowed" : adminAccess;
+  const visibleNavSections = user?.role === "author" ? authorCatalogNavSections() : adminNavSections;
 
   // Redirecting is a side effect, not something to trigger during render -
   // doing it here (not inline in the render body below) avoids a
@@ -156,14 +161,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   const navigation = (
     <>
       <div className="shrink-0 border-b border-slate-800 px-5 py-5 pr-14">
-        <h1 className="text-lg font-bold">Admin Panel</h1>
-        <p className="mt-1 text-xs text-slate-400">Manage your store</p>
+        <h1 className="text-lg font-bold">{user?.role === "author" ? "Author" : "Admin Panel"}</h1>
+        <p className="mt-1 text-xs text-slate-400">{user?.role === "author" ? "Your novels" : "Manage your store"}</p>
       </div>
       <nav
         aria-label="Admin navigation"
         className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-3"
       >
-        {adminNavSections.map(section => (
+        {visibleNavSections.map(section => (
           <div key={section.title}>
             <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
               {section.title}

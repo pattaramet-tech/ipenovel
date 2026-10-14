@@ -50,7 +50,7 @@ export interface TestUserFixture {
   openId: string;
 }
 
-export async function createTestUser(overrides: Partial<{ name: string; email: string; role: "user" | "admin" }> = {}): Promise<TestUserFixture> {
+export async function createTestUser(overrides: Partial<{ name: string; email: string; role: "user" | "author" | "admin" }> = {}): Promise<TestUserFixture> {
   const db = getTestDb();
   const tag = uniqueTestTag("user");
   const openId = `test-${tag}`;
