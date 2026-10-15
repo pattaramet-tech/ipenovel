@@ -215,7 +215,7 @@ describe("IPE-070R4B author edit QC approve stage", () => {
       expect(stagedSurface.boardProjection.reason).toBe("LATER_BOARD_OWNS_COLUMN");
       const staleTab = stagedSurface.tabs[0]!;
       const staleBaseline = staleTab.paragraphs.map(paragraph => paragraph.text).join("\n\n");
-      await editAuthorEditorialDraft({
+      await expect(editAuthorEditorialDraft({
         ...scope,
         expectedDraftId: stagedSurface.draft!.id,
         expectedDraftVersion: stagedSurface.draft!.version,
@@ -229,11 +229,13 @@ describe("IPE-070R4B author edit QC approve stage", () => {
           replacementParagraphKeys: staleTab.paragraphs.map(paragraph => paragraph.paragraphKey),
         },
         idempotencyKey: `author-r4b-stale-${stagedSurface.draft!.id}`,
-      });
-      const stale = await getAuthorEditorialSurface(scope);
-      expect(stale.approval.stageReady).toBe(false);
-      expect(stale.approval.stageActionReady).toBe(false);
-      expect(stale.approval.stageActionReason).toContain("draft changed");
+      })).rejects.toMatchObject({ code: "BOARD_COLUMN_CONFLICT" });
+      const unchanged = await getAuthorEditorialSurface(scope);
+      expect(unchanged.draft?.id).toBe(stagedSurface.draft!.id);
+      expect(unchanged.draft?.draftSha256).toBe(stagedSurface.draft!.draftSha256);
+      expect(unchanged.approval.stageReady).toBe(true);
+      expect(unchanged.approval.stageActionReady).toBe(true);
+      expect(unchanged.boardProjection.reason).toBe("LATER_BOARD_OWNS_COLUMN");
 
       await expect(requestEditorialPublish({
         actorUserId: author.id,

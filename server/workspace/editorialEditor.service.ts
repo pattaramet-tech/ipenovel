@@ -48,7 +48,7 @@ import {
   type EditorialDraftEditCommand,
   type EditorialParagraphEditCommand,
 } from "./editorialEditor.domain";
-import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import { authorEditingProjectionBlock, projectEditorialQcColumn } from "./editorialQcProjection.service";
 
 export class WorkspaceEditorialEditorError extends Error {
   constructor(
@@ -61,7 +61,8 @@ export class WorkspaceEditorialEditorError extends Error {
       | "FINDING_CONFLICT"
       | "EDIT_CONFLICT"
       | "UNDO_NOT_AVAILABLE"
-      | "EDIT_INVALID",
+      | "EDIT_INVALID"
+      | "BOARD_COLUMN_CONFLICT",
     message: string
   ) {
     super(message);
@@ -900,6 +901,15 @@ export async function applyEditorialEditorEdit(input: {
         "Draft changed before this edit could be applied."
       );
     }
+    if (input.authorGrant) {
+      const blockingColumn = await authorEditingProjectionBlock(tx, input.workItemId);
+      if (blockingColumn) {
+        throw new WorkspaceEditorialEditorError(
+          "BOARD_COLUMN_CONFLICT",
+          "This chapter is already staged or published. Author save and undo stay closed until an admin opens a new revision."
+        );
+      }
+    }
 
     let findingKey = input.findingKey ?? null;
     if (input.findingId && input.command.kind !== "replace_tab") {
@@ -1338,6 +1348,15 @@ export async function undoEditorialEditorEdit(input: {
         "DRAFT_CONFLICT",
         "Draft changed before undo could be applied."
       );
+    }
+    if (input.authorGrant) {
+      const blockingColumn = await authorEditingProjectionBlock(tx, input.workItemId);
+      if (blockingColumn) {
+        throw new WorkspaceEditorialEditorError(
+          "BOARD_COLUMN_CONFLICT",
+          "This chapter is already staged or published. Author save and undo stay closed until an admin opens a new revision."
+        );
+      }
     }
     if (current.origin !== "manual" || !current.parentDraftId) {
       throw new WorkspaceEditorialEditorError(

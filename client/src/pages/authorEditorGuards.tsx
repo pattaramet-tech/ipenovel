@@ -45,6 +45,7 @@ const AUTHOR_HISTORY_SENTINEL = { ipe070AuthorUnsaved: true };
 type NavigationHistory = {
   readonly state: unknown;
   pushState: (state: unknown, title: string, url?: string | null) => void;
+  replaceState: (state: unknown, title: string, url?: string | null) => void;
   back: () => void;
 };
 
@@ -70,7 +71,16 @@ function historySentinelIsCurrent(history: NavigationHistory) {
  * The sentinel is an extra entry for this author URL only. Save pops it only while
  * it is still the current entry. A later unrelated entry is left alone.
  * Confirming Back pops once more so the previous route becomes current.
+ * A confirmed same-origin link replaces that sentinel, so the destination occupies
+ * the extra slot instead of leaving an author URL underneath it.
+ * Wouter 3.10 has no blocker. Its history.replaceState patch publishes the new URL.
  */
+function sameOriginHref(currentHref: string, anchorHref: string) {
+  const current = new URL(currentHref);
+  const destination = new URL(anchorHref, currentHref);
+  if (destination.origin !== current.origin) return null;
+  return destination.href;
+}
 export function createAuthorNavigationGuard(input: {
   isDirty: () => boolean;
   confirmDiscard: () => boolean;
@@ -172,9 +182,22 @@ export function createAuthorNavigationGuard(input: {
     })) {
       return;
     }
-    if (input.confirmDiscard()) return;
+    const destinationHref = sameOriginHref(input.windowTarget.location.href, anchor.href);
+    if (!input.confirmDiscard()) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (!destinationHref) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    leaving = true;
+    ownsSentinel = false;
+    if (historySentinelIsCurrent(history)) {
+      history.replaceState(null, "", destinationHref);
+      return;
+    }
+    history.pushState(null, "", destinationHref);
   };
   input.windowTarget.addEventListener("beforeunload", beforeUnload);
   input.windowTarget.addEventListener("popstate", onPop);

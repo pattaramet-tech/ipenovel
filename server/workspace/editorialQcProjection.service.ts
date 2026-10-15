@@ -158,3 +158,31 @@ export function editorialBoardReconcileDecision(columnKey: string | null | undef
   if (columnKey === "ready_to_publish" || columnKey === "published") return "leave-later-column" as const;
   return "project" as const;
 }
+
+/**
+ * Author Save and Undo have no reopen workflow. Once Stage or Publish owns the
+ * card, the author write fails closed. An admin revision is the explicit next
+ * cycle: applyEditorialEditorEdit without authorGrant writes a new Draft and
+ * projects that card to editing.
+ * Call this inside the author write transaction after the work-item, user, and
+ * grant locks. The card row is locked here, before any new Draft is inserted.
+ * Returns the column key when the write must be rejected.
+ */
+export async function authorEditingProjectionBlock(tx: any, workItemId: number) {
+  const [row] = await tx
+    .select({ key: workspaceKanbanColumns.key })
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(
+      workspaceKanbanCards,
+      eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id),
+    )
+    .innerJoin(
+      workspaceKanbanColumns,
+      eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id),
+    )
+    .where(eq(workspaceEditorialWorkItems.id, workItemId))
+    .for("update")
+    .limit(1);
+  if (editorialBoardReconcileDecision(row?.key) === "leave-later-column") return row.key as string;
+  return null;
+}

@@ -93,6 +93,28 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(projection).toContain('columnKey === "published"');
   });
 
+  it("rejects author save and undo on a staged or published card before writing a draft", () => {
+    const editor = source("server/workspace/editorialEditor.service.ts");
+    const projection = source("server/workspace/editorialQcProjection.service.ts");
+    const edit = editor.slice(
+      editor.indexOf("export async function applyEditorialEditorEdit"),
+      editor.indexOf("export async function applyEditorialBulkFindingCleanupRevision"),
+    );
+    const undo = editor.slice(editor.indexOf("export async function undoEditorialEditorEdit"));
+    for (const body of [edit, undo]) {
+      const block = body.indexOf('"BOARD_COLUMN_CONFLICT"');
+      const persist = body.indexOf("persistManualDraft");
+      expect(block).toBeGreaterThan(-1);
+      expect(persist).toBeGreaterThan(block);
+      expect(body.indexOf("authorEditingProjectionBlock")).toBeLessThan(persist);
+      expect(body.indexOf("DRAFT_CONFLICT")).toBeLessThan(block);
+    }
+    const blockFn = projection.slice(projection.indexOf("export async function authorEditingProjectionBlock"));
+    expect(blockFn).toContain("editorialBoardReconcileDecision(row?.key)");
+    expect(blockFn).toContain('.for("update")');
+    expect(editor).toContain('targetColumnKey: "editing"');
+  });
+
   it("requires finding id/key as one guarded pair and prevents undo from toggling an undo Draft", () => {
     const editor = source("server/workspace/editorialEditor.service.ts");
     expect(editor).toContain(

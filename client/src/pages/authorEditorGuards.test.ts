@@ -136,6 +136,11 @@ describe("author unsaved navigation guard", () => {
         index += 1;
         location.href = entries[index].url;
       },
+      replaceState(state: unknown, _title: string, url?: string | null) {
+        const nextUrl = url || location.href;
+        entries[index] = { state, url: nextUrl };
+        location.href = nextUrl;
+      },
       back() {
         if (index === 0) return;
         index -= 1;
@@ -204,6 +209,8 @@ describe("author unsaved navigation guard", () => {
       followLink,
       url: () => location.href,
       index: () => index,
+      length: () => entries.length,
+      state: () => history.state as { ipe070AuthorUnsaved?: boolean } | null,
       setDirty: (value: boolean) => { dirty = value; },
       setConfirmed: (value: boolean) => { confirmed = value; },
     };
@@ -248,6 +255,16 @@ describe("author unsaved navigation guard", () => {
     expect(page.listeners.get("beforeunload")).toEqual([]);
     expect(page.listeners.get("popstate")).toEqual([]);
     expect(page.documentListeners.get("click")).toEqual([]);
+  });
+
+  it("does not push a second sentinel while the unsaved entry is current", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    page.guard.sync(true);
+    expect(page.index()).toBe(2);
+    expect(page.length()).toBe(3);
+    expect(page.url()).toBe("http://localhost/workspace");
   });
 
   it("does not warn after the editor is clean", () => {
@@ -317,17 +334,35 @@ describe("author unsaved navigation guard", () => {
     cancelled.guard.sync(true);
     expect(cancelled.followLink("http://localhost/admin/novels")).toBe(true);
     expect(cancelled.url()).toBe("http://localhost/workspace");
+    expect(cancelled.index()).toBe(2);
+    expect(cancelled.length()).toBe(3);
+    expect(cancelled.state()?.ipe070AuthorUnsaved).toBe(true);
 
     const confirmed = harness();
     confirmed.setDirty(true);
     confirmed.guard.sync(true);
     confirmed.setConfirmed(true);
-    expect(confirmed.followLink("http://localhost/admin/novels")).toBe(false);
+    expect(confirmed.followLink("http://localhost/admin/novels")).toBe(true);
     expect(confirmed.url()).toBe("http://localhost/admin/novels");
-    const index = confirmed.index();
+    expect(confirmed.index()).toBe(2);
+    expect(confirmed.length()).toBe(3);
+    expect(confirmed.state()?.ipe070AuthorUnsaved).toBeUndefined();
+    confirmed.guard.sync(false);
+    expect(confirmed.url()).toBe("http://localhost/admin/novels");
+    expect(confirmed.index()).toBe(2);
+    confirmed.history.back();
+    expect(confirmed.url()).toBe("http://localhost/workspace");
+    expect(confirmed.index()).toBe(1);
+    confirmed.history.forward();
+    expect(confirmed.url()).toBe("http://localhost/admin/novels");
+    expect(confirmed.index()).toBe(2);
+    confirmed.history.back();
+    confirmed.history.back();
+    expect(confirmed.url()).toBe("http://localhost/home");
+    expect(confirmed.index()).toBe(0);
     confirmed.guard.release();
-    expect(confirmed.url()).toBe("http://localhost/admin/novels");
-    expect(confirmed.index()).toBe(index);
+    expect(confirmed.url()).toBe("http://localhost/home");
+    expect(confirmed.index()).toBe(0);
   });
 
   it("does not warn for a link click after a successful save", () => {
