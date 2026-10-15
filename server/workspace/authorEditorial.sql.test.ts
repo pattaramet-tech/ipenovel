@@ -134,4 +134,49 @@ describe("IPE-070R4B author editorial SQL grant", () => {
       await pool.end();
     }
   }, 60000);
+
+  it.skipIf(!accepted)("an author write waits on the work item and then locks the user row", async () => {
+    const pool = createPool(fixture!);
+    const db = drizzle(pool);
+    __setDbForTests(db);
+    let holder: PoolConnection | null = null;
+    try {
+      await seed(pool);
+      holder = await pool.getConnection();
+      await holder.beginTransaction();
+      await holder.query("SELECT id FROM workspaceEditorialWorkItems WHERE id=2001 FOR UPDATE");
+      let failure: unknown = null;
+      const pending = db.transaction(async (tx) => {
+        await assertAuthorEditorialWrite(tx, scope, { lock: true });
+      }).catch((error) => {
+        failure = error;
+      });
+      const started = Date.now();
+      let waiting = false;
+      while (Date.now() - started < 5000) {
+        const [rows] = await pool.query(
+          "SELECT COUNT(*) AS waiting FROM performance_schema.data_lock_waits",
+        ) as unknown as [Array<{ waiting: number }>];
+        if (Number(rows[0]?.waiting ?? 0) > 0) {
+          waiting = true;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      expect(waiting).toBe(true);
+      await holder.query("SELECT id FROM users WHERE id=101 FOR UPDATE");
+      await holder.rollback();
+      holder.release();
+      holder = null;
+      await pending;
+      expect(failure).toBeNull();
+    } finally {
+      if (holder) {
+        await holder.rollback();
+        holder.release();
+      }
+      __setDbForTests(null);
+      await pool.end();
+    }
+  }, 60000);
 });

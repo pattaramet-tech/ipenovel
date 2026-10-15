@@ -133,17 +133,56 @@ describe("IPE-070R4B author edit QC approve stage", () => {
         expectedDraftId: edited.draft.id,
       });
       expect(checked.created).toBe(true);
+      expect(checked.kanbanProjection.deferred).toBe(false);
+      expect(checked.kanbanProjection.applied).toBe(true);
       const ready = await getAuthorEditorialSurface(scope);
       expect(ready.approval.qcReady).toBe(true);
+      expect(ready.checker.isCurrent).toBe(true);
       expect(ready.publishAvailable).toBe(false);
-      const approved = await approveAuthorEditorialDraft({
+      expect(ready.boardProjection.applied).toBe(true);
+      expect(ready.boardProjection.deferred).toBe(false);
+      const qcTab = ready.tabs[0]!;
+      const qcText = qcTab.paragraphs.map(paragraph => paragraph.text).join("\n\n");
+      await editAuthorEditorialDraft({
         ...scope,
         expectedDraftId: ready.draft!.id,
         expectedDraftVersion: ready.draft!.version,
         expectedDraftSha256: ready.draft!.draftSha256,
-        expectedCheckerRunId: ready.approval.checkerRunId!,
-        expectedQcEvidenceSha256: ready.approval.qcEvidenceSha256!,
-        idempotencyKey: `author-r4b-approve-${ready.draft!.id}`,
+        command: {
+          kind: "replace_tab",
+          sourceTabId: qcTab.sourceTabId,
+          expectedTabStructuralSha256: qcTab.structuralSha256,
+          expectedText: qcText,
+          replacementText: qcText.replace("เนื้อหาที่ผู้เขียนแก้", "เนื้อหาก่อนตรวจใหม่"),
+          replacementParagraphKeys: qcTab.paragraphs.map(paragraph => paragraph.paragraphKey),
+        },
+        idempotencyKey: `author-r4b-stale-qc-${ready.draft!.id}`,
+      });
+      const staleQc = await getAuthorEditorialSurface(scope);
+      expect(staleQc.checker.isCurrent).toBe(false);
+      expect(staleQc.checker.findings).toEqual([]);
+      expect(staleQc.checker.canResolveFindings).toBe(false);
+      expect(staleQc.checker.recheckMessage).toContain("Run QC again");
+      expect(staleQc.approval.qcReady).toBe(false);
+      expect(staleQc.approval.stageActionReady).toBe(false);
+      expect(staleQc.boardProjection.status).toBe("skipped");
+      expect(staleQc.boardProjection.applied).toBe(false);
+      const rechecked = await runAuthorEditorialChecker({
+        ...scope,
+        expectedDraftId: staleQc.draft!.id,
+      });
+      expect(rechecked.created).toBe(true);
+      const current = await getAuthorEditorialSurface(scope);
+      expect(current.checker.isCurrent).toBe(true);
+      expect(current.approval.qcReady).toBe(true);
+      const approved = await approveAuthorEditorialDraft({
+        ...scope,
+        expectedDraftId: current.draft!.id,
+        expectedDraftVersion: current.draft!.version,
+        expectedDraftSha256: current.draft!.draftSha256,
+        expectedCheckerRunId: current.approval.checkerRunId!,
+        expectedQcEvidenceSha256: current.approval.qcEvidenceSha256!,
+        idempotencyKey: `author-r4b-approve-${current.draft!.id}`,
       });
       expect(approved.replayed).toBe(false);
       const approvedSurface = await getAuthorEditorialSurface(scope);
@@ -153,9 +192,9 @@ describe("IPE-070R4B author edit QC approve stage", () => {
       const staged = await stageAuthorEditorialDraft({
         ...scope,
         approvalId: approved.approval.id,
-        expectedDraftId: ready.draft!.id,
-        expectedDraftVersion: ready.draft!.version,
-        expectedDraftSha256: ready.draft!.draftSha256,
+        expectedDraftId: current.draft!.id,
+        expectedDraftVersion: current.draft!.version,
+        expectedDraftSha256: current.draft!.draftSha256,
         idempotencyKey: `author-r4b-stage-${approved.approval.id}`,
       });
       expect(staged.replayed).toBe(false);
@@ -163,15 +202,17 @@ describe("IPE-070R4B author edit QC approve stage", () => {
       const stagedAgain = await stageAuthorEditorialDraft({
         ...scope,
         approvalId: approved.approval.id,
-        expectedDraftId: ready.draft!.id,
-        expectedDraftVersion: ready.draft!.version,
-        expectedDraftSha256: ready.draft!.draftSha256,
+        expectedDraftId: current.draft!.id,
+        expectedDraftVersion: current.draft!.version,
+        expectedDraftSha256: current.draft!.draftSha256,
         idempotencyKey: `author-r4b-stage-${approved.approval.id}`,
       });
       expect(stagedAgain.replayed).toBe(true);
       const stagedSurface = await getAuthorEditorialSurface(scope);
       expect(stagedSurface.approval.stageReady).toBe(true);
       expect(stagedSurface.approval.stageActionReady).toBe(true);
+      expect(stagedSurface.boardProjection.deferred).toBe(false);
+      expect(stagedSurface.boardProjection.reason).toBe("LATER_BOARD_OWNS_COLUMN");
       const staleTab = stagedSurface.tabs[0]!;
       const staleBaseline = staleTab.paragraphs.map(paragraph => paragraph.text).join("\n\n");
       await editAuthorEditorialDraft({
@@ -184,7 +225,7 @@ describe("IPE-070R4B author edit QC approve stage", () => {
           sourceTabId: staleTab.sourceTabId,
           expectedTabStructuralSha256: staleTab.structuralSha256,
           expectedText: staleBaseline,
-          replacementText: staleBaseline.replace("เนื้อหาที่ผู้เขียนแก้", "เนื้อหาหลังอนุมัติ"),
+          replacementText: staleBaseline.replace("เนื้อหาก่อนตรวจใหม่", "เนื้อหาหลังอนุมัติ"),
           replacementParagraphKeys: staleTab.paragraphs.map(paragraph => paragraph.paragraphKey),
         },
         idempotencyKey: `author-r4b-stale-${stagedSurface.draft!.id}`,

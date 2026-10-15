@@ -86,6 +86,15 @@ export async function assertAuthorEditorialWrite(
   options: AuthorGrantLock = { lock: false },
 ) {
   if (options.lock) {
+    // Work item, then user, then the grant join. Every Author write, including
+    // the QC board projection, uses this order. A projection that locked the
+    // user first deadlocked with a write that already held the work item.
+    await db
+      .select({ id: workspaceEditorialWorkItems.id })
+      .from(workspaceEditorialWorkItems)
+      .where(eq(workspaceEditorialWorkItems.id, scope.workItemId))
+      .for("update")
+      .limit(1);
     const actor = await lockUserRowForUpdate(scope.actorUserId, db);
     if (!actor || actor.role !== "author") throw notFound();
   }

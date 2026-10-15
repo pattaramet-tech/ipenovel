@@ -9,9 +9,12 @@ import {
 } from "./workspaceChapterCanvas";
 import {
   AuthorStageButton,
+  authorAnchorNeedsDiscardConfirm,
   authorCanvasLoadDecision,
   authorMutationNotice,
+  authorQcInteraction,
   confirmDiscardUnsavedEdits,
+  createAuthorNavigationGuard,
 } from "./authorEditorGuards";
 
 function paragraphs(): ChapterCanvasParagraph[] {
@@ -108,6 +111,236 @@ describe("author canvas load after a save attempt", () => {
   });
 });
 
+describe("author unsaved navigation guard", () => {
+  function harness() {
+    const entries: Array<{ state: unknown; url: string }> = [
+      { state: null, url: "http://localhost/home" },
+      { state: null, url: "http://localhost/workspace" },
+    ];
+    let index = entries.length - 1;
+    const listeners = new Map<string, Array<(event: any) => void>>();
+    const documentListeners = new Map<string, Array<(event: any) => void>>();
+    const location = { href: entries[index].url };
+    const firePop = () => {
+      for (const listener of [...(listeners.get("popstate") ?? [])]) {
+        listener({ state: entries[index]?.state ?? null });
+      }
+    };
+    const history = {
+      get state() {
+        return entries[index]?.state ?? null;
+      },
+      pushState(state: unknown, _title: string, url?: string | null) {
+        entries.splice(index + 1);
+        entries.push({ state, url: url || location.href });
+        index += 1;
+        location.href = entries[index].url;
+      },
+      back() {
+        if (index === 0) return;
+        index -= 1;
+        location.href = entries[index].url;
+        firePop();
+      },
+      forward() {
+        if (index >= entries.length - 1) return;
+        index += 1;
+        location.href = entries[index].url;
+        firePop();
+      },
+    };
+    let dirty = false;
+    let confirmed = false;
+    const guard = createAuthorNavigationGuard({
+      isDirty: () => dirty,
+      confirmDiscard: () => confirmed,
+      windowTarget: {
+        location,
+        history,
+        addEventListener: (type, listener) => {
+          listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+        },
+        removeEventListener: (type, listener) => {
+          listeners.set(type, (listeners.get(type) ?? []).filter(item => item !== listener));
+        },
+      },
+      documentTarget: {
+        addEventListener: (type, listener) => {
+          documentListeners.set(type, [...(documentListeners.get(type) ?? []), listener]);
+        },
+        removeEventListener: (type, listener) => {
+          documentListeners.set(type, (documentListeners.get(type) ?? []).filter(item => item !== listener));
+        },
+      },
+    });
+    const followLink = (href: string) => {
+      const click = {
+        defaultPrevented: false,
+        button: 0,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+        prevented: false,
+        target: {
+          closest: () => ({
+            href,
+            target: "",
+            hasAttribute: () => false,
+          }),
+        },
+        preventDefault() { click.prevented = true; },
+        stopImmediatePropagation() { click.prevented = true; },
+      };
+      documentListeners.get("click")?.[0](click);
+      if (!click.prevented) history.pushState(null, "", href);
+      return click.prevented;
+    };
+    return {
+      guard,
+      listeners,
+      documentListeners,
+      history,
+      followLink,
+      url: () => location.href,
+      index: () => index,
+      setDirty: (value: boolean) => { dirty = value; },
+      setConfirmed: (value: boolean) => { confirmed = value; },
+    };
+  }
+
+  it("asks before leaving through an internal link and stays silent for a clean editor", () => {
+    expect(authorAnchorNeedsDiscardConfirm({
+      dirty: true,
+      currentHref: "http://localhost/workspace",
+      anchorHref: "http://localhost/admin/novels",
+      anchorTarget: "",
+      download: false,
+    })).toBe(true);
+    expect(authorAnchorNeedsDiscardConfirm({
+      dirty: false,
+      currentHref: "http://localhost/workspace",
+      anchorHref: "http://localhost/admin/novels",
+      anchorTarget: "",
+      download: false,
+    })).toBe(false);
+  });
+
+  it("blocks refresh while dirty and leaves the route in place", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    const event = { preventDefault: () => { event.blocked = true; }, returnValue: "x", blocked: false };
+    page.listeners.get("beforeunload")?.[0](event);
+    expect(event.blocked).toBe(true);
+    expect(event.returnValue).toBe("");
+    expect(page.url()).toBe("http://localhost/workspace");
+  });
+
+  it("removes the listeners on route unmount without moving history", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    const index = page.index();
+    page.guard.release();
+    expect(page.url()).toBe("http://localhost/workspace");
+    expect(page.index()).toBe(index);
+    expect(page.listeners.get("beforeunload")).toEqual([]);
+    expect(page.listeners.get("popstate")).toEqual([]);
+    expect(page.documentListeners.get("click")).toEqual([]);
+  });
+
+  it("does not warn after the editor is clean", () => {
+    const page = harness();
+    const event = { preventDefault: () => { event.blocked = true; }, returnValue: "x", blocked: false };
+    page.listeners.get("beforeunload")?.[0](event);
+    expect(event.blocked).toBe(false);
+  });
+
+  it("leaves the author page when Back is confirmed and keeps the dirty editor when Back is cancelled", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    page.history.back();
+    expect(page.url()).toBe("http://localhost/workspace");
+    expect(page.index()).toBe(2);
+    page.setConfirmed(true);
+    page.history.back();
+    expect(page.url()).toBe("http://localhost/home");
+    expect(page.index()).toBe(0);
+  });
+
+  it("stays on the author page with the dirty editor when Back is cancelled", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    page.setConfirmed(false);
+    page.history.back();
+    expect(page.url()).toBe("http://localhost/workspace");
+    expect(page.index()).toBe(2);
+    page.history.forward();
+    expect(page.url()).toBe("http://localhost/workspace");
+    expect(page.index()).toBe(2);
+  });
+
+  it("removes only the unsaved sentinel on save, then Back leaves and Forward returns", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    expect(page.index()).toBe(2);
+    page.setDirty(false);
+    page.guard.sync(false);
+    expect(page.url()).toBe("http://localhost/workspace");
+    expect(page.index()).toBe(1);
+    page.history.forward();
+    expect(page.url()).toBe("http://localhost/workspace");
+    page.history.back();
+    expect(page.url()).toBe("http://localhost/workspace");
+    page.history.back();
+    expect(page.url()).toBe("http://localhost/home");
+  });
+
+  it("does not call back when a later unrelated history entry is current", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    page.history.pushState({ other: true }, "", "http://localhost/elsewhere");
+    page.setDirty(false);
+    page.guard.sync(false);
+    expect(page.url()).toBe("http://localhost/elsewhere");
+    expect(page.index()).toBe(3);
+  });
+
+  it("follows a confirmed internal link and blocks a cancelled one", () => {
+    const cancelled = harness();
+    cancelled.setDirty(true);
+    cancelled.guard.sync(true);
+    expect(cancelled.followLink("http://localhost/admin/novels")).toBe(true);
+    expect(cancelled.url()).toBe("http://localhost/workspace");
+
+    const confirmed = harness();
+    confirmed.setDirty(true);
+    confirmed.guard.sync(true);
+    confirmed.setConfirmed(true);
+    expect(confirmed.followLink("http://localhost/admin/novels")).toBe(false);
+    expect(confirmed.url()).toBe("http://localhost/admin/novels");
+    const index = confirmed.index();
+    confirmed.guard.release();
+    expect(confirmed.url()).toBe("http://localhost/admin/novels");
+    expect(confirmed.index()).toBe(index);
+  });
+
+  it("does not warn for a link click after a successful save", () => {
+    const page = harness();
+    page.setDirty(true);
+    page.guard.sync(true);
+    page.setDirty(false);
+    page.guard.sync(false);
+    expect(page.followLink("http://localhost/admin/novels")).toBe(false);
+    expect(page.url()).toBe("http://localhost/admin/novels");
+  });
+});
+
 describe("author unsaved edit navigation", () => {
   it("leaves a clean editor without asking", () => {
     let asked = false;
@@ -124,6 +357,47 @@ describe("author unsaved edit navigation", () => {
 
   it("leaves when the author confirms the discard", () => {
     expect(confirmDiscardUnsavedEdits(true, () => true)).toBe(true);
+  });
+});
+
+describe("author QC while the canvas is dirty", () => {
+  it("hides findings and disables resolution while the local canvas is dirty", () => {
+    expect(authorQcInteraction({
+      dirty: true,
+      isCurrent: true,
+      canResolveFindings: true,
+    })).toEqual({
+      showFindings: false,
+      canMarkFixed: false,
+      canConfirmSourceNote: false,
+      status: "Save the draft before resolving QC findings.",
+    });
+  });
+
+  it("restores current-run findings only after the canvas is clean and the run is current", () => {
+    expect(authorQcInteraction({
+      dirty: false,
+      isCurrent: true,
+      canResolveFindings: true,
+    })).toEqual({
+      showFindings: true,
+      canMarkFixed: true,
+      canConfirmSourceNote: true,
+      status: null,
+    });
+  });
+
+  it("keeps stale server findings hidden after the canvas is saved", () => {
+    expect(authorQcInteraction({
+      dirty: false,
+      isCurrent: false,
+      canResolveFindings: false,
+    })).toEqual({
+      showFindings: false,
+      canMarkFixed: false,
+      canConfirmSourceNote: false,
+      status: null,
+    });
   });
 });
 

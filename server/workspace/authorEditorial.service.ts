@@ -20,6 +20,7 @@ import {
 } from "./editorialEditor.service";
 import {
   getEditorialForeignCheckerReadModel,
+  reconcileEditorialCheckerBoard,
   runEditorialForeignChecker,
   setEditorialFindingDisposition,
   setEditorialStructuralConfirmation,
@@ -84,6 +85,27 @@ export function authorStageAction(input: {
       input.existingStageReason,
       "The existing Stage does not match this draft.",
     ),
+  };
+}
+
+const CURRENT_CHECKER_STATES = new Set(["CURRENT_READY", "CURRENT_HAS_FINDINGS"]);
+
+/** Findings are visible only for the checker run that matches the current draft. */
+export function authorCheckerEvidence<T>(input: {
+  isCurrent: boolean;
+  state: string | null;
+  findings: T[];
+}) {
+  const current = input.isCurrent && CURRENT_CHECKER_STATES.has(input.state ?? "");
+  return {
+    isCurrent: current,
+    canResolveFindings: current,
+    recheckMessage: current
+      ? null
+      : input.state === "NOT_RUN" || input.state == null
+        ? "Run QC before resolving findings."
+        : "QC is out of date for this draft. Run QC again before resolving findings.",
+    findings: current ? input.findings : [],
   };
 }
 
@@ -169,6 +191,53 @@ export async function getAuthorEditorialSurface(scope: AuthorEditorialScope) {
   const editor = await getEditorialEditorReadModel({ ...scope, authorGrant: true });
   const checker = await getEditorialForeignCheckerReadModel({ ...scope, authorGrant: true });
   const approval = await getEditorialApprovalReadModel({ ...scope, authorGrant: true });
+  const projectedFindings = (checker.findings ?? []).map((finding: any) => projectAuthorCheckerFinding({
+    id: finding.id,
+    token: finding.token ?? null,
+    disposition: finding.disposition,
+    resolutionVersion: finding.resolutionVersion,
+    sourceTabId: finding.sourceTabId ?? null,
+    paragraphKey: finding.paragraphKey ?? null,
+    startOffset: finding.startOffset ?? null,
+    endOffset: finding.endOffset ?? null,
+  }));
+  const checkerEvidence = authorCheckerEvidence({
+    isCurrent: Boolean(checker.isCurrent),
+    state: checker.state ?? null,
+    findings: projectedFindings,
+  });
+  const boardProjection = checkerEvidence.isCurrent && checker.run?.id && checker.latestDraft?.id
+    ? await reconcileEditorialCheckerBoard({
+      actorUserId: scope.actorUserId,
+      workspaceId: scope.workspaceId,
+      workItemId: scope.workItemId,
+      authorGrant: true,
+      draftId: Number(checker.latestDraft.id),
+      runId: Number(checker.run.id),
+      blockingIssueCount: Number(checker.blockingIssueCount ?? 0),
+    }).catch((error: unknown) => {
+      if (error instanceof TRPCError) throw error;
+      return {
+        status: "rejected" as const,
+        applied: false,
+        changed: false,
+        deferred: false,
+        replayed: false,
+        reason: "BOARD_PROJECTION_REJECTED",
+        columnId: null,
+        targetColumnKey: null,
+      };
+    })
+    : {
+      status: "skipped" as const,
+      applied: false,
+      changed: false,
+      deferred: false,
+      replayed: false,
+      reason: null,
+      columnId: null,
+      targetColumnKey: null,
+    };
   const stageAction = authorStageAction({
     approvalValid: Boolean(approval.approvalStatus?.valid),
     approvalReason: approval.approvalStatus?.reason ?? null,
@@ -184,17 +253,11 @@ export async function getAuthorEditorialSurface(scope: AuthorEditorialScope) {
     tabs: owned.tabs,
     checker: {
       state: checker.state,
-      unresolvedCount: checker.unresolvedCount,
-      findings: (checker.findings ?? []).map((finding: any) => projectAuthorCheckerFinding({
-        id: finding.id,
-        token: finding.token ?? null,
-        disposition: finding.disposition,
-        resolutionVersion: finding.resolutionVersion,
-        sourceTabId: finding.sourceTabId ?? null,
-        paragraphKey: finding.paragraphKey ?? null,
-        startOffset: finding.startOffset ?? null,
-        endOffset: finding.endOffset ?? null,
-      })),
+      isCurrent: checkerEvidence.isCurrent,
+      canResolveFindings: checkerEvidence.canResolveFindings,
+      recheckMessage: checkerEvidence.recheckMessage,
+      unresolvedCount: checkerEvidence.isCurrent ? checker.unresolvedCount : null,
+      findings: checkerEvidence.findings,
       anomalies: (checker.anomalies ?? []).map((anomaly: any) => ({
         id: anomaly.id,
         anomalyType: anomaly.anomalyType,
@@ -214,6 +277,7 @@ export async function getAuthorEditorialSurface(scope: AuthorEditorialScope) {
       stageActionReason: stageAction.reason,
     },
     publishAvailable: false as const,
+    boardProjection,
   };
 }
 

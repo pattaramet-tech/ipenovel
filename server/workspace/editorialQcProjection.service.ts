@@ -66,6 +66,16 @@ export async function projectEditorialQcColumn(
     .limit(1);
   if (!target) return { changed: false, reason: "COLUMN_NOT_FOUND" as const };
 
+  const [currentColumn] = await tx
+    .select({ key: workspaceKanbanColumns.key })
+    .from(workspaceKanbanColumns)
+    .where(eq(workspaceKanbanColumns.id, row.card.columnId))
+    .limit(1);
+  const qcTarget = input.targetColumnKey === "needs_fix" || input.targetColumnKey === "pending_confirm";
+  if (qcTarget && editorialBoardReconcileDecision(currentColumn?.key) === "leave-later-column") {
+    return { changed: false, reason: "LATER_BOARD_OWNS_COLUMN" as const };
+  }
+
   const [replay] = await tx
     .select()
     .from(workspaceKanbanTransitions)
@@ -118,4 +128,33 @@ export async function projectEditorialQcColumn(
   });
 
   return { changed: true, replayed: false, columnId: target.id };
+}
+
+/** Same column and idempotency key for a checker run and a later board reconciliation. */
+export function editorialCheckerBoardProjectionInput(input: {
+  workItemId: number;
+  draftId: number;
+  runId: number;
+  blockingIssueCount: number;
+  actorUserId: number;
+}) {
+  const targetColumnKey: EditorialQcColumnKey =
+    input.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
+  return {
+    workItemId: input.workItemId,
+    expectedDraftId: input.draftId,
+    targetColumnKey,
+    actorUserId: input.actorUserId,
+    reason:
+      targetColumnKey === "needs_fix"
+        ? "editorial_checker_issues_open"
+        : "editorial_checker_clean",
+    idempotencyKey: `editorial-qc-${input.runId}-${targetColumnKey}`,
+  };
+}
+
+/** Stage and publish own the card after they commit. A deferred QC retry must not pull it back. */
+export function editorialBoardReconcileDecision(columnKey: string | null | undefined) {
+  if (columnKey === "ready_to_publish" || columnKey === "published") return "leave-later-column" as const;
+  return "project" as const;
 }

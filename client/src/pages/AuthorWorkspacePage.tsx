@@ -9,7 +9,9 @@ import {
   AuthorStageButton,
   authorCanvasLoadDecision,
   authorMutationNotice,
+  authorQcInteraction,
   confirmDiscardUnsavedEdits,
+  createAuthorNavigationGuard,
 } from "./authorEditorGuards";
 import {
   applyChapterCanvasChange,
@@ -46,8 +48,24 @@ export default function AuthorWorkspacePage() {
   const ownedNovels = novels.data?.pages.flatMap(page => page.items) ?? [];
   const ownedItems = workItems.data?.pages.flatMap(page => page.items) ?? [];
   const editorDirtyRef = useRef(false);
+  const navigationGuard = useRef<ReturnType<typeof createAuthorNavigationGuard> | null>(null);
   const onEditorDirty = useCallback((dirty: boolean) => {
     editorDirtyRef.current = dirty;
+    navigationGuard.current?.sync(dirty);
+  }, []);
+  useEffect(() => {
+    const guard = createAuthorNavigationGuard({
+      isDirty: () => editorDirtyRef.current,
+      confirmDiscard: () => window.confirm("Discard unsaved chapter edits?"),
+      windowTarget: window,
+      documentTarget: document,
+    });
+    navigationGuard.current = guard;
+    guard.sync(editorDirtyRef.current);
+    return () => {
+      guard.release();
+      navigationGuard.current = null;
+    };
   }, []);
   const discardUnsavedEdits = () => confirmDiscardUnsavedEdits(
     editorDirtyRef.current,
@@ -265,6 +283,11 @@ function AuthorDraftEditor({
     }
   }
   const dirty = serializeChapterCanvasText(paragraphs) !== baselineText;
+  const qc = authorQcInteraction({
+    dirty,
+    isCurrent: Boolean(data?.checker.isCurrent),
+    canResolveFindings: Boolean(data?.checker.canResolveFindings),
+  });
   onDirtyChange(dirty);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   const busy = edit.isPending || undo.isPending || runChecker.isPending || resolveFinding.isPending || confirmAnomaly.isPending || approve.isPending || stage.isPending;
@@ -316,7 +339,9 @@ function AuthorDraftEditor({
           </div>
           <ChapterEditorCanvas
             value={text}
-            flatFindings={authorCanvasFindings(paragraphs, data.checker.findings, tab.sourceTabId)}
+            flatFindings={qc.showFindings
+              ? authorCanvasFindings(paragraphs, data.checker.findings, tab.sourceTabId)
+              : []}
             highlight
             disabled={busy}
             textareaRef={textareaRef}
@@ -389,13 +414,15 @@ function AuthorDraftEditor({
             />
           </div>
           {dirty && <p role="status">Save the draft before QC, approval, or stage.</p>}
-          {data.approval.qcReason && !data.approval.qcReady && <p role="status">{data.approval.qcReason}</p>}
+          {qc.status && <p role="status">{qc.status}</p>}
+          {data.checker.recheckMessage && <p role="status">{data.checker.recheckMessage}</p>}
+          {data.approval.qcReason && !data.approval.qcReady && data.checker.isCurrent && <p role="status">{data.approval.qcReason}</p>}
           {data.approval.stageActionReason && !data.approval.stageActionReady && <p role="status">{data.approval.stageActionReason}</p>}
           <ul className="space-y-2">
             {data.checker.findings.filter(finding => finding.disposition === "open").map(finding => (
               <li key={finding.id} className="flex items-center justify-between gap-3 text-sm">
                 <span>{finding.token}</span>
-                <Button size="sm" variant="outline" disabled={resolveFinding.isPending} onClick={() => {
+                <Button size="sm" variant="outline" disabled={!qc.canMarkFixed || resolveFinding.isPending} onClick={() => {
                   begin();
                   resolveFinding.mutate({
                     workspaceId,
@@ -411,7 +438,7 @@ function AuthorDraftEditor({
             {data.checker.anomalies.filter(anomaly => anomaly.anomalyType === "source_note_only" && anomaly.disposition !== "confirmed_source_note").map(anomaly => (
               <li key={anomaly.id} className="flex items-center justify-between gap-3 text-sm">
                 <span>Source note</span>
-                <Button size="sm" variant="outline" disabled={confirmAnomaly.isPending} onClick={() => {
+                <Button size="sm" variant="outline" disabled={!qc.canConfirmSourceNote || confirmAnomaly.isPending} onClick={() => {
                   begin();
                   confirmAnomaly.mutate({
                     workspaceId,

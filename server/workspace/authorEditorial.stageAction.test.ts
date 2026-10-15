@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyzeEditorialEpisodeDraftBatch } from "./editorialApproval.domain";
-import { authorStageAction, projectAuthorCheckerFinding } from "./authorEditorial.service";
+import { authorCheckerEvidence, authorStageAction, projectAuthorCheckerFinding } from "./authorEditorial.service";
 
 const readyPlan = {
   approvalValid: true,
@@ -67,6 +67,50 @@ describe("author Stage action readiness", () => {
     });
     expect(result.ready).toBe(false);
     expect(result.reason).toContain("no longer matches");
+  });
+});
+
+describe("author checker evidence", () => {
+  const finding = projectAuthorCheckerFinding({
+    id: 4,
+    token: "คำต่าง",
+    disposition: "open",
+    resolutionVersion: 1,
+    sourceTabId: "tab-1",
+    paragraphKey: "p-2",
+    startOffset: 0,
+    endOffset: 6,
+  });
+
+  it("keeps findings from the current run", () => {
+    const evidence = authorCheckerEvidence({
+      isCurrent: true,
+      state: "CURRENT_HAS_FINDINGS",
+      findings: [finding],
+    });
+    expect(evidence.isCurrent).toBe(true);
+    expect(evidence.canResolveFindings).toBe(true);
+    expect(evidence.findings).toEqual([finding]);
+    expect(evidence.recheckMessage).toBeNull();
+  });
+
+  it("hides findings after the draft changes and asks for a new QC run", () => {
+    const evidence = authorCheckerEvidence({
+      isCurrent: false,
+      state: "STALE",
+      findings: [finding],
+    });
+    expect(evidence.canResolveFindings).toBe(false);
+    expect(evidence.findings).toEqual([]);
+    expect(evidence.recheckMessage).toContain("Run QC again");
+  });
+
+  it("asks for the first QC run when none exists", () => {
+    expect(authorCheckerEvidence({
+      isCurrent: false,
+      state: "NOT_RUN",
+      findings: [finding],
+    }).recheckMessage).toContain("Run QC before");
   });
 });
 

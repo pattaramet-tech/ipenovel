@@ -24,7 +24,14 @@ import {
   type EditorialAccessPolicy,
 } from "./editorialAccess.service";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
-import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import {
+  editorialCheckerBoardProjectionInput,
+  projectEditorialQcColumn,
+} from "./editorialQcProjection.service";
+import {
+  editorialBoardProjectionResult,
+  settleIdempotentWorkspaceTransaction,
+} from "./transactionRetry";
 import {
   evaluateEditorialStructuralAnomalies,
   type EditorialStructuralTabInput,
@@ -728,6 +735,85 @@ export async function getEditorialForeignCheckerReadModel(input: {
   };
 }
 
+async function projectCommittedCheckerColumn<T>(
+  db: { transaction<R>(operation: (tx: any) => Promise<R>): Promise<R> },
+  input: {
+    authorGrant?: boolean;
+    actorUserId: number;
+    workspaceId: number;
+    workItemId: number;
+    accessPolicy?: EditorialAccessPolicy;
+  },
+  project: (tx: any) => Promise<T>,
+) {
+  return settleIdempotentWorkspaceTransaction(db, async (tx) => {
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        input.accessPolicy ?? "workspace_route",
+        { lock: true },
+      );
+    }
+    return project(tx);
+  });
+}
+
+function finishBoardProjection(
+  raw: unknown,
+  targetColumnKey: "editing" | "needs_fix" | "pending_confirm" | "ready_to_publish" | "published",
+) {
+  const result = editorialBoardProjectionResult(raw);
+  const row = raw && typeof raw === "object"
+    ? raw as { reason?: unknown; columnId?: unknown }
+    : {};
+  return {
+    status: result.status,
+    applied: result.applied,
+    changed: result.status === "updated",
+    deferred: result.status === "deferred",
+    replayed: result.status === "replayed",
+    reason: result.status === "deferred"
+      ? "BOARD_PROJECTION_DEFERRED" as const
+      : typeof row.reason === "string" ? row.reason : null,
+    columnId: result.applied && typeof row.columnId === "number" ? row.columnId : null,
+    targetColumnKey,
+  };
+}
+
+/**
+ * Re-applies the committed checker column with the same idempotency key.
+ * A deferred result is not a successful board update. The next call moves
+ * the card, or reports that it already matches.
+ */
+export async function reconcileEditorialCheckerBoard(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+  authorGrant?: boolean;
+  accessPolicy?: EditorialAccessPolicy;
+  draftId: number;
+  runId: number;
+  blockingIssueCount: number;
+}) {
+  const db = await database();
+  const projection = editorialCheckerBoardProjectionInput({
+    workItemId: input.workItemId,
+    draftId: input.draftId,
+    runId: input.runId,
+    blockingIssueCount: input.blockingIssueCount,
+    actorUserId: input.actorUserId,
+  });
+  const raw = await projectCommittedCheckerColumn(
+    db,
+    input,
+    (tx) => projectEditorialQcColumn(tx, projection),
+  );
+  return finishBoardProjection(raw, projection.targetColumnKey);
+}
+
 export async function runEditorialForeignChecker(input: {
   actorUserId: number;
   workspaceId: number;
@@ -897,31 +983,21 @@ export async function runEditorialForeignChecker(input: {
     // non-admin plugin actor never trips the workspace_route admin gate
     accessPolicy: input.accessPolicy === "plugin_checker_run" ? "plugin_read" : input.accessPolicy ?? "workspace_route",
   });
-  const targetColumnKey =
-    readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
-  const kanbanProjection = await db.transaction(async (tx: any) => {
-    if (input.authorGrant) {
-      await requireWorkItem(
-        tx,
-        input.actorUserId,
-        input.workspaceId,
-        input.workItemId,
-        input.accessPolicy ?? "workspace_route",
-        { lock: true },
-      );
-    }
-    return projectEditorialQcColumn(tx, {
-      workItemId: input.workItemId,
-      expectedDraftId: result.draftId,
-      targetColumnKey,
-      actorUserId: input.actorUserId,
-      reason:
-        targetColumnKey === "needs_fix"
-          ? "editorial_checker_issues_open"
-          : "editorial_checker_clean",
-      idempotencyKey: `editorial-qc-${result.runId}-${targetColumnKey}`,
-    });
+  const projection = editorialCheckerBoardProjectionInput({
+    workItemId: input.workItemId,
+    draftId: result.draftId,
+    runId: result.runId,
+    blockingIssueCount: readModel.blockingIssueCount,
+    actorUserId: input.actorUserId,
   });
+  const kanbanProjection = finishBoardProjection(
+    await projectCommittedCheckerColumn(
+      db,
+      input,
+      (tx) => projectEditorialQcColumn(tx, projection),
+    ),
+    projection.targetColumnKey,
+  );
 
   return {
     created: result.created,
@@ -1125,30 +1201,25 @@ export async function setEditorialStructuralConfirmation(input: {
     authorGrant: input.authorGrant,
   });
   const targetColumnKey =
-    readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
-  const kanbanProjection = await db.transaction(async (tx: any) => {
-    if (input.authorGrant) {
-      await requireWorkItem(
-        tx,
-        input.actorUserId,
-        input.workspaceId,
-        input.workItemId,
-        "workspace_route",
-        { lock: true },
-      );
-    }
-    return projectEditorialQcColumn(tx, {
-      workItemId: input.workItemId,
-      expectedDraftId: result.draftId,
-      targetColumnKey,
-      actorUserId: input.actorUserId,
-      reason:
-        targetColumnKey === "needs_fix"
-          ? "editorial_structural_issues_open"
-          : "editorial_structural_confirmed",
-      idempotencyKey: `editorial-structural-confirm-${input.anomalyId}-${input.expectedVersion}-${input.confirmed ? "confirmed" : "revoked"}`,
-    });
-  });
+    readModel.blockingIssueCount > 0 ? "needs_fix" as const : "pending_confirm" as const;
+  const kanbanProjection = finishBoardProjection(
+    await projectCommittedCheckerColumn(
+      db,
+      input,
+      (tx) => projectEditorialQcColumn(tx, {
+        workItemId: input.workItemId,
+        expectedDraftId: result.draftId,
+        targetColumnKey,
+        actorUserId: input.actorUserId,
+        reason:
+          targetColumnKey === "needs_fix"
+            ? "editorial_structural_issues_open"
+            : "editorial_structural_confirmed",
+        idempotencyKey: `editorial-structural-confirm-${input.anomalyId}-${input.expectedVersion}-${input.confirmed ? "confirmed" : "revoked"}`,
+      }),
+    ),
+    targetColumnKey,
+  );
   return { ...readModel, kanbanProjection };
 }
 

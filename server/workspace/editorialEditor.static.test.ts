@@ -63,12 +63,34 @@ describe("Workspace Editorial editor static boundaries", () => {
     );
     expect(editor).toContain('targetColumnKey: "editing"');
     expect(editor).toContain("expectedDraftId: persisted.draftId");
-    expect(checker).toContain(
-      'readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm"'
-    );
+    expect(checker).toContain("editorialCheckerBoardProjectionInput");
+    expect(checker).toContain("draftId: result.draftId");
+    expect(checker).toContain("blockingIssueCount: readModel.blockingIssueCount");
+    expect(checker).toContain("projectEditorialQcColumn(tx, projection)");
     expect(checker).toContain("expectedDraftId: result.draftId");
+    const helper = projection.slice(
+      projection.indexOf("export function editorialCheckerBoardProjectionInput"),
+      projection.indexOf("export function editorialBoardReconcileDecision"),
+    );
+    expect(helper).toContain(
+      'input.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm"'
+    );
+    expect(helper).toContain("expectedDraftId: input.draftId");
     expect(projection).toContain("latestDraft.id !== input.expectedDraftId");
     expect(projection).toContain('"STALE_DRAFT"');
+    const projectColumn = projection.slice(
+      projection.indexOf("export async function projectEditorialQcColumn"),
+      projection.indexOf("export function editorialCheckerBoardProjectionInput"),
+    );
+    const leaveLater = projectColumn.indexOf('"LATER_BOARD_OWNS_COLUMN"');
+    const cardUpdate = projectColumn.indexOf("update(workspaceKanbanCards)");
+    expect(leaveLater).toBeGreaterThan(-1);
+    expect(cardUpdate).toBeGreaterThan(leaveLater);
+    expect(projectColumn).toContain('input.targetColumnKey === "needs_fix"');
+    expect(projectColumn).toContain('input.targetColumnKey === "pending_confirm"');
+    expect(projectColumn).toContain("editorialBoardReconcileDecision(currentColumn?.key)");
+    expect(projection).toContain('columnKey === "ready_to_publish"');
+    expect(projection).toContain('columnKey === "published"');
   });
 
   it("requires finding id/key as one guarded pair and prevents undo from toggling an undo Draft", () => {
