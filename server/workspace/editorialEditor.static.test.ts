@@ -115,6 +115,38 @@ describe("Workspace Editorial editor static boundaries", () => {
     expect(editor).toContain('targetColumnKey: "editing"');
   });
 
+  it("rejects author approve and stage of a published episode before any write", () => {
+    const approval = source("server/workspace/editorialApproval.service.ts");
+    const approve = approval.slice(
+      approval.indexOf("export async function approveEditorialDraft"),
+      approval.indexOf("export async function stageEditorialEpisodeDraft"),
+    );
+    const stage = approval.slice(approval.indexOf("export async function stageEditorialEpisodeDraft"));
+    const approveGuard = approve.indexOf("assertAuthorEpisodeNotPublished");
+    expect(approveGuard).toBeGreaterThan(-1);
+    expect(approveGuard).toBeLessThan(approve.indexOf("const [replay]"));
+    expect(approveGuard).toBeLessThan(approve.indexOf(".insert(workspaceEditorialDraftApprovals)"));
+    const stageGuard = stage.indexOf("assertAuthorEpisodeNotPublished");
+    expect(stageGuard).toBeGreaterThan(-1);
+    for (const write of [
+      ".update(workspaceEditorialWorkItems)",
+      "const [existingStage]",
+      ".insert(episodes)",
+      ".update(episodes)",
+      ".insert(workspaceEditorialEpisodeStages)",
+      "projectEditorialQcColumn(tx",
+    ]) {
+      expect(stage.indexOf(write)).toBeGreaterThan(stageGuard);
+    }
+    const guard = approval.slice(approval.indexOf("async function authorPublishedEpisodeBlock"));
+    expect(guard).toContain("authorPublishedCardBlock(db, input.workItemId, { lock: input.lock })");
+    expect(guard).toContain("lockEpisodeByCanonicalIdentity(db, input.novelId, episodeNumber)");
+    const projection = source("server/workspace/editorialQcProjection.service.ts");
+    const cardBlock = projection.slice(projection.indexOf("export async function authorPublishedCardBlock"));
+    expect(cardBlock).toContain('query.for("update")');
+    expect(cardBlock).toContain('row?.key === "published"');
+  });
+
   it("requires finding id/key as one guarded pair and prevents undo from toggling an undo Draft", () => {
     const editor = source("server/workspace/editorialEditor.service.ts");
     expect(editor).toContain(

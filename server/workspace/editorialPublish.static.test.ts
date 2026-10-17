@@ -56,6 +56,68 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
     expect(second).toBeGreaterThan(hook);
   });
 
+  it("binds the worker preflight to the Admin-requested execution, not the Stage creator", () => {
+    const service = source("server/workspace/editorialPublish.service.ts");
+    const preflight = service.slice(service.indexOf("export async function assertEditorialPublishRequestCurrent"));
+    expect(preflight).not.toContain("actorUserId: stage.stagedByUserId");
+    expect(preflight).not.toContain("getEditorialApprovalReadModel(");
+    const binding = preflight.indexOf("requireAdminRequestedPublishExecution(db, request");
+    const provenance = preflight.indexOf("requireCurrentStageProvenance(db, request.workspaceId, stage)");
+    const read = preflight.indexOf("readEditorialApprovalEvidenceForAuthorizedPublish(");
+    expect(binding).toBeGreaterThan(-1);
+    expect(provenance).toBeGreaterThan(binding);
+    expect(read).toBeGreaterThan(provenance);
+    expect(preflight).toContain("stagedEpisodeUnchanged(db, stage)");
+    const authorization = service.slice(service.indexOf("async function requireAdminRequestedPublishExecution"));
+    expect(authorization).toContain("buildPublishOutboxIdempotencyKey(authorized.run.id, authorized.run.idempotencyKey)");
+    expect(authorization).toContain('authorized.outbox.status !== "claimed"');
+    expect(authorization).toContain("authorized.outbox.ownershipEpoch !== authorized.ownership.cutoverEpoch");
+    const execution = source("server/workspace/publishExecution.service.ts");
+    const request = execution.slice(execution.indexOf("export async function requestPublishExecution"));
+    expect(request.indexOf("requireWorkspacePlatformAdmin(db, input.actorUserId)"))
+      .toBeLessThan(request.indexOf("tx.insert(workspaceOutbox)"));
+  });
+
+  it("checks every editorial Stage against the locked Episode row before hygiene or any publish write", () => {
+    const provider = source("server/workspace/ipenovelPublish.provider.ts");
+    const execute = provider.slice(provider.indexOf("async execute(request)"));
+    const lock = execute.indexOf('.for("update")');
+    const receipt = execute.indexOf("parseReceiptMetadata(existing.metadataJson)");
+    const identity = execute.indexOf("if (editorialIdentity) {");
+    const missingStage = execute.indexOf("!stage ||");
+    const stateCheck = execute.indexOf("stagedEpisodeStateSha256(stage, episode) !== stage.episodeStateSha256");
+    const replacementCheck = execute.indexOf("targetStateSha256 !== stage.episodeStateSha256");
+    const hygiene = execute.indexOf("buildNqaPrePublishHygieneGate(");
+    const episodeWrite = execute.indexOf(".update(episodes)");
+    const novelWrite = execute.indexOf(".update(novels)", episodeWrite);
+    const receiptWrite = execute.indexOf(".insert(workspaceAuditEvents)");
+    expect(lock).toBeGreaterThan(-1);
+    expect(receipt).toBeGreaterThan(lock);
+    expect(identity).toBeGreaterThan(receipt);
+    expect(missingStage).toBeGreaterThan(identity);
+    expect(stateCheck).toBeGreaterThan(missingStage);
+    expect(replacementCheck).toBeGreaterThan(identity);
+    for (const write of [hygiene, episodeWrite, novelWrite, receiptWrite]) {
+      expect(write).toBeGreaterThan(stateCheck);
+      expect(write).toBeGreaterThan(replacementCheck);
+    }
+    expect(execute).not.toContain("editorialIdentity && editorialIdentity.episodeId === episode.id");
+  });
+
+  it("keeps the trusted approval evidence read out of routers and Author paths", () => {
+    const trusted = "readEditorialApprovalEvidenceForAuthorizedPublish";
+    for (const path of [
+      "server/workspace/router.ts",
+      "server/workspace/authorEditorial.router.ts",
+      "server/workspace/authorEditorial.service.ts",
+      "server/workspace/publishExecution.runtime.ts",
+      "server/routers.ts",
+    ]) {
+      expect(source(path), path).not.toContain(trusted);
+    }
+    expect(source("server/workspace/editorialPublish.service.ts")).toContain(trusted);
+  });
+
   it("exposes explicit admin-only Editorial publish controls without direct Control Center execution", () => {
     // IPE-064: Publish runs through the bulk action bar endpoint; the
     // per-pack requestPublish mutation moved off the workspace page.

@@ -186,3 +186,30 @@ export async function authorEditingProjectionBlock(tx: any, workItemId: number) 
   if (editorialBoardReconcileDecision(row?.key) === "leave-later-column") return row.key as string;
   return null;
 }
+
+/**
+ * Author Approve and Stage stay open in ready_to_publish so a Stage can replay,
+ * but close once Publish owns the card. With lock, call at the same point as
+ * authorEditingProjectionBlock: after the work-item, user, and grant locks.
+ */
+export async function authorPublishedCardBlock(
+  tx: any,
+  workItemId: number,
+  options: { lock: boolean },
+) {
+  const query = tx
+    .select({ key: workspaceKanbanColumns.key })
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(
+      workspaceKanbanCards,
+      eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id),
+    )
+    .innerJoin(
+      workspaceKanbanColumns,
+      eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id),
+    )
+    .where(eq(workspaceEditorialWorkItems.id, workItemId))
+    .limit(1);
+  const [row] = await (options.lock ? query.for("update") : query);
+  return row?.key === "published";
+}

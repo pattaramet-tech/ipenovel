@@ -379,7 +379,7 @@ function AuthorDraftEditor({
                 expectedDraftId: data.draft!.id,
               });
             }}>Run QC</Button>
-            <Button variant="outline" disabled={busy || dirty || !data.approval.qcReady || !data.approval.checkerRunId || !data.approval.qcEvidenceSha256}
+            <Button variant="outline" disabled={busy || dirty || !data.approval.approveActionReady || !data.approval.checkerRunId || !data.approval.qcEvidenceSha256}
               onClick={() => {
                 begin();
                 approve.mutate({
@@ -417,6 +417,7 @@ function AuthorDraftEditor({
           {qc.status && <p role="status">{qc.status}</p>}
           {data.checker.recheckMessage && <p role="status">{data.checker.recheckMessage}</p>}
           {data.approval.qcReason && !data.approval.qcReady && data.checker.isCurrent && <p role="status">{data.approval.qcReason}</p>}
+          {data.approval.approveActionReason && data.approval.approveActionReason !== data.approval.stageActionReason && <p role="status">{data.approval.approveActionReason}</p>}
           {data.approval.stageActionReason && !data.approval.stageActionReady && <p role="status">{data.approval.stageActionReason}</p>}
           <ul className="space-y-2">
             {data.checker.findings.filter(finding => finding.disposition === "open").map(finding => (

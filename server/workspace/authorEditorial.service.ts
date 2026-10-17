@@ -51,8 +51,18 @@ function stageBlockReason(code: string | null, fallback: string) {
   }
 }
 
+const AUTHOR_PUBLISHED_REASON =
+  "This episode is already published. Authors cannot approve or stage it again; an admin handles published revisions.";
+
+/** UI readiness only. approveEditorialDraft rejects the same cases under lock. */
+export function authorApproveAction(input: { qcReady: boolean; published: boolean }) {
+  if (input.published) return { ready: false, reason: AUTHOR_PUBLISHED_REASON };
+  return { ready: input.qcReady, reason: null };
+}
+
 /** Permission to run Stage. An existing valid Stage is not required. */
 export function authorStageAction(input: {
+  published: boolean;
   approvalValid: boolean;
   approvalReason: string | null;
   planReady: boolean;
@@ -61,6 +71,7 @@ export function authorStageAction(input: {
   existingStageValid: boolean;
   existingStageReason: string | null;
 }) {
+  if (input.published) return { ready: false, reason: AUTHOR_PUBLISHED_REASON };
   if (!input.approvalValid) {
     return {
       ready: false,
@@ -238,7 +249,10 @@ export async function getAuthorEditorialSurface(scope: AuthorEditorialScope) {
       columnId: null,
       targetColumnKey: null,
     };
+  const published = approval.authorPublishedBlock != null;
+  const approveAction = authorApproveAction({ qcReady: Boolean(approval.qc?.ready), published });
   const stageAction = authorStageAction({
+    published,
     approvalValid: Boolean(approval.approvalStatus?.valid),
     approvalReason: approval.approvalStatus?.reason ?? null,
     planReady: Boolean(approval.stagePlan?.ready),
@@ -273,6 +287,8 @@ export async function getAuthorEditorialSurface(scope: AuthorEditorialScope) {
       approvalId: approval.approval?.id ?? null,
       stageReady: Boolean(approval.stageStatus?.valid),
       stageReason: approval.stageStatus?.reason ?? null,
+      approveActionReady: approveAction.ready,
+      approveActionReason: approveAction.reason,
       stageActionReady: stageAction.ready,
       stageActionReason: stageAction.reason,
     },

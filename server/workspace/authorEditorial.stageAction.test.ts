@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { analyzeEditorialEpisodeDraftBatch } from "./editorialApproval.domain";
-import { authorCheckerEvidence, authorStageAction, projectAuthorCheckerFinding } from "./authorEditorial.service";
+import {
+  authorApproveAction,
+  authorCheckerEvidence,
+  authorStageAction,
+  projectAuthorCheckerFinding,
+} from "./authorEditorial.service";
 
 const readyPlan = {
+  published: false,
   approvalValid: true,
   approvalReason: null,
   planReady: true,
@@ -67,6 +73,31 @@ describe("author Stage action readiness", () => {
     });
     expect(result.ready).toBe(false);
     expect(result.reason).toContain("no longer matches");
+  });
+
+  it("blocks Stage on a published episode even when the existing Stage looks valid", () => {
+    const result = authorStageAction({
+      ...readyPlan,
+      published: true,
+      hasExistingStage: true,
+      existingStageValid: true,
+      existingStageReason: null,
+    });
+    expect(result.ready).toBe(false);
+    expect(result.reason).toContain("already published");
+  });
+});
+
+describe("author Approve action readiness", () => {
+  it("follows QC readiness before publication", () => {
+    expect(authorApproveAction({ qcReady: true, published: false })).toEqual({ ready: true, reason: null });
+    expect(authorApproveAction({ qcReady: false, published: false })).toEqual({ ready: false, reason: null });
+  });
+
+  it("blocks Approve on a published episode with a reason", () => {
+    const result = authorApproveAction({ qcReady: true, published: true });
+    expect(result.ready).toBe(false);
+    expect(result.reason).toContain("already published");
   });
 });
 
