@@ -17,13 +17,21 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { assertAuthorEditorialWrite, type AuthorGrantLock } from "./authorEditorialGrant";
 import {
   EditorialAccessError,
   resolveEditorialPluginAccess,
   type EditorialAccessPolicy,
 } from "./editorialAccess.service";
 import { EDITORIAL_BOARD_SLUG } from "./editorialBoard.domain";
-import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import {
+  editorialCheckerBoardProjectionInput,
+  projectEditorialQcColumn,
+} from "./editorialQcProjection.service";
+import {
+  editorialBoardProjectionResult,
+  settleIdempotentWorkspaceTransaction,
+} from "./transactionRetry";
 import {
   evaluateEditorialStructuralAnomalies,
   type EditorialStructuralTabInput,
@@ -92,7 +100,8 @@ async function requireWorkItem(
   actorUserId: number,
   workspaceId: number,
   workItemId: number,
-  accessPolicy: EditorialAccessPolicy = "workspace_route"
+  accessPolicy: EditorialAccessPolicy = "workspace_route",
+  authorGrant?: AuthorGrantLock,
 ) {
   // IPE-PLUGIN-001D-R2: the workspace_route policy preserves the historical
   // platform-admin gate bit-for-bit; plugin policies resolve the caller's
@@ -100,7 +109,15 @@ async function requireWorkItem(
   // workspaceMembers row) and enforce the policy grade. Fail-closed:
   // no workspace / no effective membership -> WORK_ITEM_NOT_FOUND (no
   // existence oracle); member below grade -> EDIT_FORBIDDEN (denied).
-  if (accessPolicy !== "workspace_route") {
+  // authorGrant is set only by the Author editorial router. It never replaces
+  // the admin default, and the locked form runs inside the write transaction.
+  if (authorGrant) {
+    await assertAuthorEditorialWrite(
+      db,
+      { actorUserId, workspaceId, workItemId },
+      authorGrant,
+    );
+  } else if (accessPolicy !== "workspace_route") {
     const decision = await resolveEditorialPluginAccess(db, {
       actorUserId,
       workspaceId,
@@ -527,6 +544,8 @@ export async function getEditorialForeignCheckerReadModel(input: {
   runId?: number;
   /** IPE-PLUGIN-001D-R2: set by server/plugin wiring only - never client input. */
   accessPolicy?: EditorialAccessPolicy;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
@@ -534,7 +553,8 @@ export async function getEditorialForeignCheckerReadModel(input: {
     input.actorUserId,
     input.workspaceId,
     input.workItemId,
-    input.accessPolicy ?? "workspace_route"
+    input.accessPolicy ?? "workspace_route",
+    input.authorGrant ? { lock: false } : undefined,
   );
   const draft = await latestDraft(db, input.workItemId);
   const allowWords = await loadAllowWords(db, input.workspaceId);
@@ -715,6 +735,85 @@ export async function getEditorialForeignCheckerReadModel(input: {
   };
 }
 
+async function projectCommittedCheckerColumn<T>(
+  db: { transaction<R>(operation: (tx: any) => Promise<R>): Promise<R> },
+  input: {
+    authorGrant?: boolean;
+    actorUserId: number;
+    workspaceId: number;
+    workItemId: number;
+    accessPolicy?: EditorialAccessPolicy;
+  },
+  project: (tx: any) => Promise<T>,
+) {
+  return settleIdempotentWorkspaceTransaction(db, async (tx) => {
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        input.accessPolicy ?? "workspace_route",
+        { lock: true },
+      );
+    }
+    return project(tx);
+  });
+}
+
+function finishBoardProjection(
+  raw: unknown,
+  targetColumnKey: "editing" | "needs_fix" | "pending_confirm" | "ready_to_publish" | "published",
+) {
+  const result = editorialBoardProjectionResult(raw);
+  const row = raw && typeof raw === "object"
+    ? raw as { reason?: unknown; columnId?: unknown }
+    : {};
+  return {
+    status: result.status,
+    applied: result.applied,
+    changed: result.status === "updated",
+    deferred: result.status === "deferred",
+    replayed: result.status === "replayed",
+    reason: result.status === "deferred"
+      ? "BOARD_PROJECTION_DEFERRED" as const
+      : typeof row.reason === "string" ? row.reason : null,
+    columnId: result.applied && typeof row.columnId === "number" ? row.columnId : null,
+    targetColumnKey,
+  };
+}
+
+/**
+ * Re-applies the committed checker column with the same idempotency key.
+ * A deferred result is not a successful board update. The next call moves
+ * the card, or reports that it already matches.
+ */
+export async function reconcileEditorialCheckerBoard(input: {
+  actorUserId: number;
+  workspaceId: number;
+  workItemId: number;
+  authorGrant?: boolean;
+  accessPolicy?: EditorialAccessPolicy;
+  draftId: number;
+  runId: number;
+  blockingIssueCount: number;
+}) {
+  const db = await database();
+  const projection = editorialCheckerBoardProjectionInput({
+    workItemId: input.workItemId,
+    draftId: input.draftId,
+    runId: input.runId,
+    blockingIssueCount: input.blockingIssueCount,
+    actorUserId: input.actorUserId,
+  });
+  const raw = await projectCommittedCheckerColumn(
+    db,
+    input,
+    (tx) => projectEditorialQcColumn(tx, projection),
+  );
+  return finishBoardProjection(raw, projection.targetColumnKey);
+}
+
 export async function runEditorialForeignChecker(input: {
   actorUserId: number;
   workspaceId: number;
@@ -722,6 +821,8 @@ export async function runEditorialForeignChecker(input: {
   expectedDraftId?: number;
   /** IPE-PLUGIN-001D-R2: set by server/plugin wiring only - never client input. */
   accessPolicy?: EditorialAccessPolicy;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
@@ -729,7 +830,8 @@ export async function runEditorialForeignChecker(input: {
     input.actorUserId,
     input.workspaceId,
     input.workItemId,
-    input.accessPolicy ?? "workspace_route"
+    input.accessPolicy ?? "workspace_route",
+    input.authorGrant ? { lock: false } : undefined,
   );
 
   const result = await db.transaction(async (tx: any) => {
@@ -746,6 +848,16 @@ export async function runEditorialForeignChecker(input: {
       throw new WorkspaceEditorialForeignCheckerError(
         "WORK_ITEM_NOT_FOUND",
         "Editorial work item was removed before the checker started."
+      );
+    }
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        input.accessPolicy ?? "workspace_route",
+        { lock: true },
       );
     }
 
@@ -866,24 +978,25 @@ export async function runEditorialForeignChecker(input: {
     workspaceId: input.workspaceId,
     workItemId: input.workItemId,
     runId: result.runId,
+    authorGrant: input.authorGrant,
     // the internal evidence read inherits the caller's plugin policy so a
     // non-admin plugin actor never trips the workspace_route admin gate
     accessPolicy: input.accessPolicy === "plugin_checker_run" ? "plugin_read" : input.accessPolicy ?? "workspace_route",
   });
-  const targetColumnKey =
-    readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
-  const kanbanProjection = await db.transaction((tx: any) =>
-    projectEditorialQcColumn(tx, {
-      workItemId: input.workItemId,
-      expectedDraftId: result.draftId,
-      targetColumnKey,
-      actorUserId: input.actorUserId,
-      reason:
-        targetColumnKey === "needs_fix"
-          ? "editorial_checker_issues_open"
-          : "editorial_checker_clean",
-      idempotencyKey: `editorial-qc-${result.runId}-${targetColumnKey}`,
-    })
+  const projection = editorialCheckerBoardProjectionInput({
+    workItemId: input.workItemId,
+    draftId: result.draftId,
+    runId: result.runId,
+    blockingIssueCount: readModel.blockingIssueCount,
+    actorUserId: input.actorUserId,
+  });
+  const kanbanProjection = finishBoardProjection(
+    await projectCommittedCheckerColumn(
+      db,
+      input,
+      (tx) => projectEditorialQcColumn(tx, projection),
+    ),
+    projection.targetColumnKey,
   );
 
   return {
@@ -902,13 +1015,17 @@ export async function setEditorialFindingDisposition(input: {
   note?: string;
   expectedVersion: number;
   idempotencyKey: string;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    "workspace_route",
+    input.authorGrant ? { lock: false } : undefined,
   );
   const located = await findingInWorkItem(
     db,
@@ -924,6 +1041,16 @@ export async function setEditorialFindingDisposition(input: {
       .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
       .for("update")
       .limit(1);
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        "workspace_route",
+        { lock: true },
+      );
+    }
     const currentDraft = await latestDraft(tx, input.workItemId);
     if (
       !currentDraft ||
@@ -954,13 +1081,17 @@ export async function setEditorialStructuralConfirmation(input: {
   anomalyId: number;
   confirmed: boolean;
   expectedVersion: number;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    "workspace_route",
+    input.authorGrant ? { lock: false } : undefined,
   );
   const located = await anomalyInWorkItem(
     db,
@@ -984,6 +1115,16 @@ export async function setEditorialStructuralConfirmation(input: {
       .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
       .for("update")
       .limit(1);
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        "workspace_route",
+        { lock: true },
+      );
+    }
     const currentDraft = await latestDraft(tx, input.workItemId);
     if (
       !currentDraft ||
@@ -1057,21 +1198,27 @@ export async function setEditorialStructuralConfirmation(input: {
     actorUserId: input.actorUserId,
     workspaceId: input.workspaceId,
     workItemId: input.workItemId,
+    authorGrant: input.authorGrant,
   });
   const targetColumnKey =
-    readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
-  const kanbanProjection = await db.transaction((tx: any) =>
-    projectEditorialQcColumn(tx, {
-      workItemId: input.workItemId,
-      expectedDraftId: result.draftId,
-      targetColumnKey,
-      actorUserId: input.actorUserId,
-      reason:
-        targetColumnKey === "needs_fix"
-          ? "editorial_structural_issues_open"
-          : "editorial_structural_confirmed",
-      idempotencyKey: `editorial-structural-confirm-${input.anomalyId}-${input.expectedVersion}-${input.confirmed ? "confirmed" : "revoked"}`,
-    })
+    readModel.blockingIssueCount > 0 ? "needs_fix" as const : "pending_confirm" as const;
+  const kanbanProjection = finishBoardProjection(
+    await projectCommittedCheckerColumn(
+      db,
+      input,
+      (tx) => projectEditorialQcColumn(tx, {
+        workItemId: input.workItemId,
+        expectedDraftId: result.draftId,
+        targetColumnKey,
+        actorUserId: input.actorUserId,
+        reason:
+          targetColumnKey === "needs_fix"
+            ? "editorial_structural_issues_open"
+            : "editorial_structural_confirmed",
+        idempotencyKey: `editorial-structural-confirm-${input.anomalyId}-${input.expectedVersion}-${input.confirmed ? "confirmed" : "revoked"}`,
+      }),
+    ),
+    targetColumnKey,
   );
   return { ...readModel, kanbanProjection };
 }

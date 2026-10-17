@@ -63,12 +63,88 @@ describe("Workspace Editorial editor static boundaries", () => {
     );
     expect(editor).toContain('targetColumnKey: "editing"');
     expect(editor).toContain("expectedDraftId: persisted.draftId");
-    expect(checker).toContain(
-      'readModel.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm"'
-    );
+    expect(checker).toContain("editorialCheckerBoardProjectionInput");
+    expect(checker).toContain("draftId: result.draftId");
+    expect(checker).toContain("blockingIssueCount: readModel.blockingIssueCount");
+    expect(checker).toContain("projectEditorialQcColumn(tx, projection)");
     expect(checker).toContain("expectedDraftId: result.draftId");
+    const helper = projection.slice(
+      projection.indexOf("export function editorialCheckerBoardProjectionInput"),
+      projection.indexOf("export function editorialBoardReconcileDecision"),
+    );
+    expect(helper).toContain(
+      'input.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm"'
+    );
+    expect(helper).toContain("expectedDraftId: input.draftId");
     expect(projection).toContain("latestDraft.id !== input.expectedDraftId");
     expect(projection).toContain('"STALE_DRAFT"');
+    const projectColumn = projection.slice(
+      projection.indexOf("export async function projectEditorialQcColumn"),
+      projection.indexOf("export function editorialCheckerBoardProjectionInput"),
+    );
+    const leaveLater = projectColumn.indexOf('"LATER_BOARD_OWNS_COLUMN"');
+    const cardUpdate = projectColumn.indexOf("update(workspaceKanbanCards)");
+    expect(leaveLater).toBeGreaterThan(-1);
+    expect(cardUpdate).toBeGreaterThan(leaveLater);
+    expect(projectColumn).toContain('input.targetColumnKey === "needs_fix"');
+    expect(projectColumn).toContain('input.targetColumnKey === "pending_confirm"');
+    expect(projectColumn).toContain("editorialBoardReconcileDecision(currentColumn?.key)");
+    expect(projection).toContain('columnKey === "ready_to_publish"');
+    expect(projection).toContain('columnKey === "published"');
+  });
+
+  it("rejects author save and undo on a staged or published card before writing a draft", () => {
+    const editor = source("server/workspace/editorialEditor.service.ts");
+    const projection = source("server/workspace/editorialQcProjection.service.ts");
+    const edit = editor.slice(
+      editor.indexOf("export async function applyEditorialEditorEdit"),
+      editor.indexOf("export async function applyEditorialBulkFindingCleanupRevision"),
+    );
+    const undo = editor.slice(editor.indexOf("export async function undoEditorialEditorEdit"));
+    for (const body of [edit, undo]) {
+      const block = body.indexOf('"BOARD_COLUMN_CONFLICT"');
+      const persist = body.indexOf("persistManualDraft");
+      expect(block).toBeGreaterThan(-1);
+      expect(persist).toBeGreaterThan(block);
+      expect(body.indexOf("authorEditingProjectionBlock")).toBeLessThan(persist);
+      expect(body.indexOf("DRAFT_CONFLICT")).toBeLessThan(block);
+    }
+    const blockFn = projection.slice(projection.indexOf("export async function authorEditingProjectionBlock"));
+    expect(blockFn).toContain("editorialBoardReconcileDecision(row?.key)");
+    expect(blockFn).toContain('.for("update")');
+    expect(editor).toContain('targetColumnKey: "editing"');
+  });
+
+  it("rejects author approve and stage of a published episode before any write", () => {
+    const approval = source("server/workspace/editorialApproval.service.ts");
+    const approve = approval.slice(
+      approval.indexOf("export async function approveEditorialDraft"),
+      approval.indexOf("export async function stageEditorialEpisodeDraft"),
+    );
+    const stage = approval.slice(approval.indexOf("export async function stageEditorialEpisodeDraft"));
+    const approveGuard = approve.indexOf("assertAuthorEpisodeNotPublished");
+    expect(approveGuard).toBeGreaterThan(-1);
+    expect(approveGuard).toBeLessThan(approve.indexOf("const [replay]"));
+    expect(approveGuard).toBeLessThan(approve.indexOf(".insert(workspaceEditorialDraftApprovals)"));
+    const stageGuard = stage.indexOf("assertAuthorEpisodeNotPublished");
+    expect(stageGuard).toBeGreaterThan(-1);
+    for (const write of [
+      ".update(workspaceEditorialWorkItems)",
+      "const [existingStage]",
+      ".insert(episodes)",
+      ".update(episodes)",
+      ".insert(workspaceEditorialEpisodeStages)",
+      "projectEditorialQcColumn(tx",
+    ]) {
+      expect(stage.indexOf(write)).toBeGreaterThan(stageGuard);
+    }
+    const guard = approval.slice(approval.indexOf("async function authorPublishedEpisodeBlock"));
+    expect(guard).toContain("authorPublishedCardBlock(db, input.workItemId, { lock: input.lock })");
+    expect(guard).toContain("lockEpisodeByCanonicalIdentity(db, input.novelId, episodeNumber)");
+    const projection = source("server/workspace/editorialQcProjection.service.ts");
+    const cardBlock = projection.slice(projection.indexOf("export async function authorPublishedCardBlock"));
+    expect(cardBlock).toContain('query.for("update")');
+    expect(cardBlock).toContain('row?.key === "published"');
   });
 
   it("requires finding id/key as one guarded pair and prevents undo from toggling an undo Draft", () => {

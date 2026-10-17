@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { adminProcedure, router } from "../_core/trpc";
 import { workspaceAuthorReadRouter } from "./authorRead.router";
+import { workspaceAuthorEditorialRouter } from "./authorEditorial.router";
 import { WorkspaceAdminAccessError } from "./adminAccess";
 import { WORKSPACE_ROLES } from "./domain";
 import {
@@ -488,6 +489,7 @@ const legacyRetirementEvidenceInput = z.object({
 
 export const workspaceRouter = router({
   authorRead: workspaceAuthorReadRouter,
+  authorEditorial: workspaceAuthorEditorialRouter,
   list: adminProcedure.query(async ({ ctx }) => {
     try {
       return await listWorkspacesForUser(ctx.user.id);

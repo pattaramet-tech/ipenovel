@@ -14,8 +14,12 @@ import { buildNqaPrePublishHygieneGate } from "../nqa/prepublish";
 import {
   analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodePackPlan,
+  EDITORIAL_EPISODE_STAGE_CONTRACT,
+  EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
   EDITORIAL_EPISODE_STAGE_CONTRACT_V3,
   editorialEpisodeReplacementTargetStateSha256,
+  editorialEpisodeStateSha256,
+  editorialEpisodeStateSha256V2,
 } from "./editorialApproval.domain";
 import { parseEditorialStagedEpisodeItemKey } from "./editorialIdentityContract.domain";
 import {
@@ -84,6 +88,36 @@ function wordCount(text: string): number {
 function parseEditorialStageItemKey(value: string) {
   const parsed = parseEditorialStagedEpisodeItemKey(value);
   return parsed ? { stageId: parsed.stageId, episodeId: parsed.episodeId } : null;
+}
+
+/** Recorded-state hash of a new-Episode Stage contract; null for an unknown contract. */
+function stagedEpisodeStateSha256(stage: any, episode: any) {
+  if (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2) {
+    return editorialEpisodeStateSha256V2({
+      novelId: episode.novelId,
+      episodeNumber: episode.episodeNumber,
+      title: episode.title,
+      content: episode.content,
+      contentFormat: episode.contentFormat,
+      wordCount: episode.wordCount,
+      isPublished: episode.isPublished,
+      saleMode: episode.saleMode,
+      price: episode.price,
+      isFree: episode.isFree,
+    });
+  }
+  if (stage.stageContract === null || stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT) {
+    return editorialEpisodeStateSha256({
+      novelId: episode.novelId,
+      episodeNumber: episode.episodeNumber,
+      title: episode.title,
+      content: episode.content,
+      contentFormat: episode.contentFormat,
+      wordCount: episode.wordCount,
+      isPublished: episode.isPublished,
+    });
+  }
+  return null;
 }
 
 async function loadEditorialReplacementPlan(tx: any, stage: any) {
@@ -295,19 +329,35 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
         const editorialIdentity = parseEditorialStageItemKey(request.itemKey);
         let replacementStage: any = null;
         let replacementPlan: Awaited<ReturnType<typeof loadEditorialReplacementPlan>> | null = null;
-        if (editorialIdentity && editorialIdentity.episodeId === episode.id) {
+        if (editorialIdentity) {
           const [stage] = await tx
             .select()
             .from(workspaceEditorialEpisodeStages)
             .where(eq(workspaceEditorialEpisodeStages.id, editorialIdentity.stageId))
             .limit(1);
-          if (stage?.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3) {
-            if (
-              stage.episodeId !== episode.id ||
-              stage.novelId !== request.targetId ||
-              String(stage.contentSha256).toLowerCase() !== request.sourceSha256.toLowerCase() ||
-              episode.isPublished !== true
-            ) {
+          if (
+            editorialIdentity.episodeId !== episode.id ||
+            !stage ||
+            stage.episodeId !== episode.id ||
+            stage.novelId !== request.targetId ||
+            String(stage.contentSha256).toLowerCase() !== request.sourceSha256.toLowerCase()
+          ) {
+            throw new IpeNovelWorkspacePublishProviderError(
+              "TARGET_CHANGED",
+              "Editorial publish item no longer matches its Editorial stage."
+            );
+          }
+          if (stage.stageContract !== EDITORIAL_EPISODE_STAGE_CONTRACT_V3) {
+            // Preflight compared this state outside the Episode lock; only the
+            // locked row is what this transaction will publish.
+            if (stagedEpisodeStateSha256(stage, episode) !== stage.episodeStateSha256) {
+              throw new IpeNovelWorkspacePublishProviderError(
+                "TARGET_CHANGED",
+                "Staged Episode changed after staging; re-run Stage before publishing."
+              );
+            }
+          } else {
+            if (episode.isPublished !== true) {
               throw new IpeNovelWorkspacePublishProviderError(
                 "TARGET_CHANGED",
                 "Published replacement target no longer matches its Editorial stage."

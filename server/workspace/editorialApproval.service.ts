@@ -22,6 +22,7 @@ import {
 import { getDb } from "../db";
 import { normalizeEpisodeRange } from "../services/readerService";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { assertAuthorEditorialWrite, type AuthorGrantLock } from "./authorEditorialGrant";
 import {
   analyzeEditorialEpisodeDraftBatch,
   buildEditorialEpisodeDraftPlan,
@@ -48,7 +49,7 @@ import {
   editorialAllowListSha256,
   evaluateEditorialCheckerState,
 } from "./editorialForeignChecker.domain";
-import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import { authorPublishedCardBlock, projectEditorialQcColumn } from "./editorialQcProjection.service";
 import {
   isExactAcceptedSourceNote,
 } from "./editorialStructuralAnomaly.domain";
@@ -155,6 +156,58 @@ async function lockEpisodeByCanonicalIdentity(
   return canonicalMatches[0] ?? null;
 }
 
+/**
+ * Authors have no published-Episode replacement workflow. Approve and Stage
+ * close once the card is published or the planned Episode is already live,
+ * whatever column another workflow left the card in. With lock, call inside
+ * the author transaction after the work-item and grant locks and before any
+ * approval, sale metadata, Stage, Episode, or Kanban write.
+ */
+async function authorPublishedEpisodeBlock(
+  db: any,
+  input: {
+    workItemId: number;
+    novelId: number;
+    plan: EditorialEpisodeDraftBatchPlan;
+    lock: boolean;
+  },
+) {
+  if (await authorPublishedCardBlock(db, input.workItemId, { lock: input.lock })) {
+    return "CARD_PUBLISHED" as const;
+  }
+  if (!input.plan.ready) return null;
+  const { episodeNumber } = buildEditorialEpisodePackPlan(input.plan);
+  if (input.lock) {
+    const target = await lockEpisodeByCanonicalIdentity(db, input.novelId, episodeNumber);
+    return target?.isPublished ? ("EPISODE_LIVE" as const) : null;
+  }
+  const canonicalIdentity = normalizeEpisodeRange(episodeNumber);
+  const rows = await db
+    .select({ episodeNumber: episodes.episodeNumber, isPublished: episodes.isPublished })
+    .from(episodes)
+    .where(eq(episodes.novelId, input.novelId));
+  return rows.some(
+    (row: any) =>
+      row.isPublished &&
+      canonicalIdentity != null &&
+      normalizeEpisodeRange(row.episodeNumber) === canonicalIdentity,
+  )
+    ? ("EPISODE_LIVE" as const)
+    : null;
+}
+
+async function assertAuthorEpisodeNotPublished(
+  tx: any,
+  input: { workItemId: number; novelId: number; plan: EditorialEpisodeDraftBatchPlan },
+) {
+  if (await authorPublishedEpisodeBlock(tx, { ...input, lock: true })) {
+    throw new WorkspaceEditorialApprovalError(
+      "EPISODE_PUBLISHED",
+      "This episode is already published. Authors cannot approve or stage it again."
+    );
+  }
+}
+
 function stageItemIdempotencyKey(base: string, episodeNumber: string) {
   const digest = createHash("sha256")
     .update(`${base}\n${episodeNumber}`, "utf8")
@@ -177,9 +230,22 @@ async function requireWorkItem(
   db: any,
   actorUserId: number,
   workspaceId: number,
-  workItemId: number
+  workItemId: number,
+  authorGrant?: AuthorGrantLock,
 ) {
-  await requireWorkspacePlatformAdmin(db, actorUserId);
+  if (authorGrant) {
+    await assertAuthorEditorialWrite(
+      db,
+      { actorUserId, workspaceId, workItemId },
+      authorGrant,
+    );
+  } else {
+    await requireWorkspacePlatformAdmin(db, actorUserId);
+  }
+  return loadWorkItemContext(db, workspaceId, workItemId);
+}
+
+async function loadWorkItemContext(db: any, workspaceId: number, workItemId: number) {
   const [row] = await db
     .select({
       workItem: workspaceEditorialWorkItems,
@@ -794,14 +860,41 @@ export async function getEditorialApprovalReadModel(input: {
   actorUserId: number;
   workspaceId: number;
   workItemId: number;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   const context = await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.authorGrant ? { lock: false } : undefined,
   );
+  return buildEditorialApprovalReadModel(db, context, input);
+}
+
+/**
+ * Approval, QC, and Stage evidence without an actor check, for the Controlled
+ * Publish worker only. The caller must already hold durable proof of an
+ * Admin-requested execution for this exact work item (see
+ * assertEditorialPublishRequestCurrent). Never call from a router or an
+ * Author path.
+ */
+export async function readEditorialApprovalEvidenceForAuthorizedPublish(input: {
+  workspaceId: number;
+  workItemId: number;
+}) {
+  const db = await database();
+  const context = await loadWorkItemContext(db, input.workspaceId, input.workItemId);
+  return buildEditorialApprovalReadModel(db, context, input);
+}
+
+async function buildEditorialApprovalReadModel(
+  db: any,
+  context: Awaited<ReturnType<typeof loadWorkItemContext>>,
+  input: { workspaceId: number; workItemId: number; authorGrant?: boolean },
+) {
   const draft = await latestDraft(db, input.workItemId);
   if (!draft) {
     return {
@@ -821,6 +914,7 @@ export async function getEditorialApprovalReadModel(input: {
       stagePlan: null,
       stagePlanError: "Import a Draft before approval/staging.",
       readyToPublish: false,
+      authorPublishedBlock: null,
     };
   }
 
@@ -840,6 +934,14 @@ export async function getEditorialApprovalReadModel(input: {
     confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs),
     tabs,
   });
+  const authorPublishedBlock = input.authorGrant
+    ? await authorPublishedEpisodeBlock(db, {
+        workItemId: input.workItemId,
+        novelId: context.workspaceNovel.novelId,
+        plan: batchPlan,
+        lock: false,
+      })
+    : null;
   const stages = await stagesForApproval(
     db,
     input.workItemId,
@@ -905,6 +1007,7 @@ export async function getEditorialApprovalReadModel(input: {
     }),
     stagePlanError,
     readyToPublish: Boolean(stageStatus.valid),
+    authorPublishedBlock,
   };
 }
 
@@ -918,13 +1021,16 @@ export async function approveEditorialDraft(input: {
   expectedCheckerRunId: number;
   expectedQcEvidenceSha256: string;
   idempotencyKey: string;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.authorGrant ? { lock: false } : undefined,
   );
 
   const result = await db.transaction(async (tx: any) => {
@@ -940,6 +1046,15 @@ export async function approveEditorialDraft(input: {
         "Editorial work item was removed before approval."
       );
     }
+    const authorContext = input.authorGrant
+      ? await requireWorkItem(
+          tx,
+          input.actorUserId,
+          input.workspaceId,
+          input.workItemId,
+          { lock: true },
+        )
+      : null;
 
     const draft = await latestDraft(tx, input.workItemId);
     if (!draft) {
@@ -991,6 +1106,20 @@ export async function approveEditorialDraft(input: {
         "QC_UNRESOLVED",
         "All deterministic checker findings and blocking structural anomalies must be resolved before approval."
       );
+    }
+    if (authorContext) {
+      const tabs = await loadDraftTabs(tx, draft.id);
+      await assertAuthorEpisodeNotPublished(tx, {
+        workItemId: input.workItemId,
+        novelId: authorContext.workspaceNovel.novelId,
+        plan: analyzeEditorialEpisodeDraftBatch({
+          workItemType: authorContext.workItem.workItemType,
+          episodeNumber: authorContext.workItem.episodeNumber,
+          episodeTitle: authorContext.workItem.episodeTitle,
+          confirmedSourceNoteTabIds: resolveNonBillableSourceNoteTabIds(qc, tabs),
+          tabs,
+        }),
+      });
     }
 
     const payloadSha256 = editorialApprovalPayloadSha256({
@@ -1064,13 +1193,16 @@ export async function stageEditorialEpisodeDraft(input: {
   expectedDraftVersion: number;
   expectedDraftSha256: string;
   idempotencyKey: string;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    input.authorGrant ? { lock: false } : undefined,
   );
 
   const result = await db.transaction(async (tx: any) => {
@@ -1090,7 +1222,8 @@ export async function stageEditorialEpisodeDraft(input: {
       tx,
       input.actorUserId,
       input.workspaceId,
-      input.workItemId
+      input.workItemId,
+      input.authorGrant ? { lock: true } : undefined,
     );
     const draft = await latestDraft(tx, input.workItemId);
     if (!draft) {
@@ -1158,6 +1291,13 @@ export async function stageEditorialEpisodeDraft(input: {
     }
 
     const novelId = context.workspaceNovel.novelId;
+    if (input.authorGrant) {
+      await assertAuthorEpisodeNotPublished(tx, {
+        workItemId: input.workItemId,
+        novelId,
+        plan: batchPlan,
+      });
+    }
     const packPlan = buildEditorialEpisodePackPlan(batchPlan);
     const effectiveSale = resolveEditorialEpisodePackSale(batchPlan, {
       saleMode: context.workItem.saleMode,
