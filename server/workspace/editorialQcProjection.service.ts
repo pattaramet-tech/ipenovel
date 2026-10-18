@@ -66,6 +66,16 @@ export async function projectEditorialQcColumn(
     .limit(1);
   if (!target) return { changed: false, reason: "COLUMN_NOT_FOUND" as const };
 
+  const [currentColumn] = await tx
+    .select({ key: workspaceKanbanColumns.key })
+    .from(workspaceKanbanColumns)
+    .where(eq(workspaceKanbanColumns.id, row.card.columnId))
+    .limit(1);
+  const qcTarget = input.targetColumnKey === "needs_fix" || input.targetColumnKey === "pending_confirm";
+  if (qcTarget && editorialBoardReconcileDecision(currentColumn?.key) === "leave-later-column") {
+    return { changed: false, reason: "LATER_BOARD_OWNS_COLUMN" as const };
+  }
+
   const [replay] = await tx
     .select()
     .from(workspaceKanbanTransitions)
@@ -118,4 +128,88 @@ export async function projectEditorialQcColumn(
   });
 
   return { changed: true, replayed: false, columnId: target.id };
+}
+
+/** Same column and idempotency key for a checker run and a later board reconciliation. */
+export function editorialCheckerBoardProjectionInput(input: {
+  workItemId: number;
+  draftId: number;
+  runId: number;
+  blockingIssueCount: number;
+  actorUserId: number;
+}) {
+  const targetColumnKey: EditorialQcColumnKey =
+    input.blockingIssueCount > 0 ? "needs_fix" : "pending_confirm";
+  return {
+    workItemId: input.workItemId,
+    expectedDraftId: input.draftId,
+    targetColumnKey,
+    actorUserId: input.actorUserId,
+    reason:
+      targetColumnKey === "needs_fix"
+        ? "editorial_checker_issues_open"
+        : "editorial_checker_clean",
+    idempotencyKey: `editorial-qc-${input.runId}-${targetColumnKey}`,
+  };
+}
+
+/** Stage and publish own the card after they commit. A deferred QC retry must not pull it back. */
+export function editorialBoardReconcileDecision(columnKey: string | null | undefined) {
+  if (columnKey === "ready_to_publish" || columnKey === "published") return "leave-later-column" as const;
+  return "project" as const;
+}
+
+/**
+ * Author Save and Undo have no reopen workflow. Once Stage or Publish owns the
+ * card, the author write fails closed. An admin revision is the explicit next
+ * cycle: applyEditorialEditorEdit without authorGrant writes a new Draft and
+ * projects that card to editing.
+ * Call this inside the author write transaction after the work-item, user, and
+ * grant locks. The card row is locked here, before any new Draft is inserted.
+ * Returns the column key when the write must be rejected.
+ */
+export async function authorEditingProjectionBlock(tx: any, workItemId: number) {
+  const [row] = await tx
+    .select({ key: workspaceKanbanColumns.key })
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(
+      workspaceKanbanCards,
+      eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id),
+    )
+    .innerJoin(
+      workspaceKanbanColumns,
+      eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id),
+    )
+    .where(eq(workspaceEditorialWorkItems.id, workItemId))
+    .for("update")
+    .limit(1);
+  if (editorialBoardReconcileDecision(row?.key) === "leave-later-column") return row.key as string;
+  return null;
+}
+
+/**
+ * Author Approve and Stage stay open in ready_to_publish so a Stage can replay,
+ * but close once Publish owns the card. With lock, call at the same point as
+ * authorEditingProjectionBlock: after the work-item, user, and grant locks.
+ */
+export async function authorPublishedCardBlock(
+  tx: any,
+  workItemId: number,
+  options: { lock: boolean },
+) {
+  const query = tx
+    .select({ key: workspaceKanbanColumns.key })
+    .from(workspaceEditorialWorkItems)
+    .innerJoin(
+      workspaceKanbanCards,
+      eq(workspaceEditorialWorkItems.cardId, workspaceKanbanCards.id),
+    )
+    .innerJoin(
+      workspaceKanbanColumns,
+      eq(workspaceKanbanCards.columnId, workspaceKanbanColumns.id),
+    )
+    .where(eq(workspaceEditorialWorkItems.id, workItemId))
+    .limit(1);
+  const [row] = await (options.lock ? query.for("update") : query);
+  return row?.key === "published";
 }

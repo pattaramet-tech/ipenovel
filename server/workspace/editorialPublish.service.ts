@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { TRPCError } from "@trpc/server";
 import { and, desc, eq } from "drizzle-orm";
 import {
   episodes,
+  users,
   workspaceDocumentBindings,
   workspaceDocumentFingerprints,
   workspaceDocumentSnapshots,
@@ -25,18 +27,26 @@ import { requireWorkspacePlatformAdmin } from "./adminAccess";
 import {
   EDITORIAL_EPISODE_STAGE_CONTRACT_V2,
   EDITORIAL_EPISODE_STAGE_CONTRACT_V3,
+  editorialEpisodeStateSha256,
+  editorialEpisodeStateSha256V2,
 } from "./editorialApproval.domain";
 import {
   editorialStagedEpisodeItemKey,
   parseEditorialStagedEpisodeItemKey,
 } from "./editorialIdentityContract.domain";
-import { getEditorialApprovalReadModel } from "./editorialApproval.service";
+import { assertAuthorEditorialWrite } from "./authorEditorialGrant";
+import {
+  getEditorialApprovalReadModel,
+  readEditorialApprovalEvidenceForAuthorizedPublish,
+} from "./editorialApproval.service";
 import { projectEditorialQcColumn } from "./editorialQcProjection.service";
 import { createPublishDestination, createPublishDryRun } from "./publishDryRun.service";
 import { requestPublishExecution } from "./publishExecution.service";
 import { cutoverPublishOwnership } from "./publishOwnershipTransition.service";
-import type {
-  WorkspacePublishProviderRequest,
+import {
+  buildPublishOutboxIdempotencyKey,
+  WORKSPACE_PUBLISH_OUTBOX_EVENT,
+  type WorkspacePublishProviderRequest,
 } from "./publishExecution.domain";
 
 export const EDITORIAL_PUBLISH_ITEM_PREFIX = "editorial-stage" as const;
@@ -625,6 +635,149 @@ export async function requestEditorialPublish(input: {
   };
 }
 
+/** Run states after requestPublishExecution; failed runs retry from the same outbox. */
+const ADMIN_REQUESTED_RUN_STATUSES = new Set(["publishing", "failed", "partially_failed"]);
+
+/**
+ * The publish run and outbox carry no Admin identity. The outbox row is the
+ * durable Admin authorization: requestPublishExecution creates it only after
+ * requireWorkspacePlatformAdmin, bound to this run and ownership epoch. The
+ * worker request must match that row, its run item, and its destination.
+ */
+async function requireAdminRequestedPublishExecution(
+  db: any,
+  request: WorkspacePublishProviderRequest,
+  workspaceNovel: { id: number; novelId: number },
+) {
+  const rows = await db
+    .select({
+      run: workspacePublishRuns,
+      destination: workspacePublishingDestinations,
+      outbox: workspaceOutbox,
+      ownership: workspaceMigrationRegistry,
+    })
+    .from(workspacePublishRuns)
+    .innerJoin(
+      workspacePublishingDestinations,
+      eq(workspacePublishRuns.destinationId, workspacePublishingDestinations.id),
+    )
+    .innerJoin(workspaceOutbox, eq(workspaceOutbox.publishRunId, workspacePublishRuns.id))
+    .innerJoin(
+      workspaceMigrationRegistry,
+      and(
+        eq(workspaceMigrationRegistry.workspaceNovelId, workspacePublishingDestinations.workspaceNovelId),
+        eq(workspaceMigrationRegistry.capability, "publish"),
+      ),
+    )
+    .where(and(
+      eq(workspacePublishRuns.id, request.publishRunId),
+      eq(workspacePublishingDestinations.id, request.destinationId),
+      eq(workspaceOutbox.workspaceId, request.workspaceId),
+      eq(workspaceOutbox.eventType, WORKSPACE_PUBLISH_OUTBOX_EVENT),
+    ));
+  const authorized = rows.length === 1 ? rows[0] : null;
+  if (
+    !authorized ||
+    authorized.outbox.idempotencyKey !==
+      buildPublishOutboxIdempotencyKey(authorized.run.id, authorized.run.idempotencyKey) ||
+    authorized.outbox.status !== "claimed" ||
+    !authorized.outbox.leaseExpiresAt ||
+    authorized.outbox.leaseExpiresAt <= new Date() ||
+    !ADMIN_REQUESTED_RUN_STATUSES.has(authorized.run.status) ||
+    authorized.destination.status !== "active" ||
+    authorized.destination.targetType !== "novel" ||
+    authorized.destination.targetId !== request.targetId ||
+    authorized.destination.workspaceNovelId !== workspaceNovel.id ||
+    workspaceNovel.novelId !== request.targetId ||
+    authorized.ownership.owner !== "workspace" ||
+    authorized.outbox.ownershipEpoch !== authorized.ownership.cutoverEpoch
+  ) {
+    throw new WorkspaceEditorialPublishError(
+      "PUBLISH_STATE_CONFLICT",
+      "Provider execution has no matching Admin-requested Controlled Publish run."
+    );
+  }
+  const [item] = await db.select().from(workspacePublishItems).where(and(
+    eq(workspacePublishItems.runId, authorized.run.id),
+    eq(workspacePublishItems.itemKey, request.itemKey),
+  )).limit(1);
+  if (
+    !item ||
+    item.status !== "publishing" ||
+    item.episodeId !== request.episodeId ||
+    item.sourceSha256.toLowerCase() !== request.sourceSha256.toLowerCase()
+  ) {
+    throw new WorkspaceEditorialPublishError(
+      "PUBLISH_STATE_CONFLICT",
+      "Provider execution item is not part of the Admin-requested Controlled Publish run."
+    );
+  }
+}
+
+/**
+ * Stage creator is provenance, not publish authority. An Admin Stage stays
+ * valid while its creator is a platform admin; an Author Stage while its
+ * creator still holds the Author edit grant for this work item.
+ */
+async function requireCurrentStageProvenance(db: any, workspaceId: number, stage: any) {
+  const [creator] = await db
+    .select({ role: users.role })
+    .from(users)
+    .where(eq(users.id, stage.stagedByUserId))
+    .limit(1);
+  if (creator?.role === "admin") return;
+  if (creator?.role === "author") {
+    try {
+      await assertAuthorEditorialWrite(
+        db,
+        { actorUserId: stage.stagedByUserId, workspaceId, workItemId: stage.workItemId },
+        { lock: false },
+      );
+      return;
+    } catch (error) {
+      if (!(error instanceof TRPCError)) throw error;
+    }
+  }
+  throw new WorkspaceEditorialPublishError(
+    "STAGE_NOT_READY",
+    "The Stage creator no longer holds Editorial authority for this work item."
+  );
+}
+
+/**
+ * A new-Episode Stage publishes the Episode row as it stands, so that row must
+ * still match the state recorded at Stage. V3 replacement targets are checked
+ * by the provider against the same recorded state.
+ */
+async function stagedEpisodeUnchanged(db: any, stage: any) {
+  if (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V3) return true;
+  const [episode] = await db.select().from(episodes).where(eq(episodes.id, stage.episodeId)).limit(1);
+  if (!episode) return false;
+  const state = stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2
+    ? editorialEpisodeStateSha256V2({
+        novelId: episode.novelId,
+        episodeNumber: episode.episodeNumber,
+        title: episode.title,
+        content: episode.content,
+        contentFormat: episode.contentFormat,
+        wordCount: episode.wordCount,
+        isPublished: episode.isPublished,
+        saleMode: episode.saleMode,
+        price: episode.price,
+        isFree: episode.isFree,
+      })
+    : editorialEpisodeStateSha256({
+        novelId: episode.novelId,
+        episodeNumber: episode.episodeNumber,
+        title: episode.title,
+        content: episode.content,
+        contentFormat: episode.contentFormat,
+        wordCount: episode.wordCount,
+        isPublished: episode.isPublished,
+      });
+  return state === stage.episodeStateSha256;
+}
+
 export async function assertEditorialPublishRequestCurrent(
   request: WorkspacePublishProviderRequest
 ) {
@@ -646,12 +799,13 @@ export async function assertEditorialPublishRequestCurrent(
       "Editorial publish item no longer matches its immutable stage evidence."
     );
   }
-  const state = await getEditorialApprovalReadModel({
-    actorUserId: stage.stagedByUserId,
+  const context = await loadContext(db, request.workspaceId, stage.workItemId);
+  await requireAdminRequestedPublishExecution(db, request, context.workspaceNovel);
+  await requireCurrentStageProvenance(db, request.workspaceId, stage);
+  const state = await readEditorialApprovalEvidenceForAuthorizedPublish({
     workspaceId: request.workspaceId,
     workItemId: stage.workItemId,
   });
-  const context = await loadContext(db, request.workspaceId, stage.workItemId);
   const stageCurrent = (state.stages ?? []).some(
     (candidate: any) =>
       candidate.id === stage.id &&
@@ -675,7 +829,8 @@ export async function assertEditorialPublishRequestCurrent(
     (stage.stageContract === EDITORIAL_EPISODE_STAGE_CONTRACT_V2 &&
       (stage.saleMode !== currentEpisode.saleMode ||
         stage.price !== currentEpisode.price ||
-        stage.isFree !== currentEpisode.isFree))
+        stage.isFree !== currentEpisode.isFree)) ||
+    !(await stagedEpisodeUnchanged(db, stage))
   ) {
     throw new WorkspaceEditorialPublishError(
       "STAGE_NOT_READY",

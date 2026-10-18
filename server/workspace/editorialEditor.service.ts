@@ -16,6 +16,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { assertAuthorEditorialWrite, type AuthorGrantLock } from "./authorEditorialGrant";
 import {
   EditorialAccessError,
   resolveEditorialPluginAccess,
@@ -47,7 +48,7 @@ import {
   type EditorialDraftEditCommand,
   type EditorialParagraphEditCommand,
 } from "./editorialEditor.domain";
-import { projectEditorialQcColumn } from "./editorialQcProjection.service";
+import { authorEditingProjectionBlock, projectEditorialQcColumn } from "./editorialQcProjection.service";
 
 export class WorkspaceEditorialEditorError extends Error {
   constructor(
@@ -60,7 +61,8 @@ export class WorkspaceEditorialEditorError extends Error {
       | "FINDING_CONFLICT"
       | "EDIT_CONFLICT"
       | "UNDO_NOT_AVAILABLE"
-      | "EDIT_INVALID",
+      | "EDIT_INVALID"
+      | "BOARD_COLUMN_CONFLICT",
     message: string
   ) {
     super(message);
@@ -99,7 +101,8 @@ async function requireWorkItem(
   actorUserId: number,
   workspaceId: number,
   workItemId: number,
-  accessPolicy: EditorialAccessPolicy = "workspace_route"
+  accessPolicy: EditorialAccessPolicy = "workspace_route",
+  authorGrant?: AuthorGrantLock,
 ) {
   // IPE-PLUGIN-001D-R2: the workspace_route policy preserves the historical
   // platform-admin gate bit-for-bit; plugin policies resolve the caller's
@@ -107,7 +110,15 @@ async function requireWorkItem(
   // workspaceMembers row) and enforce the policy grade. Fail-closed:
   // no workspace / no effective membership -> WORK_ITEM_NOT_FOUND (no
   // existence oracle); member below grade -> EDIT_FORBIDDEN (denied).
-  if (accessPolicy !== "workspace_route") {
+  // authorGrant is set only by the Author editorial router. It never replaces
+  // the admin default, and the locked form runs inside the write transaction.
+  if (authorGrant) {
+    await assertAuthorEditorialWrite(
+      db,
+      { actorUserId, workspaceId, workItemId },
+      authorGrant,
+    );
+  } else if (accessPolicy !== "workspace_route") {
     const decision = await resolveEditorialPluginAccess(db, {
       actorUserId,
       workspaceId,
@@ -415,13 +426,16 @@ export async function getEditorialEditorReadModel(input: {
   actorUserId: number;
   workspaceId: number;
   workItemId: number;
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    "workspace_route",
+    input.authorGrant ? { lock: false } : undefined,
   );
   const draft = await latestDraft(db, input.workItemId);
   if (!draft) {
@@ -777,6 +791,8 @@ export async function applyEditorialEditorEdit(input: {
   idempotencyKey: string;
   /** IPE-PLUGIN-001D-R2: set by server/plugin wiring only - never client input. */
   accessPolicy?: EditorialAccessPolicy;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
@@ -784,7 +800,8 @@ export async function applyEditorialEditorEdit(input: {
     input.actorUserId,
     input.workspaceId,
     input.workItemId,
-    input.accessPolicy ?? "workspace_route"
+    input.accessPolicy ?? "workspace_route",
+    input.authorGrant ? { lock: false } : undefined,
   );
   if (Boolean(input.findingKey) !== Boolean(input.findingId)) {
     throw new WorkspaceEditorialEditorError(
@@ -817,6 +834,16 @@ export async function applyEditorialEditorEdit(input: {
       throw new WorkspaceEditorialEditorError(
         "WORK_ITEM_NOT_FOUND",
         "Work item was removed before the edit started."
+      );
+    }
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        input.accessPolicy ?? "workspace_route",
+        { lock: true },
       );
     }
 
@@ -873,6 +900,15 @@ export async function applyEditorialEditorEdit(input: {
         "DRAFT_CONFLICT",
         "Draft changed before this edit could be applied."
       );
+    }
+    if (input.authorGrant) {
+      const blockingColumn = await authorEditingProjectionBlock(tx, input.workItemId);
+      if (blockingColumn) {
+        throw new WorkspaceEditorialEditorError(
+          "BOARD_COLUMN_CONFLICT",
+          "This chapter is already staged or published. Author save and undo stay closed until an admin opens a new revision."
+        );
+      }
     }
 
     let findingKey = input.findingKey ?? null;
@@ -1229,13 +1265,17 @@ export async function undoEditorialEditorEdit(input: {
   expectedDraftVersion: number;
   expectedDraftSha256: string;
   idempotencyKey: string;
+  /** Set only by the Author editorial router. Never accepted from client input. */
+  authorGrant?: boolean;
 }) {
   const db = await database();
   await requireWorkItem(
     db,
     input.actorUserId,
     input.workspaceId,
-    input.workItemId
+    input.workItemId,
+    "workspace_route",
+    input.authorGrant ? { lock: false } : undefined,
   );
   const payloadSha256 = sha256(
     JSON.stringify({
@@ -1253,6 +1293,16 @@ export async function undoEditorialEditorEdit(input: {
       .where(eq(workspaceEditorialWorkItems.id, input.workItemId))
       .for("update")
       .limit(1);
+    if (input.authorGrant) {
+      await requireWorkItem(
+        tx,
+        input.actorUserId,
+        input.workspaceId,
+        input.workItemId,
+        "workspace_route",
+        { lock: true },
+      );
+    }
 
     const [replay] = await tx
       .select()
@@ -1298,6 +1348,15 @@ export async function undoEditorialEditorEdit(input: {
         "DRAFT_CONFLICT",
         "Draft changed before undo could be applied."
       );
+    }
+    if (input.authorGrant) {
+      const blockingColumn = await authorEditingProjectionBlock(tx, input.workItemId);
+      if (blockingColumn) {
+        throw new WorkspaceEditorialEditorError(
+          "BOARD_COLUMN_CONFLICT",
+          "This chapter is already staged or published. Author save and undo stay closed until an admin opens a new revision."
+        );
+      }
     }
     if (current.origin !== "manual" || !current.parentDraftId) {
       throw new WorkspaceEditorialEditorError(
