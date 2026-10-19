@@ -718,6 +718,9 @@ async function requireAdminRequestedPublishExecution(
  * Stage creator is provenance, not publish authority. An Admin Stage stays
  * valid while its creator is a platform admin; an Author Stage while its
  * creator still holds the Author edit grant for this work item.
+ * This preflight read is unlocked. Provider execution repeats it inside the
+ * publish transaction with assertStageCreatorAuthorityLocked before the novel
+ * and episode locks.
  */
 async function requireCurrentStageProvenance(db: any, workspaceId: number, stage: any) {
   const [creator] = await db

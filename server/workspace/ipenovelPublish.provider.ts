@@ -10,6 +10,13 @@ import {
   workspaceEditorialWorkItems,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import {
+  assertStageCreatorAuthorityLocked,
+  lockNovelThenEpisode,
+  publishLockBarrier,
+  StageCreatorAuthorityError,
+} from "./publishLockOrder";
+import { runWorkspaceTransactionWithDeadlockRetry } from "./transactionRetry";
 import { buildNqaPrePublishHygieneGate } from "../nqa/prepublish";
 import {
   analyzeEditorialEpisodeDraftBatch,
@@ -76,6 +83,77 @@ function parseReceiptMetadata(
     return undefined;
   }
   return undefined;
+}
+
+function receiptMatchesRequest(
+  metadataJson: string,
+  request: WorkspacePublishProviderRequest,
+): WorkspacePublishProviderResult | undefined {
+  const parsed = parseReceiptMetadata(metadataJson);
+  if (!parsed) return undefined;
+  let metadata: {
+    episodeId?: number;
+    sourceSha256?: string;
+    itemKey?: string;
+    publishRunId?: number;
+    destinationId?: number;
+  };
+  try {
+    metadata = JSON.parse(metadataJson);
+  } catch {
+    return undefined;
+  }
+  if (metadata.episodeId !== request.episodeId) return undefined;
+  if (metadata.itemKey !== request.itemKey) return undefined;
+  if (metadata.publishRunId !== request.publishRunId) return undefined;
+  if (metadata.destinationId !== request.destinationId) return undefined;
+  if (String(metadata.sourceSha256 || "").toLowerCase() !== request.sourceSha256.toLowerCase()) {
+    return undefined;
+  }
+  return parsed;
+}
+
+/**
+ * A committed receipt is the publish. Creator permission is not required to
+ * return it. The novel and episode locks still prove the request names this
+ * episode. A missing receipt returns null so the caller can authorize a new
+ * publish before it takes those locks.
+ */
+async function recoverCommittedReceipt(
+  tx: any,
+  request: WorkspacePublishProviderRequest,
+): Promise<WorkspacePublishProviderResult | null> {
+  const [prior] = await tx
+    .select()
+    .from(workspaceAuditEvents)
+    .where(
+      and(
+        eq(workspaceAuditEvents.workspaceId, request.workspaceId),
+        eq(workspaceAuditEvents.eventType, WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT),
+        eq(workspaceAuditEvents.correlationId, request.requestKey),
+      ),
+    )
+    .limit(1);
+  if (!prior || !receiptMatchesRequest(prior.metadataJson, request)) return null;
+  const episode = await lockNovelThenEpisode(tx, request.targetId, request.episodeId!);
+  if (!episode || episode.novelId !== request.targetId) {
+    throw new IpeNovelWorkspacePublishProviderError(
+      "TARGET_NOT_FOUND",
+      "Publish episode does not belong to the destination novel.",
+    );
+  }
+  const [existing] = await tx
+    .select()
+    .from(workspaceAuditEvents)
+    .where(eq(workspaceAuditEvents.id, prior.id))
+    .limit(1);
+  const reconciled = existing ? receiptMatchesRequest(existing.metadataJson, request) : undefined;
+  if (!reconciled) return null;
+  await tx
+    .update(novels)
+    .set({ publicationStatus: "published" })
+    .where(eq(novels.id, request.targetId));
+  return reconciled;
 }
 
 function wordCount(text: string): number {
@@ -286,19 +364,59 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
       }
 
       const providerReceipt = receiptFor(request);
-      return db.transaction(async (tx: any) => {
-        const [episode] = await tx
-          .select()
-          .from(episodes)
-          .where(eq(episodes.id, request.episodeId!))
-          .limit(1)
-          .for("update");
+      return runWorkspaceTransactionWithDeadlockRetry(db, async (tx: any) => {
+        const beforeLocks = publishLockBarrier.beforeLocks;
+        if (beforeLocks) {
+          publishLockBarrier.beforeLocks = undefined;
+          await beforeLocks(tx);
+        }
+        const recovered = await recoverCommittedReceipt(tx, request);
+        if (recovered) return recovered;
+
+        const editorialIdentity = parseEditorialStageItemKey(request.itemKey);
+        let creatorKind: "admin" | "author" | null = null;
+        let creatorUserId: number | null = null;
+        if (editorialIdentity) {
+          const [staged] = await tx
+            .select()
+            .from(workspaceEditorialEpisodeStages)
+            .where(eq(workspaceEditorialEpisodeStages.id, editorialIdentity.stageId))
+            .limit(1);
+          if (
+            staged &&
+            staged.episodeId === request.episodeId &&
+            staged.novelId === request.targetId
+          ) {
+            creatorUserId = staged.stagedByUserId;
+            creatorKind = await assertStageCreatorAuthorityLocked(tx, {
+              workspaceId: request.workspaceId,
+              novelId: request.targetId,
+              stagedByUserId: staged.stagedByUserId,
+            });
+          }
+        }
+
+        const episode = await lockNovelThenEpisode(
+          tx,
+          request.targetId,
+          request.episodeId!,
+        );
 
         if (!episode || episode.novelId !== request.targetId) {
           throw new IpeNovelWorkspacePublishProviderError(
             "TARGET_NOT_FOUND",
             "Publish episode does not belong to the destination novel."
           );
+        }
+        if (creatorKind === "author") {
+          const [novelOwner] = await tx
+            .select({ authorUserId: novels.authorUserId })
+            .from(novels)
+            .where(eq(novels.id, request.targetId))
+            .limit(1);
+          if (novelOwner?.authorUserId !== creatorUserId) {
+            throw new StageCreatorAuthorityError();
+          }
         }
 
         const [existing] = await tx
@@ -326,7 +444,6 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
           }
         }
 
-        const editorialIdentity = parseEditorialStageItemKey(request.itemKey);
         let replacementStage: any = null;
         let replacementPlan: Awaited<ReturnType<typeof loadEditorialReplacementPlan>> | null = null;
         if (editorialIdentity) {
