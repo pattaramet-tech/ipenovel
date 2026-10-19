@@ -80,10 +80,14 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
 
   it("checks every editorial Stage against the locked Episode row before hygiene or any publish write", () => {
     const provider = source("server/workspace/ipenovelPublish.provider.ts");
+    const locks = source("server/workspace/publishLockOrder.ts");
     const execute = provider.slice(provider.indexOf("async execute(request)"));
-    const lock = execute.indexOf('.for("update")');
+    const creatorLock = execute.indexOf("assertStageCreatorAuthorityLocked");
+    const novelThenEpisode = execute.indexOf("lockNovelThenEpisode");
+    const retry = execute.indexOf("runWorkspaceTransactionWithDeadlockRetry");
+    const beforeLocks = execute.indexOf("publishLockBarrier.beforeLocks");
     const receipt = execute.indexOf("parseReceiptMetadata(existing.metadataJson)");
-    const identity = execute.indexOf("if (editorialIdentity) {");
+    const identity = execute.indexOf("let replacementStage");
     const missingStage = execute.indexOf("!stage ||");
     const stateCheck = execute.indexOf("stagedEpisodeStateSha256(stage, episode) !== stage.episodeStateSha256");
     const replacementCheck = execute.indexOf("targetStateSha256 !== stage.episodeStateSha256");
@@ -91,12 +95,21 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
     const episodeWrite = execute.indexOf(".update(episodes)");
     const novelWrite = execute.indexOf(".update(novels)", episodeWrite);
     const receiptWrite = execute.indexOf(".insert(workspaceAuditEvents)");
-    expect(lock).toBeGreaterThan(-1);
-    expect(receipt).toBeGreaterThan(lock);
+    const novelLock = locks.indexOf('.from(novels)');
+    const episodeLock = locks.indexOf('.from(episodes)');
+    expect(retry).toBeGreaterThan(-1);
+    expect(beforeLocks).toBeGreaterThan(retry);
+    expect(execute.indexOf("recoverCommittedReceipt")).toBeGreaterThan(beforeLocks);
+    expect(creatorLock).toBeGreaterThan(execute.indexOf("recoverCommittedReceipt"));
+    expect(novelThenEpisode).toBeGreaterThan(creatorLock);
+    expect(receipt).toBeGreaterThan(novelThenEpisode);
     expect(identity).toBeGreaterThan(receipt);
     expect(missingStage).toBeGreaterThan(identity);
     expect(stateCheck).toBeGreaterThan(missingStage);
     expect(replacementCheck).toBeGreaterThan(identity);
+    expect(novelLock).toBeGreaterThan(-1);
+    expect(episodeLock).toBeGreaterThan(novelLock);
+    expect(locks.indexOf('.for("update")', novelLock)).toBeLessThan(episodeLock);
     for (const write of [hygiene, episodeWrite, novelWrite, receiptWrite]) {
       expect(write).toBeGreaterThan(stateCheck);
       expect(write).toBeGreaterThan(replacementCheck);
