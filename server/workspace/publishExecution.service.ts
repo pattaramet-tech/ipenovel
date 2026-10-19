@@ -175,6 +175,7 @@ export async function requestPublishExecution(input: {
       const runUpdate = await tx.update(workspacePublishRuns).set({
         status: "publishing",
         finishedAt: null,
+        requestedByUserId: input.actorUserId,
         version: sql`${workspacePublishRuns.version} + 1`,
       }).where(and(
         eq(workspacePublishRuns.id, context.run.id),

@@ -8,6 +8,7 @@ import {
   workspaceEditorialEpisodeStages,
   workspaceEditorialStructuralConfirmations,
   workspaceEditorialWorkItems,
+  workspacePublishRuns,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import {
@@ -28,7 +29,7 @@ import {
   editorialEpisodeStateSha256,
   editorialEpisodeStateSha256V2,
 } from "./editorialApproval.domain";
-import { parseEditorialStagedEpisodeItemKey } from "./editorialIdentityContract.domain";
+import { classifyPublishItemKey, parseEditorialStagedEpisodeItemKey } from "./editorialIdentityContract.domain";
 import {
   WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
   type WorkspacePublishProvider,
@@ -43,7 +44,8 @@ export class IpeNovelWorkspacePublishProviderError extends Error {
       | "TARGET_INVALID"
       | "TARGET_NOT_FOUND"
       | "TARGET_CHANGED"
-      | "CONTENT_HYGIENE_BLOCKED",
+      | "CONTENT_HYGIENE_BLOCKED"
+      | "MALFORMED_EDITORIAL_ITEM_KEY",
     message: string
   ) {
     super(message);
@@ -372,6 +374,12 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
         }
         const recovered = await recoverCommittedReceipt(tx, request);
         if (recovered) return recovered;
+        if (classifyPublishItemKey(request.itemKey).kind === "malformed-editorial") {
+          throw new IpeNovelWorkspacePublishProviderError(
+            "MALFORMED_EDITORIAL_ITEM_KEY",
+            "Malformed editorial publish item key.",
+          );
+        }
 
         const editorialIdentity = parseEditorialStageItemKey(request.itemKey);
         let creatorKind: "admin" | "author" | null = null;
@@ -559,9 +567,14 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
           .set({ publicationStatus: "published" })
           .where(eq(novels.id, request.targetId));
 
+        const [requester] = await tx
+          .select({ requestedByUserId: workspacePublishRuns.requestedByUserId })
+          .from(workspacePublishRuns)
+          .where(eq(workspacePublishRuns.id, request.publishRunId))
+          .limit(1);
         await tx.insert(workspaceAuditEvents).values({
           workspaceId: request.workspaceId,
-          actorUserId: null,
+          actorUserId: requester?.requestedByUserId ?? null,
           eventType: WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
           entityType: "episode",
           entityId: String(episode.id),

@@ -392,6 +392,12 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "Immutable publish ownership cutover/rollback provenance records the authorized actor; it is historical audit evidence, not mutable account-owned Workspace state.",
   },
   {
+    table: "workspacePublishRuns",
+    column: "requestedByUserId",
+    category: "deliberately_ignored",
+    reason: "The Admin who requested publish execution is actor provenance, not source-account-owned data for recovery to move or treat as a user-owned block.",
+  },
+  {
     table: "accountMergeCompensations",
     column: "createdByAdminId",
     category: "deliberately_ignored",

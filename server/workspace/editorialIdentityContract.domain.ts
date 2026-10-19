@@ -250,6 +250,28 @@ export function parseEditorialStagedEpisodeItemKey(
   return { editorial: true, stageId, episodeId };
 }
 
+export type PublishItemKeyClass =
+  | { kind: "editorial"; stageId: number; episodeId: number }
+  | { kind: "legacy" }
+  | { kind: "malformed-editorial" };
+
+/**
+ * The editorial-stage prefix is reserved. A key that starts with it is either
+ * the canonical stage and episode pair, or malformed. Any other separator,
+ * suffix, or missing id stays malformed so it cannot publish as a legacy key.
+ */
+export function classifyPublishItemKey(value: string): PublishItemKeyClass {
+  const raw = String(value ?? "");
+  const parsed = parseEditorialStagedEpisodeItemKey(raw);
+  if (parsed) {
+    return { kind: "editorial", stageId: parsed.stageId, episodeId: parsed.episodeId };
+  }
+  if (raw.startsWith(EDITORIAL_STAGE_ITEM_KEY_PREFIX)) {
+    return { kind: "malformed-editorial" };
+  }
+  return { kind: "legacy" };
+}
+
 /**
  * STABLE source-tab identity. Hashes ONLY the provider/source identity
  * (`sourceTabId`) — the field the contract designates as the tab's stable

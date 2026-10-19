@@ -3373,6 +3373,7 @@ export const workspacePublishRuns = mysqlTable(
     idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
     expectedLastPublishedSha256: varchar("expectedLastPublishedSha256", { length: 64 }),
     version: int("version").default(1).notNull(),
+    requestedByUserId: int("requestedByUserId"),
     startedAt: timestamp("startedAt"),
     finishedAt: timestamp("finishedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -3383,6 +3384,7 @@ export const workspacePublishRuns = mysqlTable(
     destinationFk: foreignKey({ name: "wpr_destination_fk", columns: [table.destinationId], foreignColumns: [workspacePublishingDestinations.id] }).onDelete("cascade"),
     snapshotFk: foreignKey({ name: "wpr_snapshot_fk", columns: [table.snapshotId], foreignColumns: [workspaceDocumentSnapshots.id] }),
     checkerRunFk: foreignKey({ name: "wpr_checker_run_fk", columns: [table.checkerRunId], foreignColumns: [workspaceCheckerRuns.id] }),
+    requestedByFk: foreignKey({ name: "wpr_requested_by_fk", columns: [table.requestedByUserId], foreignColumns: [users.id] }),
   })
 );
 

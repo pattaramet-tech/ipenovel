@@ -87,6 +87,13 @@ describe("ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION is exhaustive and up to date
     }
   });
 
+  it("workspacePublishRuns.requestedByUserId is an Admin actor reference, not user-owned source data", () => {
+    const entry = ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION.find(
+      (c) => c.table === "workspacePublishRuns" && c.column === "requestedByUserId"
+    );
+    expect(entry?.category).toBe("deliberately_ignored");
+  });
+
   it("the known false-positive column names (payments.approvedByLabel, a varchar, not a real id) are correctly excluded by the dataType filter, not accidentally classified", () => {
     expect(discoveredKeys.has("payments.approvedByLabel")).toBe(false);
     expect(classifiedKeys.has("payments.approvedByLabel")).toBe(false);

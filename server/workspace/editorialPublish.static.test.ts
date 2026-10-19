@@ -76,6 +76,12 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
     const request = execution.slice(execution.indexOf("export async function requestPublishExecution"));
     expect(request.indexOf("requireWorkspacePlatformAdmin(db, input.actorUserId)"))
       .toBeLessThan(request.indexOf("tx.insert(workspaceOutbox)"));
+    expect(request).toContain("requestedByUserId: input.actorUserId");
+    const router = source("server/workspace/router.ts");
+    const executionInput = router.slice(router.indexOf("requestExecution: adminProcedure"));
+    const editorialInput = router.slice(router.indexOf("requestPublish: adminProcedure"));
+    expect(executionInput.slice(0, executionInput.indexOf(".mutation"))).not.toContain("requestedByUserId");
+    expect(editorialInput.slice(0, editorialInput.indexOf(".mutation"))).not.toContain("requestedByUserId");
   });
 
   it("checks every editorial Stage against the locked Episode row before hygiene or any publish write", () => {
