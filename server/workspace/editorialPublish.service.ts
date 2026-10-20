@@ -31,6 +31,7 @@ import {
   editorialEpisodeStateSha256V2,
 } from "./editorialApproval.domain";
 import {
+  classifyPublishItemKey,
   editorialStagedEpisodeItemKey,
   parseEditorialStagedEpisodeItemKey,
 } from "./editorialIdentityContract.domain";
@@ -80,6 +81,14 @@ function editorialItemKey(stageId: number, episodeId: number) {
 function parseEditorialItemKey(value: string) {
   const parsed = parseEditorialStagedEpisodeItemKey(value);
   return parsed ? { stageId: parsed.stageId, episodeId: parsed.episodeId } : null;
+}
+
+function rejectMalformedEditorialKey(value: string) {
+  if (classifyPublishItemKey(value).kind !== "malformed-editorial") return;
+  throw new WorkspaceEditorialPublishError(
+    "PUBLISH_STATE_CONFLICT",
+    "Malformed editorial publish item key.",
+  );
 }
 
 async function database() {
@@ -784,6 +793,7 @@ async function stagedEpisodeUnchanged(db: any, stage: any) {
 export async function assertEditorialPublishRequestCurrent(
   request: WorkspacePublishProviderRequest
 ) {
+  rejectMalformedEditorialKey(request.itemKey);
   const identity = parseEditorialItemKey(request.itemKey);
   if (!identity) return { editorial: false as const };
   if (identity.episodeId !== request.episodeId) {
@@ -872,6 +882,12 @@ export async function reconcileEditorialPublishRun(input: {
 
   const items = await db.select().from(workspacePublishItems)
     .where(eq(workspacePublishItems.runId, input.runId));
+  if (items.some((item: any) => classifyPublishItemKey(item.itemKey).kind === "malformed-editorial")) {
+    throw new WorkspaceEditorialPublishError(
+      "PUBLISH_STATE_CONFLICT",
+      "Malformed editorial publish item key.",
+    );
+  }
   const editorial = items
     .map((item: any) => ({ item, identity: parseEditorialItemKey(item.itemKey) }))
     .filter((row: any) => row.identity);
@@ -977,6 +993,16 @@ export async function reconcileEditorialPublishRun(input: {
     };
   }
 
+  const publishActorUserId = runContext.run.requestedByUserId;
+  if (publishActorUserId == null) {
+    return {
+      matched: true as const,
+      projected: false as const,
+      reason: "REQUESTER_UNKNOWN" as const,
+      itemCount: resolved.length,
+    };
+  }
+
   const projection = await db.transaction(async (tx: any) => {
     const [context] = await tx
       .select({ card: workspaceKanbanCards, column: workspaceKanbanColumns })
@@ -1005,7 +1031,7 @@ export async function reconcileEditorialPublishRun(input: {
       workItemId: first.stage.workItemId,
       expectedDraftId: first.stage.draftId,
       targetColumnKey: "published",
-      actorUserId: first.stage.stagedByUserId,
+      actorUserId: publishActorUserId,
       reason: `Durable Controlled Publish run #${input.runId} delivered ${resolved.length} provider receipt(s).`,
       idempotencyKey: `editorial-published:${input.runId}:${first.stage.workItemId}`,
     });

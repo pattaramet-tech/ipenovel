@@ -39,7 +39,13 @@ import {
   type WorkspacePublishProviderRequest,
 } from "./publishExecution.domain";
 import { runScopedPublishWorkerOnce } from "./publishExecution.runtime";
-import { getEditorialPublishReadModel, requestEditorialPublish } from "./editorialPublish.service";
+import {
+  assertEditorialPublishRequestCurrent,
+  getEditorialPublishReadModel,
+  reconcileEditorialPublishRun,
+  requestEditorialPublish,
+} from "./editorialPublish.service";
+import { claimPublishOutbox, processClaimedPublishOutbox, requestPublishExecution } from "./publishExecution.service";
 import { GOOGLE_DOC_MIME_TYPE } from "./googleDocs.domain";
 import { bindGoogleDocument, observeBoundGoogleDocument, saveGoogleConnection } from "./googleDocs.service";
 import { publishLockBarrier } from "./publishLockOrder";
@@ -790,6 +796,484 @@ describe.skipIf(!RUN)("IPE-070R4B-R6A lock order and provenance", () => {
       }
     }
   }, 600000);
+
+  it("keeps the first Admin as the publish actor across a second request", async () => {
+    for (let i = 1; i <= 5; i += 1) {
+      const ctx = await buildFixture(`requester-${i}`);
+      const real = createIpeNovelWorkspacePublishProvider();
+      await runWorker(ctx, {
+        mode: "mock",
+        reconcile: request => real.reconcile(request),
+        execute: request => real.execute(request),
+      });
+      const [run] = await db()
+        .select()
+        .from(workspacePublishRuns)
+        .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+      expect(run.requestedByUserId).toBe(ctx.adminId);
+      const [transition] = await db()
+        .select({ actorUserId: workspaceKanbanTransitions.actorUserId })
+        .from(workspaceKanbanTransitions)
+        .innerJoin(workspaceKanbanColumns, eq(workspaceKanbanTransitions.toColumnId, workspaceKanbanColumns.id))
+        .where(and(
+          eq(workspaceKanbanTransitions.cardId, ctx.cardId),
+          eq(workspaceKanbanColumns.key, "published"),
+        ));
+      expect(transition.actorUserId).toBe(ctx.adminId);
+      expect(transition.actorUserId).not.toBe(ctx.authorId);
+      const [receipt] = await db()
+        .select({ actorUserId: workspaceAuditEvents.actorUserId })
+        .from(workspaceAuditEvents)
+        .where(and(
+          eq(workspaceAuditEvents.workspaceId, ctx.workspaceId),
+          eq(workspaceAuditEvents.eventType, WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT),
+          eq(workspaceAuditEvents.entityId, String(ctx.episodeId)),
+        ));
+      expect(receipt.actorUserId).toBe(ctx.adminId);
+      const other = await createTestUser({ role: "admin" });
+      await requestPublishExecution({
+        actorUserId: other.id,
+        workspaceId: ctx.workspaceId,
+        runId: ctx.enqueued!.scope.runId,
+        expectedCutoverEpoch: 1,
+        executionEnabled: true,
+      }).catch(() => undefined);
+      const [after] = await db()
+        .select({ requestedByUserId: workspacePublishRuns.requestedByUserId })
+        .from(workspacePublishRuns)
+        .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+      expect(after.requestedByUserId).toBe(ctx.adminId);
+      await reconcileEditorialPublishRun({
+        workspaceId: ctx.workspaceId,
+        runId: ctx.enqueued!.scope.runId,
+      });
+      expect(await publishedTransitions(ctx)).toHaveLength(1);
+    }
+  }, 600000);
+
+  it("fails closed for a malformed editorial key without writing the episode", async () => {
+    for (let i = 1; i <= 5; i += 1) {
+      const ctx = await buildFixture(`bad-key-${i}`);
+      const before = await episodePublished(ctx);
+      const real = createIpeNovelWorkspacePublishProvider();
+      const request = await providerRequest(ctx);
+      await expect(real.execute({
+        ...request,
+        requestKey: `malformed-${ctx.label}`,
+        itemKey: "editorial-stage:abc:episode:1",
+      })).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+      for (const itemKey of ["editorial-stage_abc", "editorial-stageX", "editorial-stage/abc"]) {
+        await expect(real.execute({
+          ...request,
+          requestKey: `malformed-${ctx.label}-${itemKey}`,
+          itemKey,
+        })).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+        await expect(assertEditorialPublishRequestCurrent({
+          ...request,
+          itemKey,
+        })).rejects.toMatchObject({ code: "PUBLISH_STATE_CONFLICT" });
+      }
+      const after = await episodePublished(ctx);
+      expect(after.isPublished).toBe(before.isPublished);
+      expect(after.content).toBe(before.content);
+      await expect(assertEditorialPublishRequestCurrent({
+        ...request,
+        itemKey: "editorial-stage:0:episode:1",
+      })).rejects.toMatchObject({ code: "PUBLISH_STATE_CONFLICT" });
+      await expect(assertEditorialPublishRequestCurrent({
+        ...request,
+        itemKey: "chapter-1",
+      })).resolves.toEqual({ editorial: false });
+      await db().insert(workspacePublishItems).values([
+        {
+          runId: ctx.enqueued!.scope.runId,
+          itemKey: "editorial-stage:abc:episode:1",
+          episodeId: ctx.episodeId,
+          sourceSha256: "b".repeat(64),
+          status: "pending",
+        },
+        {
+          runId: ctx.enqueued!.scope.runId,
+          itemKey: "editorial-stage_abc",
+          episodeId: ctx.episodeId,
+          sourceSha256: "c".repeat(64),
+          status: "pending",
+        },
+        {
+          runId: ctx.enqueued!.scope.runId,
+          itemKey: "editorial-stageX",
+          episodeId: ctx.episodeId,
+          sourceSha256: "d".repeat(64),
+          status: "pending",
+        },
+        {
+          runId: ctx.enqueued!.scope.runId,
+          itemKey: "editorial-stage/abc",
+          episodeId: ctx.episodeId,
+          sourceSha256: "e".repeat(64),
+          status: "pending",
+        },
+      ]);
+      await expect(reconcileEditorialPublishRun({
+        workspaceId: ctx.workspaceId,
+        runId: ctx.enqueued!.scope.runId,
+      })).rejects.toMatchObject({ code: "PUBLISH_STATE_CONFLICT" });
+    }
+  }, 600000);
+
+  it("refuses a historical receipt for the same malformed editorial key", async () => {
+    const ctx = await buildFixture("historical-malformed-receipt");
+    await db()
+      .update(workspacePublishItems)
+      .set({ itemKey: "editorial-stage_abc" })
+      .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+    const real = createIpeNovelWorkspacePublishProvider();
+    const request = await providerRequest(ctx);
+    expect(request.itemKey).toBe("editorial-stage_abc");
+    const beforeEpisode = await episodePublished(ctx);
+    const [novelBefore] = await db()
+      .select({ publicationStatus: novels.publicationStatus })
+      .from(novels)
+      .where(eq(novels.id, ctx.novelId));
+    const [runBefore] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    await db().insert(workspaceAuditEvents).values({
+      workspaceId: ctx.workspaceId,
+      actorUserId: ctx.adminId,
+      eventType: WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
+      entityType: "episode",
+      entityId: String(ctx.episodeId),
+      correlationId: request.requestKey,
+      metadataJson: JSON.stringify({
+        contract: WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
+        status: "published",
+        providerReceipt: `ipenovel:${ctx.episodeId}:${request.requestKey}`,
+        publishRunId: request.publishRunId,
+        destinationId: request.destinationId,
+        itemKey: request.itemKey,
+        episodeId: ctx.episodeId,
+        sourceSha256: request.sourceSha256,
+      }),
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await expect(real.reconcile(request)).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+      await expect(real.execute(request)).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+    }
+    const claimed = await claimPublishOutbox({
+      workspaceId: ctx.workspaceId,
+      publishRunId: ctx.enqueued!.scope.runId,
+      leaseOwner: "historical-malformed-receipt",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+      expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+    });
+    await expect(processClaimedPublishOutbox({
+      workspaceId: ctx.workspaceId,
+      outboxId: claimed!.id,
+      leaseOwner: "historical-malformed-receipt",
+      provider: real,
+      expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+      expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+      executionEnabled: true,
+      allowExternalProvider: true,
+    })).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+    const afterEpisode = await episodePublished(ctx);
+    expect(afterEpisode.isPublished).toBe(beforeEpisode.isPublished);
+    expect(afterEpisode.content).toBe(beforeEpisode.content);
+    expect(afterEpisode.updatedAt).toEqual(beforeEpisode.updatedAt);
+    const [novelAfter] = await db()
+      .select({ publicationStatus: novels.publicationStatus })
+      .from(novels)
+      .where(eq(novels.id, ctx.novelId));
+    expect(novelAfter.publicationStatus).toBe(novelBefore.publicationStatus);
+    const [item] = await db()
+      .select({ status: workspacePublishItems.status })
+      .from(workspacePublishItems)
+      .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+    expect(item.status).not.toBe("published");
+    const [receipt] = await db()
+      .select({ actorUserId: workspaceAuditEvents.actorUserId, metadataJson: workspaceAuditEvents.metadataJson })
+      .from(workspaceAuditEvents)
+      .where(and(
+        eq(workspaceAuditEvents.workspaceId, ctx.workspaceId),
+        eq(workspaceAuditEvents.correlationId, request.requestKey),
+      ));
+    expect(receipt.actorUserId).toBe(ctx.adminId);
+    expect(receipt.metadataJson).toContain("editorial-stage_abc");
+    const [runAfter] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    expect(runAfter.requestedByUserId).toBe(runBefore.requestedByUserId);
+  }, 180000);
+
+  it("does not accept a persisted receipt as a published malformed item", async () => {
+    const ctx = await buildFixture("persisted-malformed-receipt");
+    const beforeEpisode = await episodePublished(ctx);
+    const [novelBefore] = await db()
+      .select({ publicationStatus: novels.publicationStatus })
+      .from(novels)
+      .where(eq(novels.id, ctx.novelId));
+    const receiptsBefore = await receiptCount(ctx);
+    const transitionsBefore = (await publishedTransitions(ctx)).length;
+    const [runBefore] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId, status: workspacePublishRuns.status })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    await db()
+      .update(workspacePublishItems)
+      .set({
+        itemKey: "editorial-stage_abc",
+        status: "publishing",
+        providerReceipt: "historical-persisted-receipt",
+      })
+      .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+    const calls = { reconcile: 0, execute: 0 };
+    const provider: WorkspacePublishProvider = {
+      mode: "mock",
+      async reconcile() {
+        calls.reconcile += 1;
+        return undefined;
+      },
+      async execute() {
+        calls.execute += 1;
+        throw new Error("provider execute was invoked");
+      },
+    };
+    for (let i = 1; i <= 5; i += 1) {
+      if (i > 1) {
+        await db()
+          .update(workspaceOutbox)
+          .set({ status: "failed", availableAt: new Date(Date.now() - 1_000), leaseOwner: null, leaseExpiresAt: null })
+          .where(eq(workspaceOutbox.publishRunId, ctx.enqueued!.scope.runId));
+        await db()
+          .update(workspacePublishItems)
+          .set({ status: "publishing", providerReceipt: "historical-persisted-receipt" })
+          .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+      }
+      const claimed = await claimPublishOutbox({
+        workspaceId: ctx.workspaceId,
+        publishRunId: ctx.enqueued!.scope.runId,
+        leaseOwner: `persisted-malformed-${i}`,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+        expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+        maxAttempts: 8,
+      });
+      await expect(processClaimedPublishOutbox({
+        workspaceId: ctx.workspaceId,
+        outboxId: claimed!.id,
+        leaseOwner: `persisted-malformed-${i}`,
+        provider,
+        expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+        expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+        executionEnabled: true,
+        maxAttempts: 8,
+      })).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+    }
+    expect(calls).toEqual({ reconcile: 0, execute: 0 });
+    const [item] = await db()
+      .select({ status: workspacePublishItems.status, providerReceipt: workspacePublishItems.providerReceipt, itemKey: workspacePublishItems.itemKey })
+      .from(workspacePublishItems)
+      .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+    expect(item.status).toBe("publishing");
+    expect(item.providerReceipt).toBe("historical-persisted-receipt");
+    expect(item.itemKey).toBe("editorial-stage_abc");
+    const afterEpisode = await episodePublished(ctx);
+    expect(afterEpisode.isPublished).toBe(beforeEpisode.isPublished);
+    expect(afterEpisode.content).toBe(beforeEpisode.content);
+    expect(afterEpisode.updatedAt).toEqual(beforeEpisode.updatedAt);
+    const [novelAfter] = await db()
+      .select({ publicationStatus: novels.publicationStatus })
+      .from(novels)
+      .where(eq(novels.id, ctx.novelId));
+    expect(novelAfter.publicationStatus).toBe(novelBefore.publicationStatus);
+    expect(await receiptCount(ctx)).toBe(receiptsBefore);
+    expect((await publishedTransitions(ctx)).length).toBe(transitionsBefore);
+    const [runAfter] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId, status: workspacePublishRuns.status })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    expect(runAfter.requestedByUserId).toBe(runBefore.requestedByUserId);
+    expect(runAfter.status).toBe(runBefore.status);
+  }, 180000);
+
+  it("does not finalize a run from an already published malformed item", async () => {
+    const ctx = await buildFixture("published-malformed-item");
+    const beforeEpisode = await episodePublished(ctx);
+    const [runBefore] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId, status: workspacePublishRuns.status })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    await db()
+      .update(workspacePublishItems)
+      .set({
+        itemKey: "editorial-stage_abc",
+        status: "published",
+        providerReceipt: "already-published-malformed",
+      })
+      .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+    const claimed = await claimPublishOutbox({
+      workspaceId: ctx.workspaceId,
+      publishRunId: ctx.enqueued!.scope.runId,
+      leaseOwner: "published-malformed-item",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+      expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+    });
+    await expect(processClaimedPublishOutbox({
+      workspaceId: ctx.workspaceId,
+      outboxId: claimed!.id,
+      leaseOwner: "published-malformed-item",
+      provider: { mode: "mock", reconcile: async () => undefined, execute: async () => { throw new Error("provider execute was invoked"); } },
+      expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+      expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+      executionEnabled: true,
+    })).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+    const [item] = await db()
+      .select({ status: workspacePublishItems.status, providerReceipt: workspacePublishItems.providerReceipt })
+      .from(workspacePublishItems)
+      .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+    expect(item.status).toBe("published");
+    expect(item.providerReceipt).toBe("already-published-malformed");
+    const afterEpisode = await episodePublished(ctx);
+    expect(afterEpisode.isPublished).toBe(beforeEpisode.isPublished);
+    expect(afterEpisode.content).toBe(beforeEpisode.content);
+    const [runAfter] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId, status: workspacePublishRuns.status })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    expect(runAfter.requestedByUserId).toBe(runBefore.requestedByUserId);
+    expect(runAfter.status).toBe(runBefore.status);
+  }, 180000);
+
+  it("recovers a valid editorial item and a legacy item from persisted receipts", async () => {
+    for (const itemKey of [undefined, "chapter-1"] as const) {
+      const ctx = await buildFixture(itemKey ?? "editorial-persisted-receipt");
+      const beforeEpisode = await episodePublished(ctx);
+      await db()
+        .update(workspacePublishItems)
+        .set({
+          ...(itemKey ? { itemKey } : {}),
+          status: "publishing",
+          providerReceipt: `persisted-${itemKey ?? "editorial"}`,
+        })
+        .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+      const calls = { reconcile: 0, execute: 0 };
+      const claimed = await claimPublishOutbox({
+        workspaceId: ctx.workspaceId,
+        publishRunId: ctx.enqueued!.scope.runId,
+        leaseOwner: `persisted-valid-${itemKey ?? "editorial"}`,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+        expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+      });
+      const result = await processClaimedPublishOutbox({
+        workspaceId: ctx.workspaceId,
+        outboxId: claimed!.id,
+        leaseOwner: `persisted-valid-${itemKey ?? "editorial"}`,
+        provider: {
+          mode: "mock",
+          async reconcile() {
+            calls.reconcile += 1;
+            return undefined;
+          },
+          async execute() {
+            calls.execute += 1;
+            throw new Error("provider execute was invoked");
+          },
+        },
+        expectedCutoverEpoch: ctx.enqueued!.scope.expectedCutoverEpoch,
+        expectedOwnershipVersion: ctx.enqueued!.scope.expectedOwnershipVersion,
+        executionEnabled: true,
+      });
+      expect(result.status).toBe("published");
+      expect(calls).toEqual({ reconcile: 0, execute: 0 });
+      const [item] = await db()
+        .select({ status: workspacePublishItems.status, providerReceipt: workspacePublishItems.providerReceipt, itemKey: workspacePublishItems.itemKey })
+        .from(workspacePublishItems)
+        .where(eq(workspacePublishItems.runId, ctx.enqueued!.scope.runId));
+      expect(item.status).toBe("published");
+      expect(item.providerReceipt).toBe(`persisted-${itemKey ?? "editorial"}`);
+      if (itemKey) expect(item.itemKey).toBe(itemKey);
+      const afterEpisode = await episodePublished(ctx);
+      expect(afterEpisode.isPublished).toBe(beforeEpisode.isPublished);
+      expect(afterEpisode.content).toBe(beforeEpisode.content);
+      expect(afterEpisode.updatedAt).toEqual(beforeEpisode.updatedAt);
+    }
+  }, 180000);
+
+  it("does not let a malformed key adopt a committed receipt", async () => {
+    const ctx = await buildFixture("malformed-receipt");
+    const real = createIpeNovelWorkspacePublishProvider();
+    await runWorker(ctx, {
+      mode: "mock",
+      reconcile: request => real.reconcile(request),
+      execute: request => real.execute(request),
+    });
+    const before = await episodePublished(ctx);
+    const request = await providerRequest(ctx);
+    await expect(real.execute({
+      ...request,
+      itemKey: "editorial-stage_abc",
+    })).rejects.toMatchObject({ code: "MALFORMED_EDITORIAL_ITEM_KEY" });
+    const after = await episodePublished(ctx);
+    expect(after.isPublished).toBe(true);
+    expect(after.content).toBe(before.content);
+    expect(after.updatedAt).toEqual(before.updatedAt);
+  }, 180000);
+
+  it("refuses to hard-delete the Admin named by requestedByUserId", async () => {
+    const ctx = await buildFixture("fk-requester");
+    const real = createIpeNovelWorkspacePublishProvider();
+    await runWorker(ctx, {
+      mode: "mock",
+      reconcile: request => real.reconcile(request),
+      execute: request => real.execute(request),
+    });
+    const connection = await openSeparateConnection();
+    try {
+      const [rules] = await connection.query(
+        "SELECT DELETE_RULE AS deleteRule FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'wpr_requested_by_fk'"
+      );
+      expect(rules).toEqual([{ deleteRule: "NO ACTION" }]);
+      await expect(connection.query("DELETE FROM users WHERE id = ?", [ctx.adminId])).rejects.toMatchObject({
+        errno: 1451,
+      });
+    } finally {
+      await connection.end();
+    }
+    const [user] = await db().select({ id: users.id }).from(users).where(eq(users.id, ctx.adminId));
+    const [run] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    expect(user.id).toBe(ctx.adminId);
+    expect(run.requestedByUserId).toBe(ctx.adminId);
+  }, 180000);
+
+  it("does not attribute a null historical requester to the stage creator", async () => {
+    const ctx = await buildFixture("null-requester");
+    await db()
+      .update(workspacePublishRuns)
+      .set({ requestedByUserId: null })
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    const real = createIpeNovelWorkspacePublishProvider();
+    await runWorker(ctx, {
+      mode: "mock",
+      reconcile: request => real.reconcile(request),
+      execute: request => real.execute(request),
+    });
+    expect((await episodePublished(ctx)).isPublished).toBe(true);
+    expect(await publishedTransitions(ctx)).toHaveLength(0);
+    const [run] = await db()
+      .select({ requestedByUserId: workspacePublishRuns.requestedByUserId })
+      .from(workspacePublishRuns)
+      .where(eq(workspacePublishRuns.id, ctx.enqueued!.scope.runId));
+    expect(run.requestedByUserId).toBeNull();
+  }, 180000);
 });
 
 async function providerRequest(ctx: Awaited<ReturnType<typeof buildFixture>>): Promise<WorkspacePublishProviderRequest> {

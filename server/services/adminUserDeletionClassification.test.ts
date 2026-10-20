@@ -104,6 +104,13 @@ describe("ADMIN_USER_DELETION_CLASSIFICATION is exhaustive and up to date", () =
     );
   });
 
+  it("workspacePublishRuns.requestedByUserId is audit_or_actor so a requesting Admin cannot be hard-deleted", () => {
+    const entry = ADMIN_USER_DELETION_CLASSIFICATION.find(
+      (c) => c.table === "workspacePublishRuns" && c.column === "requestedByUserId"
+    );
+    expect(entry?.category).toBe("audit_or_actor");
+  });
+
   it("[review finding on PR #45] adminUserAuditLogs.actorAdminId (WHO performed a past edit/delete) is audit_or_actor - a former admin's identity must remain protected even after they're demoted to role=\"user\"", () => {
     const entry = ADMIN_USER_DELETION_CLASSIFICATION.find(
       (c) => c.table === "adminUserAuditLogs" && c.column === "actorAdminId"

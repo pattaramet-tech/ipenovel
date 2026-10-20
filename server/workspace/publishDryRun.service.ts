@@ -16,6 +16,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { classifyPublishItemKey } from "./editorialIdentityContract.domain";
 import {
   buildPublishDryRunIdempotencyKey,
   buildPublishOutboxEnvelopeContract,
@@ -83,6 +84,9 @@ function validateItems(items: PublishDryRunItemInput[]) {
   for (const item of items) {
     if (!item.itemKey.trim() || item.itemKey.length > 255 || !/^[a-f0-9]{64}$/i.test(item.sourceSha256)) {
       throw new WorkspacePublishDryRunError("PUBLISH_PLAN_INVALID", "Publish item identity or source hash is invalid.");
+    }
+    if (classifyPublishItemKey(item.itemKey).kind === "malformed-editorial") {
+      throw new WorkspacePublishDryRunError("PUBLISH_PLAN_INVALID", "Malformed editorial publish item key.");
     }
     if (keys.has(item.itemKey)) throw new WorkspacePublishDryRunError("PUBLISH_PLAN_INVALID", "Publish item keys must be unique.");
     keys.add(item.itemKey);

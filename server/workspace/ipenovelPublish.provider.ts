@@ -8,6 +8,7 @@ import {
   workspaceEditorialEpisodeStages,
   workspaceEditorialStructuralConfirmations,
   workspaceEditorialWorkItems,
+  workspacePublishRuns,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import {
@@ -28,7 +29,7 @@ import {
   editorialEpisodeStateSha256,
   editorialEpisodeStateSha256V2,
 } from "./editorialApproval.domain";
-import { parseEditorialStagedEpisodeItemKey } from "./editorialIdentityContract.domain";
+import { classifyPublishItemKey, parseEditorialStagedEpisodeItemKey } from "./editorialIdentityContract.domain";
 import {
   WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
   type WorkspacePublishProvider,
@@ -43,12 +44,21 @@ export class IpeNovelWorkspacePublishProviderError extends Error {
       | "TARGET_INVALID"
       | "TARGET_NOT_FOUND"
       | "TARGET_CHANGED"
-      | "CONTENT_HYGIENE_BLOCKED",
+      | "CONTENT_HYGIENE_BLOCKED"
+      | "MALFORMED_EDITORIAL_ITEM_KEY",
     message: string
   ) {
     super(message);
     this.name = "IpeNovelWorkspacePublishProviderError";
   }
+}
+
+function rejectMalformedEditorialPublishItem(itemKey: string) {
+  if (classifyPublishItemKey(itemKey).kind !== "malformed-editorial") return;
+  throw new IpeNovelWorkspacePublishProviderError(
+    "MALFORMED_EDITORIAL_ITEM_KEY",
+    "Malformed editorial publish item key.",
+  );
 }
 
 function receiptFor(request: WorkspacePublishProviderRequest) {
@@ -298,6 +308,7 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
   return {
     mode: "external",
     async reconcile(request) {
+      rejectMalformedEditorialPublishItem(request.itemKey);
       const db = await getDb();
       if (!db) {
         throw new IpeNovelWorkspacePublishProviderError(
@@ -348,6 +359,7 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
     },
 
     async execute(request) {
+      rejectMalformedEditorialPublishItem(request.itemKey);
       if (request.targetType !== "novel" || !request.episodeId) {
         throw new IpeNovelWorkspacePublishProviderError(
           "TARGET_INVALID",
@@ -559,9 +571,14 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
           .set({ publicationStatus: "published" })
           .where(eq(novels.id, request.targetId));
 
+        const [requester] = await tx
+          .select({ requestedByUserId: workspacePublishRuns.requestedByUserId })
+          .from(workspacePublishRuns)
+          .where(eq(workspacePublishRuns.id, request.publishRunId))
+          .limit(1);
         await tx.insert(workspaceAuditEvents).values({
           workspaceId: request.workspaceId,
-          actorUserId: null,
+          actorUserId: requester?.requestedByUserId ?? null,
           eventType: WORKSPACE_PUBLISH_PROVIDER_RECEIPT_EVENT,
           entityType: "episode",
           entityId: String(episode.id),

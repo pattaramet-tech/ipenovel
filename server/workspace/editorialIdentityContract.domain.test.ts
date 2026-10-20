@@ -5,6 +5,7 @@ import {
   editorialCheckerRunIdentity,
   editorialSourceTabSnapshotFingerprint,
   editorialStableSourceTabIdentity,
+  classifyPublishItemKey,
   editorialStagedEpisodeItemKey,
   isRangeShapedChapterNumber,
   parseEditorialStagedEpisodeItemKey,
@@ -83,6 +84,32 @@ describe("Editorial identity contract", () => {
     expect(
       parseEditorialStagedEpisodeItemKey("editorial-stage:93:episode:0")
     ).toBeNull();
+  });
+
+  it("rejects editorial-looking keys that are not a positive stage and episode pair", () => {
+    expect(classifyPublishItemKey("editorial-stage:93:episode:4021")).toEqual({
+      kind: "editorial",
+      stageId: 93,
+      episodeId: 4021,
+    });
+    for (const key of [
+      "editorial-stage",
+      "editorial-stage:",
+      "editorial-stage:abc:episode:1",
+      "editorial-stage:0:episode:5",
+      "editorial-stage:93:episode:0",
+      "editorial-stage:-1:episode:2",
+      "editorial-stage:93:episode:2:extra",
+      "editorial-stage-item:abc",
+      "editorial-stage_abc",
+      "editorial-stageX",
+      "editorial-stage/abc",
+      `editorial-stage:${Number.MAX_SAFE_INTEGER + 1}:episode:1`,
+    ]) {
+      expect(classifyPublishItemKey(key), key).toEqual({ kind: "malformed-editorial" });
+    }
+    expect(classifyPublishItemKey("chapter-1")).toEqual({ kind: "legacy" });
+    expect(classifyPublishItemKey("episode-1")).toEqual({ kind: "legacy" });
   });
 
   it("binds the checker-run identity component to run identity so stale open=0 can never look current", () => {
