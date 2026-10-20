@@ -53,6 +53,14 @@ export class IpeNovelWorkspacePublishProviderError extends Error {
   }
 }
 
+function rejectMalformedEditorialPublishItem(itemKey: string) {
+  if (classifyPublishItemKey(itemKey).kind !== "malformed-editorial") return;
+  throw new IpeNovelWorkspacePublishProviderError(
+    "MALFORMED_EDITORIAL_ITEM_KEY",
+    "Malformed editorial publish item key.",
+  );
+}
+
 function receiptFor(request: WorkspacePublishProviderRequest) {
   if (!request.episodeId) {
     throw new IpeNovelWorkspacePublishProviderError(
@@ -300,6 +308,7 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
   return {
     mode: "external",
     async reconcile(request) {
+      rejectMalformedEditorialPublishItem(request.itemKey);
       const db = await getDb();
       if (!db) {
         throw new IpeNovelWorkspacePublishProviderError(
@@ -350,6 +359,7 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
     },
 
     async execute(request) {
+      rejectMalformedEditorialPublishItem(request.itemKey);
       if (request.targetType !== "novel" || !request.episodeId) {
         throw new IpeNovelWorkspacePublishProviderError(
           "TARGET_INVALID",
@@ -374,12 +384,6 @@ export function createIpeNovelWorkspacePublishProvider(): WorkspacePublishProvid
         }
         const recovered = await recoverCommittedReceipt(tx, request);
         if (recovered) return recovered;
-        if (classifyPublishItemKey(request.itemKey).kind === "malformed-editorial") {
-          throw new IpeNovelWorkspacePublishProviderError(
-            "MALFORMED_EDITORIAL_ITEM_KEY",
-            "Malformed editorial publish item key.",
-          );
-        }
 
         const editorialIdentity = parseEditorialStageItemKey(request.itemKey);
         let creatorKind: "admin" | "author" | null = null;

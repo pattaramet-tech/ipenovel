@@ -12,6 +12,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { requireWorkspacePlatformAdmin } from "./adminAccess";
+import { classifyPublishItemKey } from "./editorialIdentityContract.domain";
 import {
   buildPublishItemRequestKey,
   buildPublishOutboxIdempotencyKey,
@@ -40,7 +41,8 @@ export class WorkspacePublishExecutionError extends Error {
       | "OUTBOX_NOT_FOUND"
       | "OUTBOX_CONFLICT"
       | "OUTBOX_LEASE_INVALID"
-      | "PROVIDER_CONTRACT_INVALID",
+      | "PROVIDER_CONTRACT_INVALID"
+      | "MALFORMED_EDITORIAL_ITEM_KEY",
     message: string
   ) {
     super(message);
@@ -52,6 +54,14 @@ async function database() {
   const db = await getDb();
   if (!db) throw new WorkspacePublishExecutionError("DATABASE_UNAVAILABLE", "Workspace publish database is unavailable.");
   return db;
+}
+
+function rejectMalformedWorkerItem(itemKey: string) {
+  if (classifyPublishItemKey(itemKey).kind !== "malformed-editorial") return;
+  throw new WorkspacePublishExecutionError(
+    "MALFORMED_EDITORIAL_ITEM_KEY",
+    "Malformed editorial publish item key.",
+  );
 }
 
 function affectedRows(result: any): number {
@@ -439,9 +449,12 @@ export async function processClaimedPublishOutbox(input: {
 
   try {
     for (const initialItem of items) {
+      rejectMalformedWorkerItem(initialItem.itemKey);
       if (initialItem.status === "published" && initialItem.providerReceipt) continue;
       const [item] = await db.select().from(workspacePublishItems).where(eq(workspacePublishItems.id, initialItem.id)).limit(1);
-      if (!item || (item.status === "published" && item.providerReceipt)) continue;
+      if (!item) continue;
+      rejectMalformedWorkerItem(item.itemKey);
+      if (item.status === "published" && item.providerReceipt) continue;
       if (item.status === "publishing" && item.providerReceipt) {
         const recovered = await db.update(workspacePublishItems).set({
           status: "published",

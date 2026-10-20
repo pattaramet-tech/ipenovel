@@ -87,7 +87,11 @@ describe("IPE-055-G Controlled Publish static boundaries", () => {
   it("checks every editorial Stage against the locked Episode row before hygiene or any publish write", () => {
     const provider = source("server/workspace/ipenovelPublish.provider.ts");
     const locks = source("server/workspace/publishLockOrder.ts");
+    const reconcile = provider.slice(provider.indexOf("async reconcile(request)"), provider.indexOf("async execute(request)"));
+    expect(reconcile.indexOf("rejectMalformedEditorialPublishItem")).toBeGreaterThan(-1);
+    expect(reconcile.indexOf("rejectMalformedEditorialPublishItem")).toBeLessThan(reconcile.indexOf("parseReceiptMetadata"));
     const execute = provider.slice(provider.indexOf("async execute(request)"));
+    expect(execute.indexOf("rejectMalformedEditorialPublishItem")).toBeLessThan(execute.indexOf("recoverCommittedReceipt"));
     const creatorLock = execute.indexOf("assertStageCreatorAuthorityLocked");
     const novelThenEpisode = execute.indexOf("lockNovelThenEpisode");
     const retry = execute.indexOf("runWorkspaceTransactionWithDeadlockRetry");
