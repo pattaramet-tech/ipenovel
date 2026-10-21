@@ -143,6 +143,31 @@ function catalogOwnerId(user: { id: number; role: string }) {
   return user.role === "author" ? user.id : undefined;
 }
 
+// IPE-070: shared validation for the Author Sales date inputs. A COMPLETE
+// startDate+endDate pair activates the strict Bangkok calendar range; a
+// half-supplied pair (or the custom_range preset without one) is rejected
+// instead of silently falling back to the preset period. The db resolver
+// throws statusCode-400 errors — mapped to tRPC BAD_REQUEST here (same
+// convention as authorProfile.update).
+function authorSalesRangeOrThrow(
+  period: "all" | "today" | "7d" | "30d" | "month" | "custom_month" | "custom_range",
+  month: string | undefined,
+  startDate?: string,
+  endDate?: string
+) {
+  try {
+    return {
+      range: db.resolveAuthorSalesRange(period, month, startDate, endDate),
+      custom: startDate != null && endDate != null,
+    };
+  } catch (error: any) {
+    if (error?.statusCode === 400) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: error?.message });
+    }
+    throw error;
+  }
+}
+
 async function resolveBulkEpisodeNovelIds(rows: Array<{ novelTitle: string }>, ownerUserId?: number) {
   const ids: number[] = [];
   for (const row of rows) {
@@ -2952,22 +2977,124 @@ export const appRouter = router({
     }),
 
     authorAnalytics: router({
+      // IPE-070: self-scoped Author sales. Identity is STILL derived from
+      // the session only (requireAdminAuthorIdentity(ctx.user.id)) — the
+      // input gained an optional startDate/endDate pair for the selected
+      // Bangkok calendar range, never an author target. The preset path
+      // keeps the exact legacy 3-argument getAuthorAnalytics contract.
       summary: authorCatalogProcedure
         .input(
           z.object({
-            period: z.enum(["all", "today", "7d", "30d", "month", "custom_month"]).default("month"),
+            period: z.enum(["all", "today", "7d", "30d", "month", "custom_month", "custom_range"]).default("month"),
             month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+            startDate: z.string().optional(),
+            endDate: z.string().optional(),
           }).optional()
         )
         .query(async ({ input, ctx }) => {
           const authorIdentity = await requireAdminAuthorIdentity(ctx.user.id);
+          const effectivePeriod = input?.period ?? "month";
+          // Validated FIRST so a half-supplied pair or the custom_range
+          // preset without bounds is a BAD_REQUEST — never a silent
+          // fallback to a preset period.
+          const { range, custom } = authorSalesRangeOrThrow(
+            effectivePeriod,
+            input?.month,
+            input?.startDate,
+            input?.endDate
+          );
+          if (custom && range) {
+            const analytics = await db.getAuthorAnalyticsForDateRange(
+              authorIdentity.userId,
+              range,
+              { startDate: input!.startDate!, endDate: input!.endDate! }
+            );
+            return { author: authorIdentity, ...analytics };
+          }
+          // custom_range without a complete pair already threw above, so
+          // the legacy preset call can never see it here.
+          const presetPeriod =
+            effectivePeriod === "custom_range" ? ("month" as const) : effectivePeriod;
           const analytics = await db.getAuthorAnalytics(
             authorIdentity.userId,
-            input?.period ?? "month",
+            presetPeriod,
             input?.month
           );
           return {
             author: authorIdentity,
+            ...analytics,
+          };
+        }),
+    }),
+
+    // IPE-070: Admin-only cross-author sales report. This is the only
+    // surface that may group sales across authors, and adminProcedure
+    // enforces it server-side. Authors keep using authorAnalytics.summary
+    // (session-scoped); an author/user/guest calling anything here is
+    // FORBIDDEN/UNAUTHORIZED before the data layer is reached. Grouping is
+    // by novels.authorUserId — never by pen name — so two accounts sharing
+    // one pen name are never merged.
+    authorSales: router({
+      authors: adminProcedure
+        .input(
+          z.object({
+            period: z.enum(["all", "today", "7d", "30d", "month", "custom_month", "custom_range"]).default("month"),
+            month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+            startDate: z.string().optional(),
+            endDate: z.string().optional(),
+          })
+        )
+        .query(async ({ input }) => {
+          const { range, custom } = authorSalesRangeOrThrow(
+            input.period,
+            input.month,
+            input.startDate,
+            input.endDate
+          );
+          const report = await db.getAuthorSalesByAuthor(range);
+          return {
+            period: custom ? null : input.period,
+            month: custom ? null : (input.month ?? null),
+            dateRange: custom ? { startDate: input.startDate!, endDate: input.endDate! } : null,
+            ...report,
+          };
+        }),
+      author: adminProcedure
+        .input(
+          z.object({
+            authorUserId: z.number().int().positive(),
+            period: z.enum(["all", "today", "7d", "30d", "month", "custom_month", "custom_range"]).default("month"),
+            month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+            startDate: z.string().optional(),
+            endDate: z.string().optional(),
+          })
+        )
+        .query(async ({ input }) => {
+          const { range, custom } = authorSalesRangeOrThrow(
+            input.period,
+            input.month,
+            input.startDate,
+            input.endDate
+          );
+          const [identity, analytics] = await Promise.all([
+            db.resolveEffectiveAuthorName(input.authorUserId),
+            custom && range
+              ? db.getAuthorAnalyticsForDateRange(input.authorUserId, range, {
+                  startDate: input.startDate!,
+                  endDate: input.endDate!,
+                })
+              : db.getAuthorAnalytics(
+                  input.authorUserId,
+                  // custom_range without a pair already threw above.
+                  input.period === "custom_range" ? ("month" as const) : input.period,
+                  input.month
+                ),
+          ]);
+          return {
+            author: {
+              userId: input.authorUserId,
+              displayName: identity?.effectiveAuthorName ?? null,
+            },
             ...analytics,
           };
         }),
