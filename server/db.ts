@@ -4487,16 +4487,94 @@ export async function getDashboardAnalytics(period: DashboardPeriod = "all", mon
   };
 }
 
-export async function getAuthorAnalytics(
-  authorUserId: number,
-  period: DashboardPeriod = "month",
-  month?: string
-) {
+// ============ AUTHOR SALES DATE RANGE (IPE-070) ============
+
+export type AuthorSalesDateRange = { start: Date; end: Date };
+
+/**
+ * Strict YYYY-MM-DD calendar validation. Deliberately does NOT rely on
+ * `new Date(value)`: JS Date silently normalizes impossible dates
+ * (2024-02-30 → 2024-03-01, 2023-02-29 → 1970-...), so every part is
+ * parsed numerically and re-checked against a UTC probe instead.
+ */
+export function isValidIsoCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return (
+    probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day
+  );
+}
+
+function authorSalesRangeError(message: string): Error {
+  // Same db-layer convention as updateAuthorProfile: statusCode is mapped to
+  // a tRPC BAD_REQUEST by the router.
+  return Object.assign(new Error(message), { statusCode: 400 });
+}
+
+/**
+ * Resolve an inclusive [startDate, endDate] calendar range in Asia/Bangkok
+ * (fixed UTC+7, no DST) to absolute instants: start is Bangkok midnight of
+ * startDate (inclusive), end is Bangkok midnight of the day AFTER endDate
+ * (exclusive). A single day is startDate === endDate. Bounds are built with
+ * Date.UTC so the result is independent of the Node process timezone.
+ * Day rollover (month/year, leap years) is handled by Date.UTC itself;
+ * impossible calendar dates were already rejected by validation above.
+ */
+export function resolveAuthorSalesCustomRange(startDate: string, endDate: string): AuthorSalesDateRange {
+  if (!isValidIsoCalendarDate(startDate) || !isValidIsoCalendarDate(endDate)) {
+    throw authorSalesRangeError(
+      "รูปแบบวันที่ไม่ถูกต้อง — ต้องเป็นวันปฏิทินจริงในรูปแบบ YYYY-MM-DD"
+    );
+  }
+  if (startDate > endDate) {
+    throw authorSalesRangeError("ช่วงวันที่กลับด้าน — วันเริ่มต้นต้องไม่อยู่หลังวันสิ้นสุด");
+  }
+  const [startYear, startMonth, startDay] = startDate.split("-").map(Number);
+  const [endYear, endMonth, endDay] = endDate.split("-").map(Number);
+  const start = new Date(Date.UTC(startYear, startMonth - 1, startDay, -7, 0, 0, 0));
+  const end = new Date(Date.UTC(endYear, endMonth - 1, endDay + 1, -7, 0, 0, 0));
+  return { start, end };
+}
+
+/**
+ * Shared IPE-070 range resolution for the author-sales endpoints: a
+ * COMPLETE custom pair wins and is validated as real Bangkok calendar
+ * days; exactly one bound is an error; the new "custom_range" preset
+ * REQUIRES the pair instead of silently falling back. Without a pair the
+ * legacy period/month contract resolves exactly as the shared dashboard
+ * does (resolveDashboardRange stays untouched — same helper, same bounds).
+ */
+export function resolveAuthorSalesRange(
+  period: DashboardPeriod | "custom_range",
+  month: string | undefined,
+  startDate?: string,
+  endDate?: string
+): AuthorSalesDateRange | null {
+  if (startDate != null || endDate != null) {
+    if (startDate == null || endDate == null) {
+      throw authorSalesRangeError("ต้องระบุทั้งวันที่เริ่มต้นและวันที่สิ้นสุดของช่วงวันที่");
+    }
+    return resolveAuthorSalesCustomRange(startDate, endDate);
+  }
+  if (period === "custom_range") {
+    throw authorSalesRangeError("ช่วงวันที่กำหนดเองต้องระบุทั้งวันที่เริ่มต้นและวันที่สิ้นสุด");
+  }
+  return resolveDashboardRange(period, month);
+}
+
+/**
+ * The author-sales metrics only (no period/month echo) so both the preset
+ * path (getAuthorAnalytics) and the explicit-date path
+ * (getAuthorAnalyticsForDateRange) share ONE query implementation and one
+ * accounting formula.
+ */
+async function buildAuthorAnalytics(authorUserId: number, range: AuthorSalesDateRange | null) {
   const db = await getDb();
   if (!db) {
     return {
-      period,
-      month: month ?? null,
       totalNovels: 0,
       totalRevenue: 0,
       totalPurchases: 0,
@@ -4507,7 +4585,24 @@ export async function getAuthorAnalytics(
         orderPurchases: 0,
         walletPurchases: 0,
       },
-      novels: [],
+      novels: [] as Array<{
+        novelId: number;
+        title: string;
+        author: string | null;
+        coverImageUrl: string | null;
+        publicationStatus: string;
+        storyStatus: string;
+        createdAt: Date;
+        revenue: number;
+        purchases: number;
+        currentWishlistCount: number;
+        salesChannels: {
+          orderRevenue: number;
+          walletRevenue: number;
+          orderPurchases: number;
+          walletPurchases: number;
+        };
+      }>,
     };
   }
 
@@ -4527,8 +4622,6 @@ export async function getAuthorAnalytics(
 
   if (ownedNovels.length === 0) {
     return {
-      period,
-      month: month ?? null,
       totalNovels: 0,
       totalRevenue: 0,
       totalPurchases: 0,
@@ -4544,7 +4637,6 @@ export async function getAuthorAnalytics(
   }
 
   const novelIds = ownedNovels.map((novel) => novel.novelId);
-  const range = resolveDashboardRange(period, month);
   const orderDateWhere = dashboardDateWhere(orders.createdAt, range);
   const walletDateWhere = dashboardDateWhere(episodePurchases.purchasedAt, range);
 
@@ -4627,14 +4719,279 @@ export async function getAuthorAnalytics(
   });
 
   return {
-    period,
-    month: month ?? null,
     totalNovels: ownedNovels.length,
     totalRevenue: orderRevenue + walletRevenue,
     totalPurchases: orderPurchases + walletPurchases,
     currentWishlistCount,
     salesChannels: { orderRevenue, walletRevenue, orderPurchases, walletPurchases },
     novels: novelMetrics,
+  };
+}
+
+/**
+ * Legacy preset-period author analytics. Signature and return shape are
+ * UNCHANGED (the router's ownership contract pins the exact 3-argument
+ * call); the custom-date path lives in getAuthorAnalyticsForDateRange.
+ */
+export async function getAuthorAnalytics(
+  authorUserId: number,
+  period: DashboardPeriod = "month",
+  month?: string
+) {
+  const metrics = await buildAuthorAnalytics(authorUserId, resolveDashboardRange(period, month));
+  return { period, month: month ?? null, ...metrics };
+}
+
+/**
+ * IPE-070: the same accounting as getAuthorAnalytics, bounded by an
+ * explicitly resolved date range (the Bangkok calendar custom range)
+ * instead of a preset period. `dateRange` echoes the validated calendar
+ * bounds back to the client; period/month are null because no preset is
+ * active.
+ */
+export async function getAuthorAnalyticsForDateRange(
+  authorUserId: number,
+  range: AuthorSalesDateRange,
+  dateRange: { startDate: string; endDate: string }
+) {
+  const metrics = await buildAuthorAnalytics(authorUserId, range);
+  return { period: null, month: null, dateRange, ...metrics };
+}
+
+/**
+ * IPE-070: admin cross-author sales grouped by the novel OWNER id
+ * (novels.authorUserId) — never by pen name, so two accounts sharing one
+ * pen name stay separate rows. Exactly three grouped queries regardless of
+ * author count (no N+1); every author owning at least one novel is listed
+ * even with zero sales in range, and the grand totals are summed over that
+ * full row set — never a Top-N. Legacy novels (authorUserId IS NULL) stay
+ * excluded, matching the self-scoped analytics scope. Discount allocation
+ * and approval filters are the same SQL as getAuthorAnalytics.
+ *
+ * IPE-070R2 rounding repair: the author-level aggregates are built from the
+ * SAME per-novel rounding base as getAuthorAnalytics — the order/wallet
+ * queries group by (authorUserId, novelId) with the identical per-novel
+ * DECIMAL(12,2) cast, and the author row sums those already-rounded novel
+ * values in JS (in the drill-down's novel order) instead of casting one
+ * author-level SUM. A fractional order-level discount (e.g. subtotal 3.00
+ * paid 1.00 across 3 lines of two novels) therefore reconciles exactly:
+ * grouped row == drill-down == self-summary == per-novel sum.
+ */
+export async function getAuthorSalesByAuthor(range: AuthorSalesDateRange | null) {
+  const db = await getDb();
+  if (!db) {
+    return {
+      totals: {
+        totalAuthors: 0,
+        totalNovels: 0,
+        totalRevenue: 0,
+        totalPurchases: 0,
+        salesChannels: {
+          orderRevenue: 0,
+          walletRevenue: 0,
+          orderPurchases: 0,
+          walletPurchases: 0,
+        },
+      },
+      authors: [] as Array<{
+        authorUserId: number;
+        displayName: string;
+        novelCount: number;
+        revenue: number;
+        purchases: number;
+        salesChannels: {
+          orderRevenue: number;
+          walletRevenue: number;
+          orderPurchases: number;
+          walletPurchases: number;
+        };
+      }>,
+    };
+  }
+
+  const [novelCountRows, orderRows, walletRows] = await Promise.all([
+    db
+      .select({ authorUserId: novels.authorUserId, novelCount: count() })
+      .from(novels)
+      .where(isNotNull(novels.authorUserId))
+      .groupBy(novels.authorUserId),
+    db
+      .select({
+        authorUserId: novels.authorUserId,
+        novelId: orderItems.novelId,
+        createdAt: novels.createdAt,
+        // Same order-level discount allocation AND same per-novel
+        // DECIMAL(12,2) rounding as getAuthorAnalytics — this cast must
+        // happen per novel, before any author-level sum (IPE-070R2).
+        revenue: sql<string>`CAST(COALESCE(SUM(${orderItems.finalPrice} * CASE WHEN COALESCE(${orders.subtotal}, 0) > 0 THEN ${orders.totalAmount} / ${orders.subtotal} ELSE 0 END), 0) AS DECIMAL(12,2))`,
+        purchases: count(),
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .innerJoin(payments, eq(orders.id, payments.orderId))
+      .innerJoin(novels, eq(orderItems.novelId, novels.id))
+      .where(and(
+        isNotNull(novels.authorUserId),
+        eq(orders.status, "approved"),
+        eq(orders.paymentStatus, "approved"),
+        eq(payments.status, "approved"),
+        dashboardDateWhere(orders.createdAt, range)
+      ))
+      .groupBy(novels.authorUserId, orderItems.novelId)
+      .orderBy(desc(novels.createdAt), desc(novels.id)),
+    db
+      .select({
+        authorUserId: novels.authorUserId,
+        novelId: episodePurchases.novelId,
+        createdAt: novels.createdAt,
+        revenue: sql<string>`CAST(COALESCE(SUM(${episodePurchases.pricePaid}), 0) AS DECIMAL(12,2))`,
+        purchases: count(),
+      })
+      .from(episodePurchases)
+      .innerJoin(novels, eq(episodePurchases.novelId, novels.id))
+      .where(and(
+        isNotNull(novels.authorUserId),
+        dashboardDateWhere(episodePurchases.purchasedAt, range)
+      ))
+      .groupBy(novels.authorUserId, episodePurchases.novelId)
+      .orderBy(desc(novels.createdAt), desc(novels.id)),
+  ]);
+
+  const ownerIds = Array.from(
+    new Set(
+      [...novelCountRows, ...orderRows, ...walletRows]
+        .map((row) => row.authorUserId)
+        .filter((id): id is number => typeof id === "number")
+    )
+  );
+  const nameRows = ownerIds.length
+    ? await db
+        .select({ id: users.id, name: users.name, authorName: users.authorName })
+        .from(users)
+        .where(inArray(users.id, ownerIds))
+    : [];
+  const nameById = new Map(nameRows.map((row) => [row.id, row]));
+
+  const novelCountByAuthor = new Map(novelCountRows.filter(r => r.authorUserId != null).map((row) => [row.authorUserId as number, Number(row.novelCount) || 0]));
+
+  // Per-novel contributions keyed by (author, novel); both rowsets arrive
+  // ordered desc(createdAt), desc(id) — the same order getAuthorAnalytics
+  // accumulates its owned novels in.
+  type NovelContrib = {
+    createdAt: Date;
+    orderRevenue: number;
+    walletRevenue: number;
+    orderPurchases: number;
+    walletPurchases: number;
+  };
+  const novelsByAuthor = new Map<number, Map<number, NovelContrib>>();
+  const collect = (
+    rows: Array<{ authorUserId: number | null; novelId: number; createdAt: Date; revenue: string; purchases: number }>,
+    channel: "order" | "wallet"
+  ) => {
+    for (const row of rows) {
+      if (row.authorUserId == null) continue;
+      let byNovel = novelsByAuthor.get(row.authorUserId);
+      if (!byNovel) {
+        byNovel = new Map();
+        novelsByAuthor.set(row.authorUserId, byNovel);
+      }
+      let contrib = byNovel.get(row.novelId);
+      if (!contrib) {
+        contrib = { createdAt: row.createdAt, orderRevenue: 0, walletRevenue: 0, orderPurchases: 0, walletPurchases: 0 };
+        byNovel.set(row.novelId, contrib);
+      }
+      const revenue = Number(row.revenue) || 0;
+      const purchases = Number(row.purchases) || 0;
+      if (channel === "order") {
+        contrib.orderRevenue = revenue;
+        contrib.orderPurchases = purchases;
+      } else {
+        contrib.walletRevenue = revenue;
+        contrib.walletPurchases = purchases;
+      }
+    }
+  };
+  collect(orderRows as any, "order");
+  collect(walletRows as any, "wallet");
+
+  const normalizeName = (value: string | null | undefined) => {
+    const trimmed = String(value ?? "").trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  let totalOrderRevenue = 0;
+  let totalWalletRevenue = 0;
+  let totalOrderPurchases = 0;
+  let totalWalletPurchases = 0;
+  let totalNovels = 0;
+
+  const authors = ownerIds
+    .map((authorUserId) => {
+      // Sum the already-rounded per-novel values in the drill-down's novel
+      // order (desc createdAt, desc id) so every surface shares one
+      // rounding base and one accumulation order (IPE-070R2).
+      const byNovel = novelsByAuthor.get(authorUserId) ?? new Map<number, NovelContrib>();
+      const novelContribs = Array.from(byNovel.entries()).sort((a, b) =>
+        b[1].createdAt.getTime() - a[1].createdAt.getTime() || b[0] - a[0]
+      );
+      let orderRevenue = 0;
+      let walletRevenue = 0;
+      let orderPurchases = 0;
+      let walletPurchases = 0;
+      for (const [, contrib] of novelContribs) {
+        orderRevenue += contrib.orderRevenue;
+        walletRevenue += contrib.walletRevenue;
+        orderPurchases += contrib.orderPurchases;
+        walletPurchases += contrib.walletPurchases;
+      }
+      const novelCount = novelCountByAuthor.get(authorUserId) ?? 0;
+      totalOrderRevenue += orderRevenue;
+      totalWalletRevenue += walletRevenue;
+      totalOrderPurchases += orderPurchases;
+      totalWalletPurchases += walletPurchases;
+      totalNovels += novelCount;
+      // Same effective-name fallback as resolveEffectiveAuthorName: pen
+      // name wins, account name is the fallback. A missing/unusable name
+      // degrades to a label only — grouping stays by authorUserId.
+      const userRow = nameById.get(authorUserId);
+      const displayName =
+        normalizeName(userRow?.authorName) ?? normalizeName(userRow?.name) ?? `Author #${authorUserId}`;
+      return {
+        authorUserId,
+        displayName,
+        novelCount,
+        revenue: orderRevenue + walletRevenue,
+        purchases: orderPurchases + walletPurchases,
+        salesChannels: {
+          orderRevenue,
+          walletRevenue,
+          orderPurchases,
+          walletPurchases,
+        },
+      };
+    })
+    .sort((a, b) =>
+      b.revenue - a.revenue ||
+      b.purchases - a.purchases ||
+      a.displayName.localeCompare(b.displayName, "th") ||
+      a.authorUserId - b.authorUserId
+    );
+
+  return {
+    totals: {
+      totalAuthors: authors.length,
+      totalNovels,
+      totalRevenue: totalOrderRevenue + totalWalletRevenue,
+      totalPurchases: totalOrderPurchases + totalWalletPurchases,
+      salesChannels: {
+        orderRevenue: totalOrderRevenue,
+        walletRevenue: totalWalletRevenue,
+        orderPurchases: totalOrderPurchases,
+        walletPurchases: totalWalletPurchases,
+      },
+    },
+    authors,
   };
 }
 
