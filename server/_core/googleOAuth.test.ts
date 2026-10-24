@@ -4,6 +4,33 @@ import { serialize as serializeCookie } from "cookie";
 import * as db from "../db";
 import * as googleOidc from "./googleOidc";
 import * as googleIdentityService from "../services/googleIdentityService";
+
+vi.mock("../services/sessionRegistry", () => {
+  const okRow = {
+    id: 9001, userId: 1, sid: "sid-mock", tokenHash: "th", tokenVersion: 2,
+    status: "active", revokedReason: null, loginAt: new Date(), lastSeenAt: null,
+    expiresAt: new Date(Date.now() + 86400000), createdVia: "google",
+    clientLabel: null, adoptOf: null,
+  };
+  return {
+    generateSid: vi.fn(() => "sid-mock"),
+    sha256Token: vi.fn(() => "th-mock"),
+    findSessionByCookie: vi.fn(async () => null),
+    findRotatableRow: vi.fn(async () => null),
+    allocateSessionRow: vi.fn(async () => okRow),
+    isReaderSessionControlsEnabled: vi.fn(() => false),
+    reconcileAfterFlagOn: vi.fn(async () => undefined),
+    maybePromoteUnslotted: vi.fn(async () => null),
+    adoptLegacySession: vi.fn(async () => okRow),
+    revokeByToken: vi.fn(async () => undefined),
+    revokeOwnSession: vi.fn(async () => true),
+    listUserSessions: vi.fn(async () => []),
+    resolveThirdLogin: vi.fn(async () => ({ ok: true, session: okRow })),
+    sessionHoldsLease: vi.fn(async () => false),
+    labelFromUserAgent: vi.fn(() => "R2 Test Browser"),
+  };
+});
+import * as sessionRegistry from "../services/sessionRegistry";
 import { AnonymousCredentialError } from "./authErrors";
 import { ENV } from "./env";
 import { sdk } from "./sdk";
@@ -572,6 +599,7 @@ describe("Google OAuth /api/auth/google/callback", () => {
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     const resolvedUser = { id: 42, openId: "google:google-sub-1", name: "Test User" } as any;
     vi.spyOn(googleIdentityService, "resolveGoogleIdentity").mockResolvedValue({ outcome: "created", user: resolvedUser });
+    vi.spyOn(sessionRegistry, "generateSid").mockReturnValue("sid-test");
     const createSessionSpy = vi.spyOn(sdk, "createSessionToken").mockResolvedValue("fake-session-jwt");
 
     const { callback } = captureGoogleOAuthHandlers();
@@ -1048,5 +1076,75 @@ describe("Google OAuth /api/auth/google/callback - intent branching (login vs co
     it("resolveConnectCallbackDestination itself has exactly two parameters (status, mandatoryConnectionRequired) - structurally cannot accept a path/returnTo override even if a future caller tried to pass one", () => {
       expect(resolveConnectCallbackDestination.length).toBe(2);
     });
+  });
+});
+
+// R3 — OAuth registration-outage contract (F3/E1): if the durable registry
+// registration fails, the login FAILS with 503 and NO session cookie is
+// issued — under BOTH flag states (the revocation floor is un-flagged, so
+// an untracked credential is never acceptable in either mode).
+describe("Google OAuth callback — registry outage contract (R3/F3)", () => {
+    const VALID_STATE = "valid-state-value";
+    const originalAuthProvider = ENV.authProvider;
+    const originalClientId = ENV.googleClientId;
+    const originalClientSecret = ENV.googleClientSecret;
+    const originalRedirectUri = ENV.googleRedirectUri;
+
+    beforeEach(() => {
+      ENV.authProvider = "google";
+      ENV.googleClientId = "test-client-id";
+      ENV.googleClientSecret = "test-client-secret";
+      ENV.googleRedirectUri = "https://staging.ipenovel.com/api/auth/google/callback";
+    });
+
+    afterEach(() => {
+      ENV.authProvider = originalAuthProvider;
+      ENV.googleClientId = originalClientId;
+      ENV.googleClientSecret = originalClientSecret;
+      ENV.googleRedirectUri = originalRedirectUri;
+    });
+
+    const VALID_NONCE = "valid-nonce-value";
+    const VALID_VERIFIER = "valid-code-verifier";
+    function outageRequest() {
+      return fakeRequest({
+        query: { code: "auth-code-r3", state: VALID_STATE },
+        cookies: {
+          [GOOGLE_STATE_COOKIE]: VALID_STATE,
+          [GOOGLE_NONCE_COOKIE]: VALID_NONCE,
+          [GOOGLE_PKCE_COOKIE]: VALID_VERIFIER,
+          [GOOGLE_INTENT_COOKIE]: "login",
+        },
+      });
+    }
+  it.each([true, false])("registry outage, flag=%s -> 503, NO session cookie", async (flag) => {
+    const { vi: viLocal } = await import("vitest");
+    viLocal.spyOn(googleOidc, "exchangeCodeForTokens").mockResolvedValue({ idToken: "fake-id-token" });
+    viLocal.spyOn(googleOidc, "verifyGoogleIdToken").mockResolvedValue({
+      sub: "google-sub-r3", email: "r3@example.com", emailVerified: true, name: "R3", picture: null,
+    });
+    viLocal.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
+    viLocal.spyOn(googleIdentityService, "resolveGoogleIdentity").mockResolvedValue({
+      outcome: "created", user: { id: 4242, openId: "google:google-sub-r3", name: "R3" } as any,
+    });
+    viLocal.spyOn(sessionRegistry, "isReaderSessionControlsEnabled").mockReturnValue(flag);
+    viLocal.spyOn(sessionRegistry, "findRotatableRow").mockResolvedValue(null);
+    viLocal.spyOn(sessionRegistry, "reconcileAfterFlagOn").mockResolvedValue(undefined);
+    viLocal.spyOn(sessionRegistry, "generateSid").mockReturnValue("sid-r3");
+    // The mint itself succeeds (JWT_SECRET absence is a config-failure path,
+    // not the contract under test) — only the REGISTRATION fails.
+    viLocal.spyOn(sdk, "createSessionToken").mockResolvedValue("fake-session-jwt");
+    viLocal.spyOn(sessionRegistry, "allocateSessionRow").mockRejectedValue(new Error("registry down"));
+    const errorSpy = viLocal.spyOn(console, "error").mockImplementation(() => {});
+
+    const { callback } = captureGoogleOAuthHandlers();
+    const res = fakeResponse();
+    await callback(outageRequest(), res);
+    console.log("[R3OUT]", JSON.stringify({ status: res.statusCalls, body: res.jsonBody, cookies: res.cookieCalls.length }));
+    console.log("[R3OUT]", JSON.stringify({ status: res.statusCalls, body: res.jsonBody, cookies: res.cookieCalls.length }));
+
+    expect(res.cookieCalls.find((c) => c[0] === "app_session_id")).toBeUndefined();
+    expect(res.statusCalls).toEqual([503]);
+    errorSpy.mockRestore();
   });
 });

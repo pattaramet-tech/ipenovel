@@ -1,4 +1,13 @@
-import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
+import {
+  LEASE_HELD_CODE,
+  LEASE_LOST_CODE,
+  LEASE_REQUIRED_CODE,
+  NOT_ADMIN_ERR_MSG,
+  SESSION_LEGACY_UNSLOTTED_CODE,
+  SESSION_REVOKED_CODE,
+  SESSION_SLOT_PENDING_CODE,
+  UNAUTHED_ERR_MSG,
+} from '@shared/const';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -121,7 +130,14 @@ export function sanitizeTrpcErrorShape(shape: any, error: { code: string }, logg
   // carries anything beyond this one fixed literal - no userId, email, or
   // Google sub is ever attached to this error's cause.
   const safeAuthGateCode =
-    causeCode === GOOGLE_CONNECTION_REQUIRED_CODE || causeCode === ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE
+    causeCode === GOOGLE_CONNECTION_REQUIRED_CODE ||
+    causeCode === ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE ||
+    causeCode === SESSION_SLOT_PENDING_CODE ||
+    causeCode === SESSION_LEGACY_UNSLOTTED_CODE ||
+    causeCode === LEASE_HELD_CODE ||
+    causeCode === LEASE_LOST_CODE ||
+    causeCode === LEASE_REQUIRED_CODE ||
+    causeCode === SESSION_REVOKED_CODE
       ? causeCode
       : undefined;
   const safeShape = {
@@ -195,7 +211,46 @@ const requireUser = t.middleware(async opts => {
  * protectedProcedure below, specifically so an admin action is never
  * blocked by a customer-facing migration gate).
  */
-export const authenticatedProcedure = t.procedure.use(requireUser);
+// R2/F4 (exact pending allowlist): the pending gate lives on
+ // authenticatedProcedure itself so EVERY business chain (protected,
+ // admin, authorCatalog/authorContent, payments-admin, nqa-admin,
+ // merge-aware) is covered architecturally. The session-management
+ // allowlist (auth.sessions.*) is built on sessionSelfProcedure below —
+ // same auth, no session gate — because a pending_choice session must
+ // still be able to list and resolve its own chooser. auth.me/auth.logout
+ // are publicProcedure and unaffected.
+// R2 Reader Session Controls (C1/F4): the pending gate lives on
+// authenticatedProcedure itself so EVERY business chain (protected,
+// admin, authorCatalog/authorContent, payments-admin, nqa-admin,
+// merge-aware) is covered architecturally. The session-management
+// allowlist (auth.sessions.*) is built on sessionSelfProcedure below —
+// same auth, no session gate — because a pending_choice session must
+// still be able to list and resolve its own chooser. auth.me/auth.logout
+// are publicProcedure and unaffected. unslotted_legacy is deliberately
+// NOT blocked at any gate: it keeps its non-reading rights and is
+// enforced by the per-surface paid predicate instead.
+const requireSessionSlotResolved = t.middleware(async opts => {
+  const { next } = opts;
+  if (
+    process.env.READER_SESSION_CONTROLS === "true" &&
+    opts.ctx.authSession?.status === "pending_choice"
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Choose a session to sign out before continuing.",
+      cause: { code: SESSION_SLOT_PENDING_CODE },
+    });
+  }
+  // Pure gate: throws for pending_choice, otherwise passes the ctx through.
+  return next();
+});
+
+export const authenticatedProcedure = t.procedure
+  .use(requireUser)
+  .use(requireSessionSlotResolved);
+
+// Allowlist chain: identical auth (requireUser) WITHOUT the pending gate.
+export const sessionSelfProcedure = t.procedure.use(requireUser);
 
 const requireAccountMergeSessionCurrent = t.middleware(async opts => {
   const { ctx, next } = opts;
@@ -281,8 +336,8 @@ const requireGoogleMigrationComplete = t.middleware(async opts => {
  * The procedure type for ordinary signed-in "business actions" (bookshelf,
  * wallet, points, orders, payments, purchases, wishlist, reading a
  * member-only episode, editing profile data, ...). Built on
- * authenticatedProcedure (auth already required) plus the mandatory
- * Google-migration gate - so EVERY router that already used
+ * authenticatedProcedure (auth + session gate already applied upstream) plus
+ * the mandatory Google-migration gate - so EVERY router that already used
  * protectedProcedure is covered by this central middleware automatically,
  * with no per-router edits needed. Anything that must remain reachable
  * even while a user is gated (see authenticatedProcedure's docstring) must
@@ -290,7 +345,7 @@ const requireGoogleMigrationComplete = t.middleware(async opts => {
  */
 export const protectedProcedure = mergeAwareAuthenticatedProcedure.use(requireGoogleMigrationComplete);
 
-export const adminProcedure = t.procedure.use(
+export const adminProcedure = authenticatedProcedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
 
@@ -315,7 +370,7 @@ export const adminProcedure = t.procedure.use(
  * Admins take the same session shape they already had. Authors additionally
  * fail closed when their session is a completed account-merge Source.
  */
-export const authorContentProcedure = t.procedure.use(
+export const authorContentProcedure = authenticatedProcedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
     if (!ctx.user || (ctx.user.role !== "admin" && ctx.user.role !== "author")) {

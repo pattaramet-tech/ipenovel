@@ -1,4 +1,4 @@
-import { AXIOS_TIMEOUT_MS, COOKIE_NAME, SESSION_JWT_ISSUER, SESSION_TTL_MS } from "@shared/const";
+import { AXIOS_TIMEOUT_MS, COOKIE_NAME, SESSION_JWT_ISSUER, SESSION_TTL_MS, SESSION_TTL_SECONDS } from "@shared/const";
 import axios, { type AxiosInstance } from "axios";
 import { parse as parseCookieHeader } from "cookie";
 import type { Request } from "express";
@@ -26,12 +26,21 @@ export type SessionPayload = {
   // may only send one on the very first login. A session must remain valid
   // without one; see normalizeProviderName.
   name?: string | null;
+  // Reader Session Controls (R2): v2 tokens carry a random 128-bit session id
+  // and a token-format version. v1 (legacy) payloads leave both undefined.
+  sid?: string;
+  tv?: number;
 };
 
 export type VerifiedSession = {
   openId: string;
   appId: string;
   name: string | null;
+  // R2: the `sid` claim (v2 tokens); null for legacy v1 tokens.
+  sid: string | null;
+  // R3/F7: the verified JWT `exp` claim (seconds) — expiry deadlines derive
+  // from THIS claim, never from the default TTL assumption.
+  expSeconds: number;
   // Epoch seconds from the JWT's own `iat` claim (always present - every
   // token this codebase issues is signed via signSession's .setIssuedAt()).
   // Used by isSessionIssuedBeforeCutoff/authenticateRequest to enforce
@@ -249,13 +258,14 @@ class SDKServer {
    */
   async createSessionToken(
     openId: string,
-    options: { expiresInMs?: number; name?: string | null } = {}
+    options: { expiresInMs?: number; name?: string | null; sid?: string } = {}
   ): Promise<string> {
     return this.signSession(
       {
         openId,
         appId: ENV.appId,
         name: normalizeProviderName(options.name),
+        sid: options.sid,
       },
       options
     );
@@ -275,6 +285,7 @@ class SDKServer {
       openId: payload.openId,
       appId,
       name: payload.name ?? null,
+      ...(payload.sid ? { sid: payload.sid, tv: 2 } : {}),
     })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setIssuedAt()
@@ -304,7 +315,30 @@ class SDKServer {
         issuer: SESSION_JWT_ISSUER,
         audience: expectedAppId,
       });
-      const { openId, appId, name, iat } = payload as Record<string, unknown>;
+      const { openId, appId, name, iat, sid, exp, tv } = payload as Record<string, unknown>;
+
+      // R4/IR-02 — strict ORIGINAL claim-shape validation BEFORE any
+      // normalization. The v2 protocol is (sid: base64url 16-64, tv: 2)
+      // TOGETHER; the legacy protocol is (no sid, no tv). A signed token
+      // with a sid/tv claim of the wrong type/shape, sid without tv,
+      // tv without sid, or tv !== 2 is structurally suspect and is rejected
+      // here — it must NEVER be normalized (e.g. a non-string sid flattened
+      // to null) into the legacy path.
+      const hasSidClaim = "sid" in payload;
+      const hasTvClaim = "tv" in payload;
+      if (hasSidClaim || hasTvClaim) {
+        const sidShapeOk = typeof sid === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(sid);
+        const tvOk = tv === 2;
+        if (!sidShapeOk || !tvOk) {
+          return null;
+        }
+      }
+      // R4/IR-02 — the exp claim is structural: every token this codebase
+      // has ever minted carries one. A missing/non-numeric/non-positive exp
+      // is rejected outright instead of degrading to a 0/default deadline.
+      if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) {
+        return null;
+      }
 
       if (
         !isNonEmptyString(openId) ||
@@ -333,6 +367,12 @@ class SDKServer {
         appId,
         name: typeof name === "string" && name.length > 0 ? name : null,
         issuedAtSeconds: iat,
+        // R4/IR-02: reaching here, a present sid claim is already shape-valid
+        // (checked above pre-normalization); its absence means a legacy token.
+        sid: typeof sid === "string" && sid.length > 0 ? sid : null,
+        // R3/F7 + R4/IR-02: the verified exp claim — deadlines derive from
+        // this, never from a default-TTL assumption.
+        expSeconds: exp,
       };
     } catch {
       // Malformed JWT, bad signature, expired, wrong issuer/audience, or an
@@ -515,7 +555,154 @@ class SDKServer {
     // login page behind unrelated transactions. Real login boundaries already
     // update lastSignedIn (Manus OAuth sync/callback and Google identity
     // resolution), so simply return the verified backing user here.
+
+    // R2 Reader Session Controls — registry floor + adoption. The floor is
+    // NEVER feature-flagged: a revoked/superseded registry row rejects the
+    // request regardless of any flag. Slot/pending/lease enforcement lives
+    // elsewhere (flag-gated). Note: this floor runs before the per-procedure
+    // account-merge gate; both orders deny — revocation is the terminal fact.
+    const sessionRow = await this.resolveRegistryRow(req, user, session, sessionCookie!);
+
     return user;
+  }
+
+  /**
+   * R2: authenticate + resolve the registry row in one pass.
+   * ctx.authSession comes from here; the returned row may be null when the
+   * flag is OFF and the cookie has no registry row (adoption deferred).
+   * R4/C: `sessionExpiresAt` is the VERIFIED JWT exp — the chooser
+   * resolution uses it as the activated row's deadline.
+   */
+  async authenticateRequestWithSession(
+    req: Request
+  ): Promise<{
+    user: User;
+    sessionRow: import("../../drizzle/schema").AuthSession | null;
+    sessionExpiresAt: Date | null;
+  }> {
+    const user = await this.authenticateRequest(req);
+    const cookies = this.parseCookies(req.headers.cookie);
+    const token = cookies.get(COOKIE_NAME) ?? "";
+    const session = await this.verifySession(token);
+    if (!session) {
+      // Unreachable in practice (authenticateRequest throws for every
+      // verify failure), kept for type honesty.
+      return { user, sessionRow: null, sessionExpiresAt: null };
+    }
+    const row = await this.resolveRegistryRow(req, user, session, token);
+    const sessionExpiresAt =
+      Number.isFinite(session.expSeconds) && session.expSeconds > 0
+        ? new Date(session.expSeconds * 1000)
+        : null;
+    return { user, sessionRow: row, sessionExpiresAt };
+  }
+
+  /**
+   * The revocation floor + adoption + throttled visibility. See R1D B3:
+   * signature/admin-shape/forced-relogin/DB-user already happened above.
+   */
+  private async resolveRegistryRow(
+    req: Request,
+    user: User,
+    session: VerifiedSession,
+    token: string
+  ): Promise<import("../../drizzle/schema").AuthSession | null> {
+    const registry = await import("../services/sessionRegistry");
+    // R4/C — strict claim validation BEFORE any legacy/v2 branch: a
+    // verified signature is not enough. The exp claim must exist, be a
+    // finite positive number of seconds, and a v2 (sid-bearing) token must
+    // carry a syntactically valid sid. Absence/nonfinite/malformed shape is
+    // a structural credential failure (invalid_session_token), never a
+    // silent fall-through to the legacy path.
+    if (!Number.isFinite(session.expSeconds) || session.expSeconds <= 0) {
+      throw new AnonymousCredentialError("Session expiry missing or malformed", "invalid_session_token");
+    }
+    if (session.sid && !/^[A-Za-z0-9_-]{16,64}$/.test(session.sid)) {
+      throw new AnonymousCredentialError("Session sid malformed", "invalid_session_token");
+    }
+    const row = await registry.findSessionByCookie({ token, sid: session.sid });
+    if (row && (row.status === "revoked" || row.status === "superseded")) {
+      // Terminal rows never authenticate. Cookie cleared (same class as
+      // forced_relogin) so the browser stops resending a dead token.
+      throw new AnonymousCredentialError("Session revoked", "session_revoked");
+    }
+    if (!row && session.sid) {
+      // v2 tokens are registry-authoritative: a missing row is a structural
+      // failure (never silently re-adopted into the legacy path).
+      throw new AnonymousCredentialError("Session registry row missing", "invalid_session_token");
+    }
+    if (row) {
+      // R3/F6 — strict binding: the row MUST belong to the verified user,
+      // and the token format must match the row version (v2 sid-bearing /
+      // v1 sid-less). Any mismatch is a structural credential failure.
+      if (row.userId !== user.id) {
+        throw new AnonymousCredentialError("Session owner mismatch", "invalid_session_token");
+      }
+      if (session.sid && row.tokenVersion !== 2) {
+        throw new AnonymousCredentialError("Token format mismatch", "invalid_session_token");
+      }
+      if (!session.sid && row.tokenVersion !== 1) {
+        throw new AnonymousCredentialError("Token format mismatch", "invalid_session_token");
+      }
+      // R3/F7 — DB-time row expiry: a non-terminal row past its deadline
+      // (e.g. a pending chooser window) is flipped to superseded(expired)
+      // via a status-guarded conditional UPDATE and rejected.
+      const flipped = await registry.expireRowIfPastDeadline(row.id);
+      if (flipped) {
+        throw new AnonymousCredentialError("Session expired", "invalid_session_token");
+      }
+    }
+    if (!row) {
+      // Legacy v1 cookie: adoption (only while the controls are enabled;
+      // deferred otherwise — the cookie keeps legacy behavior until then).
+      // R3/F7: the deadline is the VERIFIED JWT exp claim, never an
+      // iat+default-TTL inference.
+      if (registry.isReaderSessionControlsEnabled()) {
+        const expiresAt = new Date(session.expSeconds * 1000);
+        const adopted = await registry.adoptLegacySession({
+          userId: user.id,
+          token,
+          expiresAt,
+          clientLabel: registry.labelFromUserAgent(req.headers["user-agent"]),
+        });
+        return adopted;
+      }
+      return null;
+    }
+    if (registry.isReaderSessionControlsEnabled()) {
+      if (row.status === "unslotted_legacy") {
+        // C1 promotion trigger (a): throttled by status — cheap no-op when
+        // the row is not unslotted.
+        const promoted = await registry.maybePromoteUnslotted(row.id);
+        if (promoted && promoted.status === "active") {
+          await registry.touchLastSeen(promoted.id);
+          return promoted;
+        }
+        return promoted;
+      }
+      if (row.status === "active") {
+        // R4/A — reconcile-before-rights: the OFF→ON reconciliation runs on
+        // the FIRST real authenticated request after the flip and on every
+        // request after it — decoupled from the lastSeen throttle (a recent
+        // touch no longer skips it). It never runs from the UI's
+        // sessions.list. lastSeen keeps its own throttled write; the
+        // reconciliation itself is idempotent (within-quota users cost one
+        // indexed count).
+        await registry.touchLastSeen(row.id);
+        await registry.reconcileAfterFlagOn(row.userId);
+        // R4/A: rights are decided from the POST-reconciliation status —
+        // a request that reconciled its own row away never rides a stale
+        // pre-reconcile active row.
+        const fresh = await registry.getSessionRowById(row.id);
+        if (fresh) return fresh;
+      }
+    }
+    return row;
+  }
+
+  /** Reads the raw session cookie value (no verification) — R2 logout/rotation. */
+  readSessionToken(req: Request): string | null {
+    return this.parseCookies(req.headers.cookie).get(COOKIE_NAME) ?? null;
   }
 }
 

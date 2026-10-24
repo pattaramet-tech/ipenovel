@@ -4,6 +4,32 @@ import * as db from "../db";
 import { registerOAuthRoutes } from "./oauth";
 import { sdk } from "./sdk";
 
+vi.mock("../services/sessionRegistry", () => {
+  const okRow = {
+    id: 9001, userId: 1, sid: "sid-mock", tokenHash: "th", tokenVersion: 2,
+    status: "active", revokedReason: null, loginAt: new Date(), lastSeenAt: null,
+    expiresAt: new Date(Date.now() + 86400000), createdVia: "google",
+    clientLabel: null, adoptOf: null,
+  };
+  return {
+    generateSid: vi.fn(() => "sid-mock"),
+    sha256Token: vi.fn(() => "th-mock"),
+    findSessionByCookie: vi.fn(async () => null),
+    findRotatableRow: vi.fn(async () => null),
+    allocateSessionRow: vi.fn(async () => okRow),
+    isReaderSessionControlsEnabled: vi.fn(() => false),
+    reconcileAfterFlagOn: vi.fn(async () => undefined),
+    maybePromoteUnslotted: vi.fn(async () => null),
+    adoptLegacySession: vi.fn(async () => okRow),
+    revokeByToken: vi.fn(async () => undefined),
+    revokeOwnSession: vi.fn(async () => true),
+    listUserSessions: vi.fn(async () => []),
+    resolveThirdLogin: vi.fn(async () => ({ ok: true, session: okRow })),
+    sessionHoldsLease: vi.fn(async () => false),
+    labelFromUserAgent: vi.fn(() => "R2 Test Browser"),
+  };
+});
+
 vi.mock("../db", async () => {
   const actual = await vi.importActual<typeof db>("../db");
   return { ...actual };
@@ -93,6 +119,7 @@ describe("OAuth callback - database unavailable", () => {
     vi.spyOn(sdk, "getUserInfo").mockResolvedValue({ openId: "user-123", name: "Somchai" } as any);
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+    vi.spyOn(db, "getUserByOpenId").mockResolvedValue({ id: 1, openId: "user-123", role: "user" } as any);
     vi.spyOn(sdk, "createSessionToken").mockResolvedValue("fake-session-token");
 
     const handler = captureOAuthCallbackHandler();

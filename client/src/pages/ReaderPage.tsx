@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { useReadingLease } from "@/_core/hooks/useReadingLease";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -56,6 +57,32 @@ export default function ReaderPage() {
   );
 
   const purchaseMutation = trpc.reader.purchaseEpisode.useMutation();
+
+  // R2 Reader Session Controls: paid-reading lease lifecycle (30s heartbeat,
+  // TTL-only expiry, explicit transfer — never an automatic steal).
+  const isPaidEpisode = !!episodeId && !!(episodeData?.episode && !episodeData.episode.isFree);
+  const { leaseState, transferLease } = useReadingLease({
+    episodeId,
+    enabled: !!user && isPaidEpisode,
+  });
+  const leaseGateCode = (dataError as unknown as { data?: { authGateCode?: string } } | null)?.data?.authGateCode;
+  const showTransferCta =
+    isPaidEpisode &&
+    (leaseState.phase === "held-by-other" ||
+      leaseState.phase === "lost" ||
+      leaseGateCode === "LEASE_HELD" ||
+      leaseGateCode === "LEASE_LOST" ||
+      leaseGateCode === "LEASE_REQUIRED");
+  const [transferring, setTransferring] = useState(false);
+  const doTransferLease = async () => {
+    try {
+      setTransferring(true);
+      await transferLease(episodeId);
+      await utils.reader.getEpisode.invalidate({ episodeId });
+    } finally {
+      setTransferring(false);
+    }
+  };
 
   const { preferences: readerPreferences, updatePreference: updateReaderPreference, resetPreferences: resetReaderPreferences } = useReaderPreferences();
   const { fontSize, fontFamily, lineHeight, paragraphSpacing, theme, focusMode } = readerPreferences;
@@ -611,7 +638,57 @@ export default function ReaderPage() {
     );
   }
 
+  // R4/D: the lease lifecycle applies MID-READ too — a lease lost/held-by-
+  // other while the page is open (displaced by another session, TTL lapse,
+  // explicit transfer elsewhere) must take the reading view over, not just
+  // the fresh-load gate-error path. The content is never readable without a
+  // live lease of this session.
+  if (showTransferCta) {
+    return (
+      <div className={styles.container}>
+        <div className={styles.error}>
+          กำลังอ่านอยู่ที่อุปกรณ์อื่น — กด “ย้ายมาอ่านที่นี่” เพื่อย้ายสิทธิ์การอ่านมาที่อุปกรณ์นี้
+        </div>
+        <button
+          onClick={doTransferLease}
+          disabled={transferring}
+          data-testid="reader-transfer-lease"
+          className={styles.backButton}
+        >
+          {transferring ? "กำลังย้าย…" : "ย้ายมาอ่านที่นี่"}
+        </button>
+        <button onClick={handleBackToNovel} className={styles.backButton}>
+          {t("reader.backToNovel")}
+        </button>
+      </div>
+    );
+  }
+
   if (dataError || !episode || !novel) {
+    const leaseCode = (dataError as unknown as { data?: { authGateCode?: string } } | null)?.data?.authGateCode;
+    const isLeaseGate = leaseCode === "LEASE_HELD" || leaseCode === "LEASE_LOST" || leaseCode === "LEASE_REQUIRED";
+    if (isLeaseGate) {
+      // R2: another session of this account is reading — explicit transfer
+      // press required (never automatic).
+      return (
+        <div className={styles.container}>
+          <div className={styles.error}>
+            กำลังอ่านอยู่ที่อุปกรณ์อื่น — กด “ย้ายมาอ่านที่นี่” เพื่อย้ายสิทธิ์การอ่านมาที่อุปกรณ์นี้
+          </div>
+          <button
+            onClick={doTransferLease}
+            disabled={transferring}
+            data-testid="reader-transfer-lease"
+            className={styles.backButton}
+          >
+            {transferring ? "กำลังย้าย…" : "ย้ายมาอ่านที่นี่"}
+          </button>
+          <button onClick={handleBackToNovel} className={styles.backButton}>
+            {t("reader.backToNovel")}
+          </button>
+        </div>
+      );
+    }
     const errorMsg = dataError ? (dataError as unknown as { message?: string })?.message || "Unknown error" : t("reader.errorLoadingEpisode");
     return (
       <div className={styles.container}>
