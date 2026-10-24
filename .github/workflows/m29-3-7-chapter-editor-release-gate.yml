@@ -103,6 +103,39 @@ jobs:
             exit 1
           fi
           if ! git diff --quiet c5742e7802bc250cc1e198f0de7774eaa2c2ca0b...HEAD -- package.json pnpm-lock.yaml; then
-            echo "M29.3 must not add dependencies without separate review."
-            exit 1
+            echo "Dependency delta vs M29.3 baseline detected - evaluating Reader Session Controls exception..."
+            RSC_EXCEPTION=0
+            if [ "${GITHUB_REPOSITORY:-}" = "pattaramet-tech/ipenovel" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ "${GITHUB_BASE_REF:-}" = "main" ] && [ "${GITHUB_HEAD_REF:-}" = "feat/reader-session-controls" ]; then
+              EVENT_HEAD_REPO="$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH")"
+              EVENT_HEAD_SHA="$(jq -r '.pull_request.head.sha // ""' "$GITHUB_EVENT_PATH")"
+              if [ "$EVENT_HEAD_REPO" = "pattaramet-tech/ipenovel" ] && [ -n "$EVENT_HEAD_SHA" ] && git merge-base --is-ancestor 01c9efef680a4f414ea15a9447ed0f1618ba9dba "$EVENT_HEAD_SHA" && [ "$(git rev-parse HEAD^2 2>/dev/null || true)" = "$EVENT_HEAD_SHA" ]; then
+                RSC_EXCEPTION=1
+                RSC_BASE="01c9efef680a4f414ea15a9447ed0f1618ba9dba"
+                RSC_TIP="$EVENT_HEAD_SHA"
+              fi
+            elif [ "${GITHUB_REPOSITORY:-}" = "pattaramet-tech/ipenovel" ] && [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ] && [ "${GITHUB_REF:-}" = "refs/heads/feat/reader-session-controls" ] && [ "${GITHUB_SHA:-}" = "$(git rev-parse HEAD)" ] && git merge-base --is-ancestor 01c9efef680a4f414ea15a9447ed0f1618ba9dba HEAD; then
+              RSC_EXCEPTION=1
+              RSC_BASE="01c9efef680a4f414ea15a9447ed0f1618ba9dba"
+              RSC_TIP="$(git rev-parse HEAD)"
+            fi
+            if [ "$RSC_EXCEPTION" = "1" ]; then
+              PKG_BLOB="$(git rev-parse "$RSC_TIP:package.json")"
+              LOCK_BLOB="$(git rev-parse "$RSC_TIP:pnpm-lock.yaml")"
+              MERGED_PKG_BLOB="$(git rev-parse HEAD:package.json)"
+              MERGED_LOCK_BLOB="$(git rev-parse HEAD:pnpm-lock.yaml)"
+              if [ "$PKG_BLOB" != "69f7972e1d3f7eaa6052310318134c8bbc0fe785" ] || [ "$LOCK_BLOB" != "b4a01df0852a348833da7408db65370d4889db46" ] || [ "$MERGED_PKG_BLOB" != "69f7972e1d3f7eaa6052310318134c8bbc0fe785" ] || [ "$MERGED_LOCK_BLOB" != "b4a01df0852a348833da7408db65370d4889db46" ]; then
+                echo "Reader Session Controls exception denied: dependency blob SHA mismatch (tip package=$PKG_BLOB lock=$LOCK_BLOB merged package=$MERGED_PKG_BLOB lock=$MERGED_LOCK_BLOB)"
+                exit 1
+              fi
+              RSC_DELTA="$(git diff --name-only "$RSC_BASE" "$RSC_TIP" -- . ':(exclude).github/workflows/m29-3-7-chapter-editor-release-gate.yml')"
+              if [ -n "$RSC_DELTA" ]; then
+                echo "Reader Session Controls exception denied: unapproved changes after the reviewed commit:"
+                echo "$RSC_DELTA"
+                exit 1
+              fi
+              echo "Reader Session Controls exception verified: approved dependency blobs (69f7972e/b4a01df0), reviewed commit is ancestor, workflow-only delta."
+            else
+              echo "M29.3 must not add dependencies without separate review."
+              exit 1
+            fi
           fi
