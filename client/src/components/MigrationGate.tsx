@@ -46,12 +46,23 @@ export default function MigrationGate({ children }: { children: ReactNode }) {
     { enabled: shouldQuery }
   );
 
+  // R4/D: a pending_choice session (third login on its way to the session
+  // chooser) is rejected by the session-slot gate on THIS self-status query
+  // (SESSION_SLOT_PENDING). That rejection says nothing about the Google
+  // migration — and blocking the whole app here would make the chooser
+  // itself unreachable. Treat the pending-gate rejection as "no migration
+  // verdict yet": not loading, not an error — the gate stays open and the
+  // session resolves its chooser first.
+  const pendingSlotGate =
+    (statusQuery.error as { data?: { authGateCode?: string } | undefined })?.data
+      ?.authGateCode === "SESSION_SLOT_PENDING";
+
   const action = resolveMigrationGateAction({
     pathname,
     isAuthenticated,
     authLoading,
-    statusLoading: shouldQuery && statusQuery.isLoading,
-    statusError: shouldQuery && statusQuery.isError,
+    statusLoading: shouldQuery && statusQuery.isLoading && !pendingSlotGate,
+    statusError: shouldQuery && statusQuery.isError && !pendingSlotGate,
     accountMerged: statusQuery.data?.accountMerged,
     needsConnection: statusQuery.data?.needsConnection,
   });

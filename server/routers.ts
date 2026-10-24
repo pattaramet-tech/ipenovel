@@ -1,7 +1,7 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, authenticatedProcedure, mergeAwareAuthenticatedProcedure, router } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, authenticatedProcedure, sessionSelfProcedure, mergeAwareAuthenticatedProcedure, router } from "./_core/trpc";
 import {
   ACCOUNT_MERGED_RELOGIN_REQUIRED_CODE,
   ACCOUNT_MERGED_RELOGIN_REQUIRED_MESSAGE,
@@ -11,6 +11,20 @@ import { evaluateGoogleConnectionCutoff } from "./_core/env";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
+import * as leaseService from "./services/readingLease";
+import { sdk } from "./_core/sdk";
+import * as sessionRegistryModule from "./services/sessionRegistry";
+
+// C1 promotion trigger helper (unslotted → active when a slot frees).
+async function registryMaybePromote(sessionId: number) {
+  return sessionRegistryModule.maybePromoteUnslotted(sessionId);
+}
+import {
+  LEASE_HELD_CODE,
+  LEASE_LOST_CODE,
+  SESSION_LEGACY_UNSLOTTED_CODE,
+  SESSION_SLOT_PENDING_CODE,
+} from "@shared/const";
 import * as orderService from "./services/orderService";
 import * as walletService from "./services/walletService";
 import { ApprovalService } from "./services/approvalService";
@@ -491,11 +505,87 @@ export const appRouter = router({
   // ============ AUTH ============
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+      // R2: the registry row is revoked so the cookie value itself dies at
+      // logout (a captured token can't outlive the logout).
+      // R4/IR-03: durable-revoke outcome is reported TRUTHFULLY — a failed
+      // persistence write is never dressed up as confirmed registry
+      // revocation just because the browser cookie was cleared. The cookie
+      // is always cleared (the browser logout itself must not fail), but the
+      // response distinguishes "revoked" (durable) from "unconfirmed"
+      // (registry write failed/unavailable) and "not_found" (no durable
+      // registry row backs this cookie). No secrets in any branch.
+      let durableRevocation: "revoked" | "unconfirmed" | "not_found" = "not_found";
+      try {
+        const token = sdk.readSessionToken(ctx.req);
+        if (token) {
+          const registry = await import("./services/sessionRegistry");
+          const outcome = await registry.revokeByToken(token);
+          durableRevocation =
+            outcome === "revoked" ? "revoked" : outcome === "not_found" ? "not_found" : "unconfirmed";
+        }
+      } catch {
+        durableRevocation = "unconfirmed";
+      }
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return { success: true } as const;
+      return { success: true, durableRevocation } as const;
     }),
+    // R2: Current logins (self-scoped) — list and revoke the account's own
+    // sessions. Built on sessionSelfProcedure so a pending_choice caller can
+    // still resolve its chooser; unslotted keeps non-reading rights.
+    sessions: router({
+      list: sessionSelfProcedure.query(async ({ ctx }) => {
+        // R4/A: reconciliation is the AUTH path's job (reconcile-before-
+        // rights, first request after ON included) — this listing is a pure
+        // read and never a reconciliation/promotion trigger.
+        const registry = await import("./services/sessionRegistry");
+        return {
+          readerSessionControls: registry.isReaderSessionControlsEnabled(),
+          sessions: await registry.listUserSessions(ctx.user.id, ctx.authSession?.id ?? null),
+        };
+      }),
+      // R4/E: revoke is NOT on the exact pending allowlist
+      // (me/list/resolveThirdLogin/logout) — it requires a RESOLVED slot
+      // (authenticatedProcedure), so a pending chooser caller can never
+      // evict other sessions before holding a slot itself.
+      revoke: authenticatedProcedure
+        .input(z.object({ sessionId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          const registry = await import("./services/sessionRegistry");
+          const ok = await registry.revokeOwnSession({
+            userId: ctx.user.id,
+            sessionId: input.sessionId,
+          });
+          return { success: ok };
+        }),
+      resolveThirdLogin: sessionSelfProcedure
+        .input(z.object({ displaceSessionId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          if (!ctx.authSession) {
+            throw new TRPCError({ code: "FORBIDDEN", cause: { code: SESSION_SLOT_PENDING_CODE } });
+          }
+          const registry = await import("./services/sessionRegistry");
+          // R4/C: the activated row's post-resolution deadline is this
+          // request's VERIFIED JWT exp (null/malformed → the registry's own
+          // EXPIRED guard rejects the resolution).
+          const result = await registry.resolveThirdLogin({
+            callerSessionId: ctx.authSession.id,
+            displaceSessionId: input.displaceSessionId,
+            activateExpiresAt: ctx.authSessionExpiresAt ?? new Date(Number.NaN),
+          });
+          if (!result.ok) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "This sign-in request is no longer resolvable - please sign in again.",
+              cause: { code: result.code === "KEEP_NOT_FOUND" ? "KEEP_NOT_FOUND" : "PENDING_EXPIRED" },
+            });
+          }
+          return { success: true as const };
+        }),
+    }),
+    // R2: the paid-reading lease (one concurrent reader per account).
+
     // Backs ProfilePage's "Connected Accounts" section AND the mandatory
     // migration gate (both client- and server-side) - AUTH_PROVIDER
     // google/transition only, see client-side shouldShowGoogleConnectSection.
@@ -693,8 +783,21 @@ export const appRouter = router({
             saleType,
             packageToc,
             packageChapterCount: packageToc.length,
+            // R2 C5: entitlement stays canRead (isFree ∨ hasPurchased ∨ isAdmin —
+            // unchanged); a PAID fileUrl additionally requires this session to
+            // hold the reading lease. Free rows keep today's public behavior.
             fileUrl: canRead
-              ? await resolveStoredFileValueSafe(fileUrl, "episodeFile", "novels.episodes")
+              ? await (async () => {
+                  const paidGate = await leaseService.evaluatePaidRead({
+                    user: userId ? ctx.user : null,
+                    authSession: ctx.authSession,
+                    isFree: isFree === true,
+                    autoAcquire: false,
+                  });
+                  return paidGate.allowed
+                    ? resolveStoredFileValueSafe(fileUrl, "episodeFile", "novels.episodes")
+                    : null;
+                })()
               : null,
             adminCanPreview: isAdmin && !isFree && !hasPurchased,
             progressPercent: progress?.progressPercent ?? null,
@@ -1220,6 +1323,22 @@ export const appRouter = router({
         const episode = await db.getEpisodeById(input.episodeId);
         if (!episode) throw new TRPCError({ code: "NOT_FOUND" });
 
+        // R2 C2: the response carries the FULL row including paid content, so
+        // the reading-lease predicate gates the WHOLE response (no auto-acquire).
+        const leaseGate = await leaseService.evaluatePaidRead({
+          user: ctx.user,
+          authSession: ctx.authSession,
+          isFree: episode.isFree === true,
+          autoAcquire: false,
+        });
+        if (!leaseGate.allowed) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Reading session required for this paid episode.",
+            cause: { code: leaseGate.code },
+          });
+        }
+
         return {
           ...episode,
           fileUrl: await resolveStoredFileValueSafe(episode.fileUrl, "episodeFile", "myNovels.episode"),
@@ -1238,6 +1357,22 @@ export const appRouter = router({
         const episode = await db.getEpisodeById(input.episodeId);
         if (!episode || !episode.fileUrl) {
           throw new TRPCError({ code: "NOT_FOUND" });
+        }
+
+        // R2 C3: paid downloads additionally require this session to hold
+        // the reading lease (no auto-acquire).
+        const leaseGate = await leaseService.evaluatePaidRead({
+          user: ctx.user,
+          authSession: ctx.authSession,
+          isFree: episode.isFree === true,
+          autoAcquire: false,
+        });
+        if (!leaseGate.allowed) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Reading session required for this download.",
+            cause: { code: leaseGate.code },
+          });
         }
 
         // Access already confirmed above - now (and only now) turn the
@@ -3661,6 +3796,72 @@ export const appRouter = router({
 
   // ============ NOVEL READER ============
   reader: router({
+    lease: router({
+      acquire: authenticatedProcedure
+        .input(z.object({ episodeId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          const episode = await db.getEpisodeById(input.episodeId);
+          if (!episode) throw new TRPCError({ code: "NOT_FOUND" });
+          // R2 C1 promotion trigger (b): an unslotted legacy session is
+          // promoted here first (user-lock tx) whenever a slot is free.
+          if (ctx.authSession) {
+            const promoted = await registryMaybePromote(ctx.authSession.id);
+            if (promoted) ctx.authSession = promoted;
+          }
+          if (ctx.authSession?.status === "pending_choice") {
+            throw new TRPCError({ code: "FORBIDDEN", cause: { code: SESSION_SLOT_PENDING_CODE } });
+          }
+          if (ctx.authSession?.status === "unslotted_legacy") {
+            throw new TRPCError({ code: "FORBIDDEN", cause: { code: SESSION_LEGACY_UNSLOTTED_CODE } });
+          }
+          const result = await leaseService.acquireLease({
+            sessionId: ctx.authSession?.id ?? -1,
+            userId: ctx.user.id,
+          });
+          if (!result.ok) {
+            const holder = await leaseService.getLeaseHolderSummary(ctx.user.id);
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              cause: { code: LEASE_HELD_CODE },
+              message: holder
+                ? `กำลังอ่านอยู่ที่อุปกรณ์อื่น (${holder.clientLabel ?? "ไม่ทราบอุปกรณ์"}) — กดย้ายมาอ่านที่นี่เพื่อย้ายสิทธิ์การอ่าน`
+                : "Reading session required.",
+            });
+          }
+          return { ok: true as const, leaseVersion: result.leaseVersion, expiresAt: result.expiresAt };
+        }),
+      renew: authenticatedProcedure
+        .input(z.object({ episodeId: z.number().int().positive(), leaseVersion: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          const result = await leaseService.renewLease({
+            sessionId: ctx.authSession?.id ?? -1,
+            userId: ctx.user.id,
+            leaseVersion: input.leaseVersion,
+          });
+          if (!result.ok) {
+            throw new TRPCError({ code: "FORBIDDEN", cause: { code: LEASE_LOST_CODE } });
+          }
+          return { ok: true as const, leaseVersion: result.leaseVersion, expiresAt: result.expiresAt };
+        }),
+      transfer: authenticatedProcedure
+        .input(z.object({ episodeId: z.number().int().positive() }))
+        .mutation(async ({ input, ctx }) => {
+          if (ctx.authSession?.status === "pending_choice") {
+            throw new TRPCError({ code: "FORBIDDEN", cause: { code: SESSION_SLOT_PENDING_CODE } });
+          }
+          if (ctx.authSession?.status === "unslotted_legacy") {
+            throw new TRPCError({ code: "FORBIDDEN", cause: { code: SESSION_LEGACY_UNSLOTTED_CODE } });
+          }
+          const result = await leaseService.transferLease({
+            sessionId: ctx.authSession?.id ?? -1,
+            userId: ctx.user.id,
+          });
+          if (!result.ok) {
+            throw new TRPCError({ code: "FORBIDDEN", cause: { code: LEASE_LOST_CODE } });
+          }
+          return { ok: true as const, leaseVersion: result.leaseVersion, expiresAt: result.expiresAt };
+        }),
+    }),
     getEpisode: protectedProcedure
       .input(z.object({
         episodeId: z.number(),
@@ -3675,6 +3876,30 @@ export const appRouter = router({
 
         if (!episodeData) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Episode not found" });
+        }
+
+        // R2 C1: for an ENTITLED paid episode (getReaderEpisode already
+        // enforced free/purchase — never weakened), the full content is
+        // served only when THIS session holds the reading lease. C1
+        // auto-acquires when no lease is held. Non-entitled sessions skip
+        // the lease gate entirely and get the baseline locked preview.
+        // R3/F5: the REAL isFree drives the gate — a free chapter is
+        // readable by any session and NEVER acquires/steals/consumes the
+        // paid-reading lease.
+        if (episodeData.canRead === true && episodeData.episode.isFree !== true) {
+          const leaseGate = await leaseService.evaluatePaidRead({
+            user: ctx.user,
+            authSession: ctx.authSession,
+            isFree: episodeData.episode.isFree === true,
+            autoAcquire: true,
+          });
+          if (!leaseGate.allowed) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "Reading session required for this paid episode.",
+              cause: { code: leaseGate.code },
+            });
+          }
         }
 
         // Add wallet balance to response

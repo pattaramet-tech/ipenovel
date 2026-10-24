@@ -7,6 +7,7 @@ import { CatalogAccessError, rethrowCatalogAccess, withCatalogEpisodeWrite } fro
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as fileService from "../services/fileService";
+import * as leaseService from "../services/readingLease";
 import * as db from "../db";
 
 export const fileRouter = router({
@@ -18,6 +19,21 @@ export const fileRouter = router({
     .input(z.object({ episodeId: z.number() }))
     .query(async ({ input, ctx }) => {
       try {
+        // R2 C4: entitlement (free ∨ purchase) is enforced inside
+        // getEpisodeDownloadUrl; a PAID download additionally requires this
+        // session to hold the reading lease (no auto-acquire).
+        const episode = await db.getEpisodeById(input.episodeId);
+        if (episode) {
+          const leaseGate = await leaseService.evaluatePaidRead({
+            user: ctx.user,
+            authSession: ctx.authSession,
+            isFree: episode.isFree === true,
+            autoAcquire: false,
+          });
+          if (!leaseGate.allowed) {
+            throw new Error("Reading session required for this download.");
+          }
+        }
         const url = await fileService.getEpisodeDownloadUrl(ctx.user.id, input.episodeId);
         return { downloadUrl: url };
       } catch (error: any) {

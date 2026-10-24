@@ -1,6 +1,6 @@
 import { COOKIE_NAME } from "@shared/const";
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import type { User } from "../../drizzle/schema";
+import type { AuthSession, User } from "../../drizzle/schema";
 import { isAnonymousCredentialError } from "./authErrors";
 import { getSessionCookieOptions } from "./cookies";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
@@ -10,15 +10,27 @@ export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
   user: User | null;
+  // R2 Reader Session Controls: the registry row backing this request, when
+  // one exists (null = anonymous or legacy cookie not yet adopted).
+  authSession: AuthSession | null;
+  // R4/C: the VERIFIED JWT exp of this request's cookie — the chooser
+  // resolution uses it as the activated row's post-resolution deadline
+  // (a resolved login is never cut at the 30-minute pending window).
+  authSessionExpiresAt: Date | null;
 };
 
 export async function createContext(
   opts: CreateExpressContextOptions
 ): Promise<TrpcContext> {
   let user: User | null = null;
+  let authSession: AuthSession | null = null;
+  let authSessionExpiresAt: Date | null = null;
 
   try {
-    user = await sdk.authenticateRequest(opts.req);
+    const resolved = await sdk.authenticateRequestWithSession(opts.req);
+    user = resolved.user;
+    authSession = resolved.sessionRow;
+    authSessionExpiresAt = resolved.sessionExpiresAt;
   } catch (error) {
     if (isAnonymousCredentialError(error)) {
       // Expected: no cookie, malformed/expired JWT, wrong appId/issuer/
@@ -41,7 +53,11 @@ export async function createContext(
       // exactly as dead as a structurally invalid one; clearing it the same
       // way makes the browser stop resending it after one round trip
       // instead of hitting this rejection on every subsequent request.
-      if (error.reason === "invalid_session_token" || error.reason === "forced_relogin") {
+      if (
+        error.reason === "invalid_session_token" ||
+        error.reason === "forced_relogin" ||
+        error.reason === "session_revoked"
+      ) {
         const cookieOptions = getSessionCookieOptions(opts.req);
         opts.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       }
@@ -65,5 +81,7 @@ export async function createContext(
     req: opts.req,
     res: opts.res,
     user,
+    authSession,
+    authSessionExpiresAt,
   };
 }

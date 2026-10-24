@@ -23,7 +23,7 @@ function contextFor(role: "user" | "author" | "admin" | null): TrpcContext {
 const scope = { workspaceId: 1, workItemId: 1 };
 
 describe("IPE-070R4B author editorial role gates", () => {
-  it.each(["admin", "user", null] as const)(
+  it.each(["admin", "user"] as const)(
     "rejects %s before any author editorial lookup",
     async (role) => {
       const caller = appRouter.createCaller(contextFor(role));
@@ -39,6 +39,24 @@ describe("IPE-070R4B author editorial role gates", () => {
       })).rejects.toMatchObject({ code: "FORBIDDEN" });
     },
   );
+
+  // Reader Session R3 role-chain coverage: authorContentProcedure now rides
+  // the authenticatedProcedure chain (requireUser → session gate → role
+  // gate), so a NULL user hits requireUser first (UNAUTHORIZED "Please
+  // login") and never reaches the author role gate.
+  it("rejects null (anonymous) at requireUser before any author editorial lookup", async () => {
+    const caller = appRouter.createCaller(contextFor(null));
+    await expect(caller.workspace.authorEditorial.surface(scope)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.workspace.authorEditorial.runChecker(scope)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.workspace.authorEditorial.stage({
+      ...scope,
+      approvalId: 1,
+      expectedDraftId: 1,
+      expectedDraftVersion: 1,
+      expectedDraftSha256: "a".repeat(64),
+      idempotencyKey: "stage-denied",
+    })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
 
   it("keeps Admin editorial and publish routes closed to an Author", async () => {
     const caller = appRouter.createCaller(contextFor("author"));
