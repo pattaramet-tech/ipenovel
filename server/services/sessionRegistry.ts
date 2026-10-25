@@ -336,6 +336,99 @@ export async function maybePromoteUnslotted(sessionId: number): Promise<AuthSess
   });
 }
 
+/**
+ * R8B-4C — slot recovery: a pending_choice session claims a FREED slot on
+ * its own next authenticated request, WITHOUT displacing any live session.
+ *
+ * Invariants carried over unchanged:
+ *  - Terminal states are PERMANENT: activation is a CONDITIONAL UPDATE from
+ *    `pending_choice` only — a row concurrently revoked/superseded can never
+ *    be revived (durable revocation floor, F2).
+ *  - Pending expiry is a DB-time fact (F7): a chooser window that elapsed
+ *    while every slot was taken flips to superseded(expired), never active.
+ *  - Canonical lock order + fresh locked reads (F2): sessionSlots row FOR
+ *    UPDATE → authSessions row FOR UPDATE → decisions; quota is a LOCKING
+ *    recount (R4/IR-04) so a concurrent login/claim/rotation that waited on
+ *    the slots lock can never push active past SESSION_SLOT_LIMIT.
+ *  - R4/C: the activated row inherits the caller's VERIFIED JWT expiry —
+ *    claiming the slot never cuts the session at the 30-minute window.
+ *  - Flag OFF: the choose-a-session concept vanishes (the pending gate is
+ *    flag-gated too), so the row promotes via a status-guarded update with
+ *    the verified exp; sessionSlots stays untouched while OFF (mirrors
+ *    allocateSessionRow's OFF path).
+ */
+export async function maybeActivatePending(params: {
+  sessionId: number;
+  activateExpiresAt: Date;
+}): Promise<AuthSessionRow | null> {
+  const db = await getDbOrNull();
+  if (!db) return null;
+  const [row] = await db.select().from(authSessions).where(eq(authSessions.id, params.sessionId)).limit(1);
+  if (!row) return null;
+  if (row.status !== "pending_choice") return row;
+  // A caller whose verified JWT is already expired (or malformed) cannot
+  // claim a slot — the activated cookie would outlive nothing (F7/DB time
+  // still re-checks the deadline inside the tx below).
+  if (
+    !Number.isFinite(params.activateExpiresAt.getTime()) ||
+    params.activateExpiresAt.getTime() <= Date.now()
+  ) {
+    return row;
+  }
+  if (!isReaderSessionControlsEnabled()) {
+    await db
+      .update(authSessions)
+      .set({ status: "active", expiresAt: params.activateExpiresAt })
+      .where(and(eq(authSessions.id, params.sessionId), eq(authSessions.status, "pending_choice")));
+    return (await db.select().from(authSessions).where(eq(authSessions.id, params.sessionId)).limit(1))[0] ?? null;
+  }
+  return db.transaction(async (tx: any) => {
+    await lockUserSlotRow(tx, row.userId);
+    // F2: fresh locked read AFTER the slots lock — a concurrent logout /
+    // rotation / revoke may have moved the row while we waited.
+    const [fresh] = await tx
+      .select()
+      .from(authSessions)
+      .where(eq(authSessions.id, params.sessionId))
+      .for("update");
+    if (!fresh || fresh.status !== "pending_choice") return fresh ?? null;
+    // F7: DB-time expiry — the chooser window elapsed → expired, never active.
+    const [expiredNow] = await tx
+      .select({ id: authSessions.id })
+      .from(authSessions)
+      .where(and(eq(authSessions.id, fresh.id), sql`${authSessions.expiresAt} <= NOW()`))
+      .for("update");
+    if (expiredNow) {
+      await tx
+        .update(authSessions)
+        .set({ status: "superseded", revokedReason: "expired" })
+        .where(and(eq(authSessions.id, fresh.id), eq(authSessions.status, "pending_choice")));
+      const [flipped] = await tx.select().from(authSessions).where(eq(authSessions.id, fresh.id));
+      return flipped ?? null;
+    }
+    // R4/IR-04: locking recount decides AFTER the wait on the slots lock —
+    // a concurrent login that took the last slot makes this claim a no-op
+    // (the chooser stays; displacement via resolveThirdLogin is unchanged).
+    const activeCount = await countActive(tx, fresh.userId);
+    if (activeCount >= SESSION_SLOT_LIMIT) return fresh;
+    const activated = await tx
+      .update(authSessions)
+      .set({ status: "active", expiresAt: params.activateExpiresAt })
+      .where(and(eq(authSessions.id, fresh.id), eq(authSessions.status, "pending_choice")));
+    if (affectedOf(activated) === 0) {
+      // Unreachable while the row lock is held — kept as a truth-teller.
+      const [current] = await tx.select().from(authSessions).where(eq(authSessions.id, fresh.id));
+      return current ?? null;
+    }
+    await tx
+      .update(sessionSlots)
+      .set({ activeCount: activeCount + 1 })
+      .where(eq(sessionSlots.userId, fresh.userId));
+    const [full] = await tx.select().from(authSessions).where(eq(authSessions.id, fresh.id));
+    return full ?? null;
+  });
+}
+
 /** Throttled lastSeenAt (≥60s apart) — a small authSessions write, never the users row. */
 export async function touchLastSeen(sessionId: number): Promise<void> {
   const db = await getDbOrNull();

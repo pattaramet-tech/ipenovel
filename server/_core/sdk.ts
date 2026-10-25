@@ -697,6 +697,24 @@ class SDKServer {
         if (fresh) return fresh;
       }
     }
+    // R8B-4C — slot recovery: a pending_choice session claims a freed slot
+    // on its own next request. This runs at context construction — BEFORE
+    // the requireSessionSlotResolved gate sees ctx.authSession — so a
+    // chooser blocked by a full quota unblocks the moment a slot frees
+    // (another device's logout), without displacing any live session. The
+    // registry function owns the per-flag semantics, the DB-time expiry,
+    // and the locking quota recount.
+    if (row.status === "pending_choice") {
+      const activated = await registry.maybeActivatePending({
+        sessionId: row.id,
+        activateExpiresAt: new Date(session.expSeconds * 1000),
+      });
+      if (activated && activated.status === "active") {
+        await registry.touchLastSeen(activated.id);
+        return activated;
+      }
+      return activated ?? row;
+    }
     return row;
   }
 
