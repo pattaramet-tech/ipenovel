@@ -7,12 +7,14 @@ import { describe, expect, it } from "vitest";
 import AdmZip from "adm-zip";
 import {
   FIXED_ZIP_TIMESTAMP,
+  MAX_EXPORT_FILENAME_COMPONENT_CHARS,
   MAX_EXPORT_ITEMS,
   MAX_EXPORT_PER_ITEM_BYTES,
   NovelExportError,
   NovelExportErrorCode,
   NovelExportItem,
   NovelExportPackage,
+  sanitizeExportFilenameComponent,
 } from "./novelExport.domain";
 import {
   assertNoCrossPackChapterCollisions,
@@ -443,5 +445,382 @@ describe("IPE-064R4B review rounds 13-15 collision refinements", () => {
       [overlappingA, overlappingB, valid],
       new Set([3]),
     );
+  });
+});
+
+// ============================================================================
+// fix/thainovel-zip-title-collision regression cases.
+// Root cause: the shared sanitizer keeps only the final path segment, so a
+// Thai heading containing "/" was truncated to e.g. "2).txt". The fix maps
+// slash/backslash to readable Unicode (U+2044, U+FF3C) BEFORE sanitization
+// and adds a deterministic chapter-identity suffix when distinct chapters
+// still collide after normalization/truncation.
+// ============================================================================
+
+describe("Thai title slash normalization (ZIP filename collision fix)", () => {
+  // "\u2044" = FRACTION SLASH, "\uFF3C" = FULLWIDTH REVERSE SOLIDUS — the
+  // readable replacements emitted by makeThaiNovelFilenameReadable.
+  const FRACTION_SLASH = "\u2044";
+  const FULLWIDTH_REVERSE_SOLIDUS = "\uFF3C";
+
+  it("keeps (1/2) and (2/2) titles readable instead of truncating to the last segment", () => {
+    expect(resolveThaiNovelFilename("บทที่ 5 ตอนจบ (1/2)")).toBe(`บทที่ 5 ตอนจบ (1${FRACTION_SLASH}2).txt`);
+    expect(resolveThaiNovelFilename("บทที่ 6 ตอนจบ (2/2)")).toBe(`บทที่ 6 ตอนจบ (2${FRACTION_SLASH}2).txt`);
+  });
+
+  it("keeps (1/3), (2/3) and (3/3) titles readable", () => {
+    expect(resolveThaiNovelFilename("บทที่ 7 เริ่มต้น (1/3)")).toBe(`บทที่ 7 เริ่มต้น (1${FRACTION_SLASH}3).txt`);
+    expect(resolveThaiNovelFilename("บทที่ 7 กลางทาง (2/3)")).toBe(`บทที่ 7 กลางทาง (2${FRACTION_SLASH}3).txt`);
+    expect(resolveThaiNovelFilename("บทที่ 7 บทส่งท้าย (3/3)")).toBe(`บทที่ 7 บทส่งท้าย (3${FRACTION_SLASH}3).txt`);
+  });
+
+  it("maps backslashes and mixed separators to readable alternatives", () => {
+    expect(resolveThaiNovelFilename("บทที่ 8 (ภาคา\\ภาคบี)")).toBe(`บทที่ 8 (ภาคา${FULLWIDTH_REVERSE_SOLIDUS}ภาคบี).txt`);
+    expect(resolveThaiNovelFilename("บทที่ 9 (1\\2/3)")).toBe(`บทที่ 9 (1${FULLWIDTH_REVERSE_SOLIDUS}2${FRACTION_SLASH}3).txt`);
+  });
+
+  it("keeps the first TXT line verbatim while the filename uses readable slashes", () => {
+    const item = makeItem({
+      episodeNumber: "5",
+      content: "บทที่ 5 การตัดสินใจ (1/2)\n\nเนื้อหาบทที่ห้า",
+    });
+    const [entry] = buildThaiNovelExportEntries(makePackage({ items: [item] }));
+    expect(entry.title).toBe("บทที่ 5 การตัดสินใจ (1/2)");
+    expect(entry.filename).toBe(`บทที่ 5 การตัดสินใจ (1${FRACTION_SLASH}2).txt`);
+    expect(entry.text.split("\n")[0]).toBe("บทที่ 5 การตัดสินใจ (1/2)");
+    expect(entry.text.split("\n")[1]).toBe("");
+  });
+
+  it("still neutralizes every other filesystem-invalid character", () => {
+    const filename = resolveThaiNovelFilename('บทที่ 10 ชื่อ: "สงคราม"? <จบ> | ตอน*');
+    expect(filename).not.toMatch(/[\\/:*?"<>|\u0000-\u001f]/);
+    expect(filename.endsWith(".txt")).toBe(true);
+    expect(filename).toBe("บทที่ 10 ชื่อ สงคราม จบ ตอน.txt");
+  });
+
+  it("still truncates long titles to the shared component cap", () => {
+    const longTail = "ก".repeat(120);
+    const filename = resolveThaiNovelFilename(`บทที่ 3 ${longTail}`);
+    const stem = filename.slice(0, -".txt".length);
+    expect(stem.length).toBeLessThanOrEqual(MAX_EXPORT_FILENAME_COMPONENT_CHARS);
+    expect(stem.startsWith("บทที่ 3 ")).toBe(true);
+  });
+
+  it("falls back to the generated number when sanitization empties the title", () => {
+    expect(resolveThaiNovelFilename("???", "042")).toBe("042.txt");
+    expect(resolveThaiNovelFilename("", "043")).toBe("043.txt");
+  });
+
+  it("shared sanitizer behavior is untouched: real path structure still collapses to the last segment", () => {
+    expect(sanitizeExportFilenameComponent("a/b/c.txt")).toBe("c.txt");
+    expect(sanitizeExportFilenameComponent("..\\..\\x")).toBe("x");
+  });
+});
+
+describe("distinct-chapter filename collisions (deterministic identity suffix)", () => {
+  // "ชื่อซ้ำ?" and "ชื่อซ้ำ:" contain filesystem-invalid characters, so both
+  // sanitize to the same readable stem "ชื่อซ้ำ" — but they are DIFFERENT
+  // chapters (5 and 6) and both must survive.
+  const collidingPair = () => [
+    makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "ชื่อซ้ำ?", content: "เนื้อหาบทที่ห้า" }),
+    makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "ชื่อซ้ำ:", content: "เนื้อหาบทที่หก" }),
+  ];
+
+  it("suffixes only the later colliding entry and keeps both bodies intact", () => {
+    const entries = buildThaiNovelExportEntries(makePackage({ items: collidingPair() }));
+    expect(entries.map((entry) => entry.filename)).toEqual(["ชื่อซ้ำ.txt", "ชื่อซ้ำ (c006).txt"]);
+    // First-line titles stay verbatim — sanitization touches filenames only.
+    expect(entries[0].title).toBe("ชื่อซ้ำ?");
+    expect(entries[1].title).toBe("ชื่อซ้ำ:");
+    expect(entries[0].text).toContain("เนื้อหาบทที่ห้า");
+    expect(entries[1].text).toContain("เนื้อหาบทที่หก");
+  });
+
+  it("is deterministic across runs and ZIP builds", () => {
+    const first = buildThaiNovelExportZip(makePackage({ items: collidingPair() }));
+    const second = buildThaiNovelExportZip(makePackage({ items: collidingPair() }));
+    expect(first.entries).toEqual(second.entries);
+    expect(first.content.equals(second.content)).toBe(true);
+  });
+
+  it("never silently overwrites: the ZIP carries both files with distinct names", () => {
+    const zipExport = buildThaiNovelExportZip(makePackage({ items: collidingPair() }));
+    // adm-zip's central directory is name-ordered after toBuffer, so compare
+    // as a set — the per-name body checks below prove no overwrite happened.
+    expect([...zipExport.entryFilenames].sort()).toEqual(["ชื่อซ้ำ (c006).txt", "ชื่อซ้ำ.txt"].sort());
+    expect(new Set(zipExport.entryFilenames.map((name) => name.toLowerCase())).size).toBe(2);
+
+    const reopened = new AdmZip(zipExport.content);
+    expect(reopened.getEntry("ชื่อซ้ำ.txt")!.getData().toString("utf8")).toContain("เนื้อหาบทที่ห้า");
+    expect(reopened.getEntry("ชื่อซ้ำ (c006).txt")!.getData().toString("utf8")).toContain("เนื้อหาบทที่หก");
+  });
+
+  it("keeps preview filenames identical to the actual ZIP entry filenames when suffixing", () => {
+    const entries = buildThaiNovelExportEntries(makePackage({ items: collidingPair() }));
+    const rows = buildThaiNovelPreviewRows(entries);
+    const zipExport = buildThaiNovelExportZip(makePackage({ items: collidingPair() }));
+    // Same NAME SET (order inside the archive is adm-zip's internal choice).
+    expect([...rows.map((row) => row.filename)].sort()).toEqual([...zipExport.entryFilenames].sort());
+    expect([...zipExport.entries.map((row) => row.filename)].sort()).toEqual([...zipExport.entryFilenames].sort());
+  });
+
+  it("truncates long colliding stems before appending the identity suffix", () => {
+    const longTitle = "ฟ".repeat(120);
+    const items = [
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: longTitle, content: "ห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: longTitle, content: "หก" }),
+    ];
+    const filenames = buildThaiNovelExportEntries(makePackage({ items })).map((entry) => entry.filename);
+    expect(filenames[0]).not.toBe(filenames[1]);
+    // The first entry keeps the plain truncated name; only the later
+    // collision gets the identity suffix, appended OUTSIDE the truncation.
+    expect(filenames[0]).toBe(`${"ฟ".repeat(MAX_EXPORT_FILENAME_COMPONENT_CHARS)}.txt`);
+    const secondStem = filenames[1].slice(0, -".txt".length);
+    expect(secondStem).toBe(`${"ฟ".repeat(MAX_EXPORT_FILENAME_COMPONENT_CHARS - " (c006)".length)} (c006)`);
+    expect(secondStem.length).toBeLessThanOrEqual(MAX_EXPORT_FILENAME_COMPONENT_CHARS);
+  });
+
+  it("still fail-closes on structural duplicate chapters instead of suffixing them away", () => {
+    const dupA = makeItem({ episodeId: 1, episodeNumber: "5", content: "บทที่ 5 ฉบับแรก\n\nเนื้อหา" });
+    const dupB = makeItem({ episodeId: 2, episodeNumber: "5", content: "บทที่ 5 ฉบับซ้ำ\n\nเนื้อหา" });
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items: [dupA, dupB] })),
+      "EXPORT_INVALID_EPISODE_IDENTITY"
+    );
+  });
+});
+
+describe("slash-title ZIP integrity (fix regression)", () => {
+  it("exports a (1/3)(2/3)(3/3) pack with full readable filenames and intact bodies", () => {
+    const pack = makeItem({
+      episodeId: 1013,
+      episodeNumber: "1 - 3",
+      episodeTitle: "แพ็กตอน 1 - 3 001",
+      content: [
+        "แพ็กตอน 1 - 3 001",
+        "",
+        "บทที่ 1 แยกสามส่วน (1/3)",
+        "",
+        "เนื้อหา 1",
+        "",
+        "บทที่ 2 แยกสามส่วน (2/3)",
+        "",
+        "เนื้อหา 2",
+        "",
+        "บทที่ 3 แยกสามส่วน (3/3)",
+        "",
+        "เนื้อหา 3",
+      ].join("\n"),
+    });
+    const zipExport = buildThaiNovelExportZip(makePackage({ items: [pack] }));
+    const expected = [
+      `บทที่ 1 แยกสามส่วน (1\u20443).txt`,
+      `บทที่ 2 แยกสามส่วน (2\u20443).txt`,
+      `บทที่ 3 แยกสามส่วน (3\u20443).txt`,
+    ];
+    expect(zipExport.entryFilenames).toEqual(expected);
+    expect(zipExport.entries.map((row) => row.filename)).toEqual(expected);
+
+    const reopened = new AdmZip(zipExport.content);
+    expect(reopened.getEntryCount()).toBe(3);
+    for (const [index, filename] of expected.entries()) {
+      const chapter = index + 1;
+      const data = reopened.getEntry(filename)!.getData().toString("utf8");
+      expect(data.split("\n")[0]).toBe(`บทที่ ${chapter} แยกสามส่วน (${chapter}/3)`);
+      expect(data.split("\n")[1]).toBe("");
+      expect(data).toContain(`เนื้อหา ${chapter}`);
+    }
+  });
+
+  it("keeps a (1/2)/(2/2) pair unique without any collision suffix", () => {
+    const items = [
+      makeItem({ episodeId: 5, episodeNumber: "5", content: "บทที่ 5 ตอนจบ (1/2)\n\nเนื้อหา 5" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", content: "บทที่ 6 ตอนจบ (2/2)\n\nเนื้อหา 6" }),
+    ];
+    const zipExport = buildThaiNovelExportZip(makePackage({ items }));
+    expect(zipExport.entryFilenames).toEqual(["บทที่ 5 ตอนจบ (1\u20442).txt", "บทที่ 6 ตอนจบ (2\u20442).txt"]);
+    expect(zipExport.entryFilenames.every((name) => !name.includes(" (c"))).toBe(true);
+  });
+
+  it("keeps slashed novel titles readable in the download filename", () => {
+    const zipExport = buildThaiNovelExportZip(makePackage({ novelTitle: "ตำนานมังกร (ฉบับรวม 1/2)" }));
+    expect(zipExport.filename).toBe("ตำนานมังกร (ฉบับรวม 1\u20442)-thainovel.zip");
+  });
+});
+
+// ============================================================================
+// R2 bounded repair — REVIEW_HOLD P2.
+// R1 checked collision only BEFORE appending ` (c<generatedNumber>)` and never
+// re-checked the suffixed name. A chapter whose NATURAL name merely resembles
+// a generated suffix (e.g. title "ชื่อซ้ำ (c006)") could therefore collide
+// with a later chapter's suffixed name. R2 reserves every chapter's natural
+// name up-front and runs a bounded deterministic `-<attempt>` fallback before
+// failing closed.
+// ============================================================================
+
+describe("R2: suffix-vs-natural-name collision (reviewer fixture)", () => {
+  const reviewerFixture = () => [
+    makeItem({ episodeId: 4, episodeNumber: "4", episodeTitle: "ชื่อซ้ำ (c006)", content: "เนื้อหาบทที่สี่" }),
+    makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "ชื่อซ้ำ?", content: "เนื้อหาบทที่ห้า" }),
+    makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "ชื่อซ้ำ:", content: "เนื้อหาบทที่หก" }),
+  ];
+
+  it("never assigns a suffixed name that duplicates another chapter's natural name", () => {
+    const entries = buildThaiNovelExportEntries(makePackage({ items: reviewerFixture() }));
+    expect(entries.map((entry) => entry.filename)).toEqual([
+      "ชื่อซ้ำ (c006).txt", // chapter 4: natural name that resembles a suffix keeps it
+      "ชื่อซ้ำ.txt", // chapter 5: first claimant of the natural stem
+      "ชื่อซ้ำ (c006-2).txt", // chapter 6: ` (c006)` is taken by chapter 4 → bounded fallback
+    ]);
+    const keys = entries.map((entry) => entry.filename.toLowerCase());
+    expect(new Set(keys).size).toBe(3);
+    // No silent overwrite: all three bodies remain reachable under their names.
+    expect(entries.map((entry) => entry.text)).toEqual([
+      "ชื่อซ้ำ (c006)\n\nเนื้อหาบทที่สี่",
+      "ชื่อซ้ำ?\n\nเนื้อหาบทที่ห้า",
+      "ชื่อซ้ำ:\n\nเนื้อหาบทที่หก",
+    ]);
+  });
+
+  it("reserves natural names up-front regardless of chapter order", () => {
+    // Same collision shape but the suffix-resembling natural name comes LAST
+    // and matches the collider's generated number (`c005`), proving the
+    // earlier collider's suffix cannot pre-claim it.
+    const items = [
+      makeItem({ episodeId: 4, episodeNumber: "4", episodeTitle: "ชื่อซ้ำ?", content: "เนื้อหาบทที่สี่" }),
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "ชื่อซ้ำ:", content: "เนื้อหาบทที่ห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "ชื่อซ้ำ (c005)", content: "เนื้อหาบทที่หก" }),
+    ];
+    const entries = buildThaiNovelExportEntries(makePackage({ items }));
+    expect(entries.map((entry) => entry.filename)).toEqual([
+      "ชื่อซ้ำ.txt",
+      "ชื่อซ้ำ (c005-2).txt", // ` (c005)` reserved for chapter 6's natural name
+      "ชื่อซ้ำ (c005).txt",
+    ]);
+    expect(new Set(entries.map((entry) => entry.filename.toLowerCase())).size).toBe(3);
+  });
+
+  it("builds the reviewer fixture ZIP without unsafe-path failure and keeps bodies per name", () => {
+    const zipExport = buildThaiNovelExportZip(makePackage({ items: reviewerFixture() }));
+    expect(zipExport.itemCount).toBe(3);
+    expect(new Set(zipExport.entryFilenames).size).toBe(3);
+
+    const reopened = new AdmZip(zipExport.content);
+    expect(reopened.getEntry("ชื่อซ้ำ (c006).txt")!.getData().toString("utf8")).toContain("เนื้อหาบทที่สี่");
+    expect(reopened.getEntry("ชื่อซ้ำ.txt")!.getData().toString("utf8")).toContain("เนื้อหาบทที่ห้า");
+    expect(reopened.getEntry("ชื่อซ้ำ (c006-2).txt")!.getData().toString("utf8")).toContain("เนื้อหาบทที่หก");
+  });
+});
+
+describe("R2: 3-way collision and deterministic allocation", () => {
+  it("resolves a 3-way sanitized-title collision with distinct deterministic names", () => {
+    const items = [
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "ชื่อเดียวกัน?", content: "เนื้อหาห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "ชื่อเดียวกัน:", content: "เนื้อหาหก" }),
+      makeItem({ episodeId: 7, episodeNumber: "7", episodeTitle: "ชื่อเดียวกัน*", content: "เนื้อหาเจ็ด" }),
+    ];
+    const entries = buildThaiNovelExportEntries(makePackage({ items }));
+    expect(entries.map((entry) => entry.filename)).toEqual([
+      "ชื่อเดียวกัน.txt",
+      "ชื่อเดียวกัน (c006).txt",
+      "ชื่อเดียวกัน (c007).txt",
+    ]);
+    expect(new Set(entries.map((entry) => entry.filename.toLowerCase())).size).toBe(3);
+  });
+
+  it("is deterministic across runs for the repaired allocation", () => {
+    const items = [
+      makeItem({ episodeId: 4, episodeNumber: "4", episodeTitle: "ชื่อซ้ำ (c006)", content: "สี่" }),
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "ชื่อซ้ำ?", content: "ห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "ชื่อซ้ำ:", content: "หก" }),
+    ];
+    const first = buildThaiNovelExportZip(makePackage({ items }));
+    const second = buildThaiNovelExportZip(makePackage({ items }));
+    expect(first.entries).toEqual(second.entries);
+    expect(first.content.equals(second.content)).toBe(true);
+  });
+
+  it("falls back deterministically on case-insensitive collisions (suffix-resembling and plain)", () => {
+    const items = [
+      makeItem({ episodeId: 4, episodeNumber: "4", episodeTitle: "Same (C006)", content: "สี่" }),
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "same?", content: "ห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "SAME:", content: "หก" }),
+    ];
+    const entries = buildThaiNovelExportEntries(makePackage({ items }));
+    expect(entries.map((entry) => entry.filename)).toEqual([
+      "Same (C006).txt",
+      "same.txt",
+      "SAME (c006-2).txt", // case-insensitive key of `Same (C006).txt` is taken
+    ]);
+    const keys = entries.map((entry) => entry.filename.toLowerCase());
+    expect(new Set(keys).size).toBe(3);
+  });
+});
+
+describe("R2: long-title collisions stay bounded and readable", () => {
+  it("keeps every allocated stem within the 80-character cap, including fallback suffixes", () => {
+    const items = [
+      // Natural name fills the cap exactly with a suffix-resembling tail.
+      makeItem({ episodeId: 4, episodeNumber: "4", episodeTitle: `${"ฟ".repeat(73)} (c006)`, content: "สี่" }),
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "ฟ".repeat(120), content: "ห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: `${"ฟ".repeat(120)}:`, content: "หก" }),
+    ];
+    const filenames = buildThaiNovelExportEntries(makePackage({ items })).map((entry) => entry.filename);
+    expect(new Set(filenames.map((name) => name.toLowerCase())).size).toBe(3);
+    for (const filename of filenames) {
+      const stem = filename.slice(0, -".txt".length);
+      expect(stem.length).toBeLessThanOrEqual(MAX_EXPORT_FILENAME_COMPONENT_CHARS);
+    }
+    expect(filenames[0]).toBe(`${"ฟ".repeat(73)} (c006).txt`);
+    expect(filenames[1]).toBe(`${"ฟ".repeat(80)}.txt`);
+    // Colliding long stem is re-truncated around the `-2` fallback suffix.
+    expect(filenames[2]).toBe(`${"ฟ".repeat(71)} (c006-2).txt`);
+  });
+});
+
+describe("R2: bounded fallback fails closed instead of overwriting", () => {
+  it("throws EXPORT_UNSAFE_PATH when all bounded attempts are taken", () => {
+    // Chapter 6 is the collider; its ` (c006)` and every ` (c006-2..100)`
+    // fallback name are pre-claimed by other chapters' natural names.
+    const blockers = Array.from({ length: 99 }, (_, index) =>
+      makeItem({
+        episodeId: 1002 + index,
+        episodeNumber: String(1002 + index),
+        episodeTitle: `x (c006-${index + 2})`,
+        content: `เนื้อหา ${1002 + index}`,
+      })
+    );
+    const items = [
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "x?", content: "ห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "x:", content: "หก" }),
+      makeItem({ episodeId: 7, episodeNumber: "7", episodeTitle: "x (c006)", content: "เจ็ด" }),
+      ...blockers,
+    ];
+    expectExportError(
+      () => buildThaiNovelExportEntries(makePackage({ items })),
+      "EXPORT_UNSAFE_PATH"
+    );
+  });
+});
+
+describe("R2: preview/ZIP parity for fallback names", () => {
+  it("preview filename equals the actual ZIP entry filename including `-2` fallbacks", () => {
+    const items = [
+      makeItem({ episodeId: 4, episodeNumber: "4", episodeTitle: "ชื่อซ้ำ (c006)", content: "เนื้อหาบทที่สี่" }),
+      makeItem({ episodeId: 5, episodeNumber: "5", episodeTitle: "ชื่อซ้ำ?", content: "เนื้อหาบทที่ห้า" }),
+      makeItem({ episodeId: 6, episodeNumber: "6", episodeTitle: "ชื่อซ้ำ:", content: "เนื้อหาบทที่หก" }),
+    ];
+    const entries = buildThaiNovelExportEntries(makePackage({ items }));
+    const rows = buildThaiNovelPreviewRows(entries);
+    const zipExport = buildThaiNovelExportZip(makePackage({ items }));
+    expect([...rows.map((row) => row.filename)].sort()).toEqual([...zipExport.entryFilenames].sort());
+    expect([...zipExport.entries.map((row) => row.filename)].sort()).toEqual([...zipExport.entryFilenames].sort());
+
+    const reopened = new AdmZip(zipExport.content);
+    for (const row of rows) {
+      expect(reopened.getEntry(row.filename)!.getData().toString("utf8")).toBe(
+        entries.find((entry) => entry.filename === row.filename)!.text
+      );
+    }
   });
 });
