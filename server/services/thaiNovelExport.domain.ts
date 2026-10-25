@@ -6,6 +6,10 @@
  *
  * - one logical chapter per TXT file;
  * - the TXT filename is the sanitized first-line chapter heading;
+ * - filesystem-invalid slash/backslash characters inside the heading are
+ *   mapped to readable Unicode alternatives BEFORE shared sanitization, so
+ *   "บทที่ 141 (1/2)" keeps its full heading as the filename instead of
+ *   being truncated to the last path segment ("2).txt");
  * - the first physical line inside the TXT is the original chapter heading;
  * - exactly one blank separator line follows the heading;
  * - pack wrapper lines such as "แพ็กตอน 141 - 190 001" never appear in an
@@ -20,6 +24,7 @@
 import AdmZip from "adm-zip";
 import {
   FIXED_ZIP_TIMESTAMP,
+  MAX_EXPORT_FILENAME_COMPONENT_CHARS,
   MAX_EXPORT_ITEMS,
   MAX_EXPORT_PER_ITEM_BYTES,
   MAX_EXPORT_TOTAL_BYTES,
@@ -124,11 +129,37 @@ export function resolveThaiNovelGeneratedNumber(startNumber: number, index: numb
 }
 
 /**
+ * Filesystem-invalid slash/backslash characters mapped to readable Unicode
+ * alternatives before shared sanitization. The shared sanitizer keeps only
+ * the final path segment (anti-traversal), which would silently truncate a
+ * Thai heading like "บทที่ 141 (1/2)" to "2)" — these substitutes are NOT
+ * matched by the sanitizer's invalid-character/path rules, stay readable,
+ * are case-less (case-insensitive dedupe unaffected), and never end a
+ * component in a dot/space.
+ */
+const THAI_NOVEL_FILENAME_SLASH_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\//g, "\u2044"], // ⁄ FRACTION SLASH
+  [/\\/g, "\uFF3C"], // ＼ FULLWIDTH REVERSE SOLIDUS
+];
+
+/** Pre-sanitization readability mapping for Thai-Novel filenames. */
+export function makeThaiNovelFilenameReadable(raw: string): string {
+  let text = String(raw ?? "");
+  for (const [pattern, replacement] of THAI_NOVEL_FILENAME_SLASH_REPLACEMENTS) {
+    text = text.replace(pattern, replacement);
+  }
+  return text;
+}
+
+/**
  * Known-good Naruto contract: filename stem mirrors the first physical line,
- * with only filesystem-unsafe characters sanitized.
+ * with only filesystem-unsafe characters sanitized. Slash/backslash inside
+ * the title are converted to readable Unicode BEFORE sanitization so the
+ * complete heading survives; the shared sanitizer's path stripping and other
+ * Windows rules stay untouched.
  */
 export function resolveThaiNovelFilename(title: string, fallbackStem = "chapter"): string {
-  return `${sanitizeExportFilenameComponent(title, fallbackStem)}.txt`;
+  return `${sanitizeExportFilenameComponent(makeThaiNovelFilenameReadable(title), fallbackStem)}.txt`;
 }
 
 function titleAlreadyHasPrefix(title: string, prefix: string): boolean {
@@ -174,6 +205,50 @@ export function resolveThaiNovelTitle(
 /** Full TXT: title + blank line + canonical LF-normalized body. */
 export function buildThaiNovelTxt(body: string, title: string): string {
   return `${title}${THAI_NOVEL_TITLE_SEPARATOR}${normalizeExportText(body)}`;
+}
+
+const THAI_NOVEL_TXT_EXTENSION = ".txt";
+
+/** Bounded attempts for the deterministic `-<attempt>` fallback beyond ` (cNNN)`. */
+export const THAI_NOVEL_FILENAME_MAX_SUFFIX_ATTEMPTS = 100;
+
+/** Keep the shared 80-character component limit: re-truncate the stem around the suffix. */
+function composeThaiNovelFilename(stem: string, suffix: string): string {
+  const maxStemLength = Math.max(1, MAX_EXPORT_FILENAME_COMPONENT_CHARS - suffix.length);
+  const truncatedStem = stem.slice(0, maxStemLength).replace(/[. ]+$/, "");
+  return `${truncatedStem}${suffix}${THAI_NOVEL_TXT_EXTENSION}`;
+}
+
+/**
+ * Deterministic unique-name allocation for a chapter that lost its natural
+ * name to an earlier chapter. The first candidate is ` (c<generatedNumber>)`;
+ * if that name is taken — by ANY chapter's natural name (including names that
+ * merely resemble a generated suffix, e.g. a title "ชื่อซ้ำ (c006)") or by any
+ * previously assigned name — a bounded ` (c<generatedNumber>-<attempt>)`
+ * counter runs before failing closed. generatedNumber is unique per chapter
+ * (structural guards deduplicate source chapter numbers; explicit renumbering
+ * yields start+index), so exhaustion requires adversarial input; the throw
+ * guarantees no silent overwrite in every case.
+ */
+function allocateUniqueThaiNovelFilename(
+  naturalFilename: string,
+  generatedNumber: string,
+  reserved: ReadonlySet<string>,
+  assigned: ReadonlySet<string>
+): string {
+  const stem = naturalFilename.slice(0, -THAI_NOVEL_TXT_EXTENSION.length);
+  for (let attempt = 1; attempt <= THAI_NOVEL_FILENAME_MAX_SUFFIX_ATTEMPTS; attempt += 1) {
+    const suffix = attempt === 1 ? ` (c${generatedNumber})` : ` (c${generatedNumber}-${attempt})`;
+    const candidate = composeThaiNovelFilename(stem, suffix);
+    const key = candidate.toLowerCase();
+    if (!reserved.has(key) && !assigned.has(key)) {
+      return candidate;
+    }
+  }
+  throw new NovelExportError(
+    "EXPORT_UNSAFE_PATH",
+    `ไม่สามารถสร้างชื่อไฟล์ที่ไม่ซ้ำสำหรับบทนี้ได้ (ครบขอบเขต ${THAI_NOVEL_FILENAME_MAX_SUFFIX_ATTEMPTS} ความพยายาม): "${naturalFilename}"`
+  );
 }
 
 function stripOuterNewlines(text: string): string {
@@ -436,7 +511,11 @@ export function buildThaiNovelExportEntries(
   const chapters = expandThaiNovelLogicalChapters(pkg);
   let totalBytes = 0;
 
-  const entries = chapters.map((chapter, index) => {
+  // Pass 1 — every chapter's canonical natural filename, reserved
+  // case-insensitively across the WHOLE set BEFORE any allocation (R2): a
+  // later chapter's natural name that merely resembles ` (cNNN)` can never
+  // be stolen by an earlier collider's suffix.
+  const prepared = chapters.map((chapter, index) => {
     const sourceChapterNumber = Number(chapter.sourceChapterNumber);
     const explicitChapterNumber = opts.startEpisodeNumber === null
       ? undefined
@@ -449,26 +528,46 @@ export function buildThaiNovelExportEntries(
       opts,
       explicitChapterNumber
     );
-    const filename = resolveThaiNovelFilename(title, generatedNumber);
-    const text = buildThaiNovelTxt(chapter.body, title);
+    const naturalFilename = resolveThaiNovelFilename(title, generatedNumber);
+    return { chapter, generatedNumber, title, naturalFilename };
+  });
+  const reservedFilenames = new Set(prepared.map((prepared) => prepared.naturalFilename.toLowerCase()));
+  const assignedFilenames = new Set<string>();
+
+  // Pass 2 — allocate in canonical order: the first claimant of each natural
+  // name keeps it; later colliders go through the bounded deterministic
+  // fallback, which re-checks both reserved naturals and already-assigned
+  // names before returning.
+  const entries = prepared.map((prepared) => {
+    let filename = prepared.naturalFilename;
+    if (assignedFilenames.has(filename.toLowerCase())) {
+      filename = allocateUniqueThaiNovelFilename(
+        filename,
+        prepared.generatedNumber,
+        reservedFilenames,
+        assignedFilenames
+      );
+    }
+    assignedFilenames.add(filename.toLowerCase());
+    const text = buildThaiNovelTxt(prepared.chapter.body, prepared.title);
     const byteLength = Buffer.byteLength(text, "utf8");
 
     if (byteLength > MAX_EXPORT_PER_ITEM_BYTES) {
       throw new NovelExportError(
         "EXPORT_LIMIT_ENTRY_BYTES",
-        `ไฟล์ TXT ใหญ่เกินกำหนด (episodeId ${chapter.item.episodeId}, ${byteLength} bytes > ${MAX_EXPORT_PER_ITEM_BYTES})`,
-        { episodeId: chapter.item.episodeId, entryBytes: byteLength, maxEntryBytes: MAX_EXPORT_PER_ITEM_BYTES }
+        `ไฟล์ TXT ใหญ่เกินกำหนด (episodeId ${prepared.chapter.item.episodeId}, ${byteLength} bytes > ${MAX_EXPORT_PER_ITEM_BYTES})`,
+        { episodeId: prepared.chapter.item.episodeId, entryBytes: byteLength, maxEntryBytes: MAX_EXPORT_PER_ITEM_BYTES }
       );
     }
     totalBytes += byteLength;
 
     return {
-      episodeId: chapter.item.episodeId,
-      sourceEpisodeNumber: chapter.item.episodeNumber,
-      sourceChapterNumber: chapter.sourceChapterNumber,
-      generatedNumber,
+      episodeId: prepared.chapter.item.episodeId,
+      sourceEpisodeNumber: prepared.chapter.item.episodeNumber,
+      sourceChapterNumber: prepared.chapter.sourceChapterNumber,
+      generatedNumber: prepared.generatedNumber,
       filename,
-      title,
+      title: prepared.title,
       text,
       byteLength,
     };
@@ -491,7 +590,9 @@ export function buildThaiNovelPreviewRows(entries: ThaiNovelExportEntry[]): Thai
 }
 
 function buildThaiNovelZipFilename(novelTitle: string, novelId: number): string {
-  const base = sanitizeExportFilenameComponent(novelTitle, `novel-${novelId}`);
+  // Same slash-truncation root cause as chapter filenames: a novel title
+  // like "ตำนาน (1/2)" must not collapse to "2)-thainovel.zip".
+  const base = sanitizeExportFilenameComponent(makeThaiNovelFilenameReadable(novelTitle), `novel-${novelId}`);
   return `${base}${THAI_NOVEL_ZIP_SUFFIX}.zip`;
 }
 
