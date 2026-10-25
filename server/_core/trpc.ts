@@ -192,6 +192,21 @@ const requireUser = t.middleware(async opts => {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
   }
 
+  // R8B-4E — belt-and-suspenders terminal guard: ctx.authSession is decided
+  // upstream (resolveRegistryRow's floor + last-read assertions), so a
+  // terminal row can never legitimately reach here. This in-memory check
+  // costs no query and makes the floor explicit on EVERY user-bearing chain
+  // — both authenticatedProcedure (whose slot gate below only names
+  // pending_choice) and the sessionSelfProcedure allowlist (list/resolve/
+  // logout), which deliberately has no slot gate.
+  if (ctx.authSession && (ctx.authSession.status === "revoked" || ctx.authSession.status === "superseded")) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "This session is no longer active - please sign in again.",
+      cause: { code: SESSION_REVOKED_CODE },
+    });
+  }
+
   return next({
     ctx: {
       ...ctx,
@@ -241,7 +256,20 @@ const requireSessionSlotResolved = t.middleware(async opts => {
       cause: { code: SESSION_SLOT_PENDING_CODE },
     });
   }
-  // Pure gate: throws for pending_choice, otherwise passes the ctx through.
+  // R8B-4E — explicit terminal rejection on the slot-gated chain too (the
+  // requireUser guard already covers it on every chain; kept here so this
+  // gate's contract names all three non-servable statuses outright).
+  if (
+    opts.ctx.authSession &&
+    (opts.ctx.authSession.status === "revoked" || opts.ctx.authSession.status === "superseded")
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "This session is no longer active - please sign in again.",
+      cause: { code: SESSION_REVOKED_CODE },
+    });
+  }
+  // Pure gate: throws for pending_choice/terminal, otherwise passes the ctx through.
   return next();
 });
 

@@ -598,6 +598,32 @@ class SDKServer {
   }
 
   /**
+   * R8B-4E — the revocation floor enforced at the LAST read. A registry row
+   * that flips terminal (revoked / superseded) between the first floor check
+   * above and a later exit of session resolution — by a concurrent logout,
+   * rotation/displacement, or a chooser-window expiry that committed while
+   * this request waited on a lock — must never leave this function as the
+   * request's ctx.authSession. Pre-fix, the active-branch fresh re-read and
+   * the pending-claim result were returned unchecked, so a request that
+   * raced a logout could ride a revoked row through the pending gate into
+   * business procedures (a TOCTOU on the floor). Expiry is reported
+   * distinctly (invalid_session_token) from durable revocation
+   * (session_revoked); both are AnonymousCredentialError, so createContext
+   * clears the cookie and the request resolves anonymous — requireUser then
+   * rejects every business chain downstream.
+   */
+  private assertRegistryRowLive(row: import("../../drizzle/schema").AuthSession | null) {
+    if (!row) return row;
+    if (row.status === "superseded" && row.revokedReason === "expired") {
+      throw new AnonymousCredentialError("Session expired", "invalid_session_token");
+    }
+    if (row.status === "revoked" || row.status === "superseded") {
+      throw new AnonymousCredentialError("Session revoked", "session_revoked");
+    }
+    return row;
+  }
+
+  /**
    * The revocation floor + adoption + throttled visibility. See R1D B3:
    * signature/admin-shape/forced-relogin/DB-user already happened above.
    */
@@ -665,7 +691,10 @@ class SDKServer {
           expiresAt,
           clientLabel: registry.labelFromUserAgent(req.headers["user-agent"]),
         });
-        return adopted;
+        // R8B-4E: the adoption result is a last-read exit too — a row the
+        // concurrent adoption winner created and a logout already killed in
+        // between must not ride through.
+        return this.assertRegistryRowLive(adopted);
       }
       return null;
     }
@@ -676,9 +705,9 @@ class SDKServer {
         const promoted = await registry.maybePromoteUnslotted(row.id);
         if (promoted && promoted.status === "active") {
           await registry.touchLastSeen(promoted.id);
-          return promoted;
+          return this.assertRegistryRowLive(promoted);
         }
-        return promoted;
+        return this.assertRegistryRowLive(promoted);
       }
       if (row.status === "active") {
         // R4/A — reconcile-before-rights: the OFF→ON reconciliation runs on
@@ -694,10 +723,32 @@ class SDKServer {
         // a request that reconciled its own row away never rides a stale
         // pre-reconcile active row.
         const fresh = await registry.getSessionRowById(row.id);
-        if (fresh) return fresh;
+        if (fresh) return this.assertRegistryRowLive(fresh);
       }
     }
-    return row;
+    // R8B-4C — slot recovery: a pending_choice session claims a freed slot
+    // on its own next request. This runs at context construction — BEFORE
+    // the requireSessionSlotResolved gate sees ctx.authSession — so a
+    // chooser blocked by a full quota unblocks the moment a slot frees
+    // (another device's logout), without displacing any live session. The
+    // registry function owns the per-flag semantics, the DB-time expiry,
+    // and the locking quota recount.
+    if (row.status === "pending_choice") {
+      const activated = await registry.maybeActivatePending({
+        sessionId: row.id,
+        activateExpiresAt: new Date(session.expSeconds * 1000),
+      });
+      if (activated && activated.status === "active") {
+        await registry.touchLastSeen(activated.id);
+        return this.assertRegistryRowLive(activated);
+      }
+      // R8B-4E: the claim decision is made on the FRESH locked row — a row
+      // revoked/superseded while this request waited on the slots or row
+      // lock comes back terminal here, and must reject (never ride through
+      // as ctx.authSession).
+      return this.assertRegistryRowLive(activated ?? row);
+    }
+    return this.assertRegistryRowLive(row);
   }
 
   /** Reads the raw session cookie value (no verification) — R2 logout/rotation. */
