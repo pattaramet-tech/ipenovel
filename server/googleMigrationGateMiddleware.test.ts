@@ -138,7 +138,8 @@ describe("mandatory Google-migration gate - end-to-end through real router proce
       const caller = appRouter.createCaller(userContext());
       const result = await caller.auth.logout();
 
-      expect(result).toEqual({ success: true });
+      // R2/R4-IR-03 contract: no cookie in this context -> "not_found".
+      expect(result).toEqual({ success: true, durableRevocation: "not_found" });
     });
 
     it("an admin procedure (admin.dashboard.summary) is NEVER blocked, even though the calling admin user has no Google identity connected", async () => {
