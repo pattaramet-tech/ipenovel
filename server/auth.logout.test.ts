@@ -65,7 +65,11 @@ describe("auth.logout", () => {
 
     const result = await caller.auth.logout();
 
-    expect(result).toEqual({ success: true });
+    // R2/R4-IR-03 contract: logout always succeeds from the caller's point of
+    // view and reports the durable-revocation outcome truthfully. This
+    // context carries no cookie, so there is no token to revoke and the
+    // outcome is deterministically "not_found".
+    expect(result).toEqual({ success: true, durableRevocation: "not_found" });
     expect(clearedCookies).toHaveLength(1);
     expect(clearedCookies[0]?.name).toBe(COOKIE_NAME);
     expect(clearedCookies[0]?.options).toMatchObject({
@@ -83,7 +87,7 @@ describe("auth.logout", () => {
 
     const result = await caller.auth.logout();
 
-    expect(result).toEqual({ success: true });
+    expect(result).toEqual({ success: true, durableRevocation: "not_found" });
     expect(clearedCookies).toHaveLength(1);
   });
 
@@ -94,8 +98,8 @@ describe("auth.logout", () => {
     const first = await caller.auth.logout();
     const second = await caller.auth.logout();
 
-    expect(first).toEqual({ success: true });
-    expect(second).toEqual({ success: true });
+    expect(first).toEqual({ success: true, durableRevocation: "not_found" });
+    expect(second).toEqual({ success: true, durableRevocation: "not_found" });
     expect(clearedCookies).toHaveLength(2);
     expect(clearedCookies[0]?.options).toEqual(clearedCookies[1]?.options);
   });
@@ -106,7 +110,7 @@ describe("auth.logout", () => {
 
     const result = await caller.auth.logout();
 
-    expect(result).toEqual({ success: true });
+    expect(result).toEqual({ success: true, durableRevocation: "not_found" });
     expect(clearedCookies).toHaveLength(1);
   });
 
@@ -116,7 +120,15 @@ describe("auth.logout", () => {
 
     const result = await caller.auth.logout();
 
-    expect(result).toEqual({ success: true });
+    // A garbage token can NEVER be reported as durably revoked. The honest
+    // outcomes are: "unconfirmed" (registry store unreachable - the DB-less
+    // unit environment) or "not_found" (registry reachable, no row backs
+    // this hash). Pinning "never revoked" is the security-relevant part of
+    // the durable-revocation reporting contract here.
+    expect(result).toEqual({
+      success: true,
+      durableRevocation: expect.stringMatching(/^(unconfirmed|not_found)$/),
+    });
     expect(clearedCookies).toHaveLength(1);
     expect(clearedCookies[0]?.name).toBe(COOKIE_NAME);
   });

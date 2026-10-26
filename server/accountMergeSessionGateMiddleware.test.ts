@@ -114,6 +114,9 @@ describe("IPE-008 completed-merge Source session boundary", () => {
   it("logout remains reachable so the stale session can terminate itself", async () => {
     markCompletedSource();
     const caller = appRouter.createCaller(userContext());
-    await expect(caller.auth.logout()).resolves.toEqual({ success: true });
+    // R2/R4-IR-03 contract: the response carries the durable-revocation
+    // outcome. This context has no cookie, so it is deterministically
+    // "not_found" (no token to revoke).
+    await expect(caller.auth.logout()).resolves.toEqual({ success: true, durableRevocation: 'not_found' });
   });
 });
