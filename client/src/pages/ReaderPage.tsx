@@ -13,6 +13,21 @@ import LanguageSwitcher from "@/components/LanguageSwitcher";
 import ReaderSettings from "@/components/ReaderSettings";
 import { useReaderPreferences, getFontFamilyStack } from "@/hooks/useReaderPreferences";
 import { deriveReaderChromeState } from "./readerChromePresentation";
+import {
+  createProgressSaveController,
+  createResumeVerifier,
+  hasResumablePosition,
+  mergeResumeSource,
+  readReadingRecovery,
+  resolveResumeScrollPlan,
+  safeLocalStorage,
+  writeReadingRecovery,
+  type ProgressSaveController,
+  type ProgressSaveContext,
+  type ReadingPositionSnapshot,
+  type ResumeSource,
+  type ResumeVerifier,
+} from "./readerResumePosition";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl, SITE_NAME } from "@/lib/seo";
 import { MAINTENANCE_BANNER_HEIGHT_CSS_VAR } from "@/components/MaintenanceAnnouncementBanner";
@@ -24,8 +39,23 @@ const SCROLL_SAVE_DEBOUNCE_MS = 1500;
 const PERIODIC_SAVE_INTERVAL_MS = 15000;
 // Skip re-saving if progress hasn't moved by at least this many percentage
 // points and the current chapter hasn't changed - avoids spamming the API
-// with near-duplicate saves.
+// with near-duplicate saves. (shouldSkipProgressSave additionally requires
+// the scrollTop delta to be small, so sub-1% movement on a long package
+// still saves - see readerResumePosition.ts.)
 const MIN_PERCENT_DELTA_TO_SAVE = 1;
+// Throttle for local-recovery writes straight from the scroll handler. The
+// localStorage record is the safety net for "app killed before the save
+// mutation landed", so it must track scrolling closely - but not on every
+// single scroll event.
+const LOCAL_RECOVERY_WRITE_THROTTLE_MS = 1000;
+// After a resume jump, re-assert the restored position at these delays: the
+// resume banner unmounting, web-font swaps and late layout shifts all move
+// content under the container for a beat after the initial scroll set.
+const RESUME_VERIFY_DELAYS_MS = [120, 400, 1000];
+// ...and keep honoring preference-driven re-layouts (font size/family/line
+// height changes) within this window after a resume. Past it, the reader
+// owns the position again - never yank scroll out from under them.
+const RESUME_VERIFY_WINDOW_MS = 2000;
 
 // Utility to generate watermark text
 const generateWatermarkText = (user: any, episodeId: number): string => {
@@ -204,7 +234,27 @@ export default function ReaderPage() {
     chapterTitle: string | null;
     anchorId: string | null;
   } | null>(null);
-  const lastSavedProgressRef = useRef<{ percent: number; chapterNumber: string | null } | null>(null);
+  // Latest-value refs, assigned every render (safe: read only from event
+  // handlers / effects / timers, never during render). They let the save
+  // controller's dependency closures stay IDENTITY-stable for the whole
+  // component lifetime while still seeing fresh values - the mutation
+  // result object churns identity on every render, and wiring that into
+  // effect/callback deps is what used to tear down a freshly-armed scroll
+  // debounce on every setLivePercent re-render.
+  const userId = user?.id;
+  const episodeIdRef = useRef(episodeId);
+  episodeIdRef.current = episodeId;
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+  const canReadRef = useRef(canRead);
+  canReadRef.current = canRead;
+  const localRecoveryLastWriteRef = useRef(0);
+  // Resume restoration state: the chosen source (server vs local recovery)
+  // drives the banner, and the verify window re-asserts the restored scroll
+  // while layout settles after the banner unmounts.
+  const [resumeSource, setResumeSource] = useState<ResumeSource | null>(null);
+  const resumeVerifyTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const resumeIntentDetachRef = useRef<(() => void) | null>(null);
 
   const [showToc, setShowToc] = useState(false);
   const [showReaderMenu, setShowReaderMenu] = useState(false);
@@ -324,37 +374,61 @@ export default function ReaderPage() {
   const toc = useMemo(() => (isPackage ? parsePackageToc(content) : []), [isPackage, content]);
   const tocByLineIndex = useMemo(() => new Map(toc.map((entry) => [entry.lineIndex, entry])), [toc]);
 
-  const flushProgressSave = useCallback(() => {
-    if (!canRead || !episodeId) return;
-    const pending = pendingProgressRef.current;
-    if (!pending) return;
+  // ==== Progress-save controller + resume verifier wiring ====
+  // Both are created ONCE (lazy ref init) with identity-stable dependency
+  // closures that read fresh values through the latest-refs above. This is
+  // the fix for the mutation-result-identity P1: flushProgressSave below is
+  // stable for the component's whole lifetime, so the lifecycle effect never
+  // tears down and no re-render (setLivePercent on every scroll burst) can
+  // clear a freshly-armed scroll debounce timer.
+  const saveMutateRef = useRef(saveProgressMutation.mutate);
+  saveMutateRef.current = saveProgressMutation.mutate;
 
-    const last = lastSavedProgressRef.current;
-    const percentDelta = last ? Math.abs(last.percent - pending.percent) : 100;
-    const chapterChanged = !last || last.chapterNumber !== pending.chapterNumber;
-    if (last && percentDelta < MIN_PERCENT_DELTA_TO_SAVE && !chapterChanged) {
-      return;
-    }
-
-    lastSavedProgressRef.current = { percent: pending.percent, chapterNumber: pending.chapterNumber };
-
-    saveProgressMutation.mutate(
-      {
-        episodeId,
-        progressPercent: pending.percent,
-        scrollPosition: pending.scrollTop,
-        currentChapterNumber: pending.chapterNumber ?? undefined,
-        currentChapterTitle: pending.chapterTitle ?? undefined,
-        anchorKey: pending.anchorId ?? undefined,
+  const progressSaveRef = useRef<ProgressSaveController | null>(null);
+  if (!progressSaveRef.current) {
+    progressSaveRef.current = createProgressSaveController({
+      getContext: (): ProgressSaveContext => ({
+        episodeId: episodeIdRef.current,
+        userId: userIdRef.current ?? null,
+        enabled: !!episodeIdRef.current && !!userIdRef.current && canReadRef.current,
+      }),
+      getPending: () => pendingProgressRef.current,
+      issueSave: (input, handlers) => {
+        saveMutateRef.current(input, handlers);
       },
-      {
-        onSuccess: () => {
-          setSavedIndicatorVisible(true);
-          setTimeout(() => setSavedIndicatorVisible(false), 2000);
-        },
-      }
-    );
-  }, [canRead, episodeId, saveProgressMutation]);
+      onAccepted: () => {
+        setSavedIndicatorVisible(true);
+        setTimeout(() => setSavedIndicatorVisible(false), 2000);
+      },
+      writeRecovery: (position, context) => {
+        if (!context.userId) return;
+        writeReadingRecovery(safeLocalStorage(), context.userId, context.episodeId, position);
+      },
+      minPercentDelta: MIN_PERCENT_DELTA_TO_SAVE,
+    });
+  }
+
+  const resumeVerifierRef = useRef<ResumeVerifier | null>(null);
+  // applyResumeScroll is declared further down (it depends on the parsed
+  // TOC); the verifier reaches its LATEST identity through this ref.
+  const applyResumeScrollRef = useRef<(target: ReadingPositionSnapshot) => number | null>(() => null);
+  if (!resumeVerifierRef.current) {
+    resumeVerifierRef.current = createResumeVerifier({
+      apply: (target) => applyResumeScrollRef.current(target),
+      windowMs: RESUME_VERIFY_WINDOW_MS,
+    });
+  }
+
+  const flushProgressSave = useCallback((force = false) => {
+    progressSaveRef.current?.flush(force);
+  }, []);
+
+  const writeLocalRecovery = useCallback((position: ReadingPositionSnapshot) => {
+    const uid = userIdRef.current;
+    const eid = episodeIdRef.current;
+    if (!uid) return;
+    writeReadingRecovery(safeLocalStorage(), uid, eid, position);
+  }, []);
 
   const handleContentScroll = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -400,50 +474,127 @@ export default function ReaderPage() {
       anchorId,
     };
 
+    // Throttled local-recovery write straight off the scroll event: the
+    // debounced API flush only fires 1.5s after scrolling STOPS, and an app
+    // switch/app kill inside that gap must not lose the position.
+    const now = Date.now();
+    if (now - localRecoveryLastWriteRef.current >= LOCAL_RECOVERY_WRITE_THROTTLE_MS) {
+      localRecoveryLastWriteRef.current = now;
+      writeLocalRecovery(pendingProgressRef.current);
+    }
+
     if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
     scrollDebounceRef.current = setTimeout(flushProgressSave, SCROLL_SAVE_DEBOUNCE_MS);
-  }, [canRead, content, toc, flushProgressSave]);
+  }, [canRead, content, toc, flushProgressSave, writeLocalRecovery]);
 
-  // Periodic safety-net autosave + beforeunload best-effort save.
+  // Periodic safety-net autosave + lifecycle best-effort saves. Mobile app
+  // switches fire visibilitychange->hidden (reliably) and often pagehide,
+  // while desktop tab close fires beforeunload/pagehide - all of them force
+  // a flush (bypassing the skip gate) AND write local recovery synchronously
+  // first, so an app kill before the mutation lands still keeps the position.
   useEffect(() => {
     if (!canRead) return;
 
     periodicSaveIntervalRef.current = setInterval(flushProgressSave, PERIODIC_SAVE_INTERVAL_MS);
-    const handleBeforeUnload = () => flushProgressSave();
+    const handleBeforeUnload = () => flushProgressSave(true);
+    const handlePageHide = () => flushProgressSave(true);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushProgressSave(true);
+      }
+    };
     window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       if (periodicSaveIntervalRef.current) clearInterval(periodicSaveIntervalRef.current);
-      if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
+      // The scroll-debounce timer is deliberately NOT cleared here. With
+      // flushProgressSave now identity-stable this effect only re-runs when
+      // canRead genuinely flips, and a pending debounce must survive that
+      // (its position is still flushable once reading resumes). Its teardown
+      // lives in the episode/user reset effect instead.
       window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [canRead, flushProgressSave]);
 
-  // Show the "resume reading" banner once per episode load, if there's a
-  // meaningful saved position. The reader must explicitly click "อ่านต่อ" -
+  // Merge the server-saved position with this device's local recovery record
+  // (newest wins - see mergeResumeSource) into the single resume source the
+  // banner and the "อ่านต่อ" button work from. Re-runs when the server
+  // answer arrives, so a banner shown from local data while offline
+  // corrects itself if the server turns out to be newer.
+  useEffect(() => {
+    if (!canRead || !episodeId || !userId) {
+      setResumeSource(null);
+      return;
+    }
+    const local = readReadingRecovery(safeLocalStorage(), userId, episodeId);
+    const merged = mergeResumeSource(progressData, local);
+    setResumeSource(merged && hasResumablePosition(merged.snapshot) ? merged : null);
+  }, [progressData, canRead, episodeId, userId]);
+
+  // Show the "resume reading" banner once per episode load, if the merged
+  // source has anything to resume to (including percent 0 + saved scroll
+  // position - legacy rows). The reader must explicitly click "อ่านต่อ" -
   // never auto-jump on load.
   useEffect(() => {
-    if (progressData && progressData.progressPercent > 0 && !resumeBannerShownRef.current) {
+    if (resumeSource && !resumeBannerShownRef.current) {
       setShowResumeBanner(true);
       resumeBannerShownRef.current = true;
     }
-  }, [progressData]);
+  }, [resumeSource]);
 
+  // Episode/user change + unmount. The CLEANUP runs for the outgoing
+  // episode/user: it best-effort SAVES their pending position first
+  // (dispose() force-flushes with the OLD episodeId/userId baked into this
+  // very closure - the latest-refs may already point at the next episode by
+  // then, so the context is passed explicitly), then hard-resets the save
+  // generation and drops every timer/listener, so nothing from the old
+  // episode can ever flush or mark for the new one.
   useEffect(() => {
     resumeBannerShownRef.current = false;
     setShowResumeBanner(false);
     setShowToc(false);
     setShowReaderMenu(false);
     setShowReaderSettings(false);
-    lastSavedProgressRef.current = null;
     pendingProgressRef.current = null;
-  }, [episodeId]);
+    localRecoveryLastWriteRef.current = 0;
 
-  const scrollToAnchor = (anchorId: string | null | undefined): boolean => {
+    return () => {
+      // enabled deliberately does NOT read canRead: this closure was
+      // written on the render the effect last ran, which for a slow-loading
+      // episode is the initial skeleton (canRead still false) even though
+      // the user has long been reading. The dispose flush is a no-op
+      // without pending progress anyway, and a non-null pending can only
+      // exist after canRead was true (the scroll handler is gated on it) -
+      // plus the server re-checks read access on every saveProgress.
+      progressSaveRef.current?.dispose({
+        episodeId,
+        userId: userId ?? null,
+        enabled: !!episodeId && !!userId,
+      });
+      resumeVerifierRef.current?.cancel();
+      resumeIntentDetachRef.current?.();
+      resumeIntentDetachRef.current = null;
+      resumeVerifyTimersRef.current.forEach((timer) => clearTimeout(timer));
+      resumeVerifyTimersRef.current = [];
+      if (scrollDebounceRef.current) {
+        clearTimeout(scrollDebounceRef.current);
+        scrollDebounceRef.current = null;
+      }
+    };
+  }, [episodeId, userId]);
+
+  const scrollToAnchor = (
+    anchorId: string | null | undefined,
+    options?: { instant?: boolean }
+  ): boolean => {
     if (!anchorId) return false;
     const el = document.getElementById(anchorId);
     if (!el) return false;
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.scrollIntoView({ behavior: options?.instant ? "auto" : "smooth", block: "start" });
     return true;
   };
 
@@ -458,24 +609,124 @@ export default function ReaderPage() {
     requestAnimationFrame(() => scrollToAnchor(entry.anchorId));
   }, [episodeId, canRead, isPackage, toc]);
 
-  const handleResumeReading = () => {
-    setShowResumeBanner(false);
-    if (!progressData) return;
-
-    requestAnimationFrame(() => {
-      if (scrollToAnchor(progressData.anchorKey)) return;
-
-      const entry = findTocEntryByChapterNumber(toc, progressData.currentChapterNumber);
-      if (entry && scrollToAnchor(entry.anchorId)) return;
-
-      if (scrollContainerRef.current && progressData.scrollPosition) {
-        scrollContainerRef.current.scrollTop = progressData.scrollPosition;
+  // Restore the chosen resume position onto the container: the exact saved
+  // scroll offset first (what the reader actually saw), chapter anchor as
+  // fallback when the pixel position can't be honored.
+  const applyResumeScroll = useCallback(
+    (target: ReadingPositionSnapshot): number | null => {
+      const container = scrollContainerRef.current;
+      const metrics = container
+        ? { scrollHeight: container.scrollHeight, clientHeight: container.clientHeight }
+        : null;
+      const plan = resolveResumeScrollPlan(target, metrics);
+      if (plan.kind === "scrollTop" && container) {
+        container.scrollTop = plan.value;
+        return plan.value;
       }
-    });
+      if (plan.kind === "anchor" && scrollToAnchor(plan.anchorId, { instant: true })) {
+        return container ? container.scrollTop : null;
+      }
+      if (plan.kind === "chapter") {
+        const entry = findTocEntryByChapterNumber(toc, plan.chapterNumber);
+        if (entry && scrollToAnchor(entry.anchorId, { instant: true })) {
+          return container ? container.scrollTop : null;
+        }
+      }
+      return null;
+    },
+    [toc]
+  );
+  applyResumeScrollRef.current = applyResumeScroll;
+
+  // One scheduled verify pass (double-rAF + the timed passes below): the
+  // verifier itself decides intent vs. layout-shift - see
+  // createResumeVerifier in readerResumePosition.ts.
+  const resumeApplyStep = useCallback(() => {
+    resumeVerifierRef.current?.step();
+  }, []);
+
+  // User-intent listeners for the active verify window: only EXPLICIT
+  // input (wheel/touch/pointer/navigation keys) counts as the reader taking
+  // over - a bare scrollTop change is a layout shift (banner unmount, font
+  // swap) and must NOT cancel the restore.
+  const armResumeIntentListeners = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const markIntent = () => resumeVerifierRef.current?.notifyUserIntent();
+    const navigationKeys = ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "];
+    // Keyboard intent is captured at DOCUMENT level: the scroller is
+    // keyboard-scrollable even while focus sits outside it (e.g. on body).
+    // But a key consumed by an editing/control surface is NOT scroll
+    // intent - Space on a focused button activates it, arrows move
+    // sliders/selects, and anything typed into an input must leave the
+    // restore alone.
+    const markKeyIntent = (e: KeyboardEvent) => {
+      if (!navigationKeys.includes(e.key)) return;
+      const target = e.target as HTMLElement | Document | null;
+      if (target && target !== document) {
+        const el = target as HTMLElement;
+        const tag = el.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          tag === "BUTTON" ||
+          tag === "A" ||
+          el.isContentEditable ||
+          el.closest?.("[role='textbox'],[role='slider'],[role='combobox'],[role='listbox']")
+        ) {
+          return;
+        }
+      }
+      markIntent();
+    };
+    container.addEventListener("wheel", markIntent, { passive: true });
+    container.addEventListener("touchmove", markIntent, { passive: true });
+    container.addEventListener("pointerdown", markIntent, { passive: true });
+    document.addEventListener("keydown", markKeyIntent);
+    resumeIntentDetachRef.current?.();
+    resumeIntentDetachRef.current = () => {
+      container.removeEventListener("wheel", markIntent);
+      container.removeEventListener("touchmove", markIntent);
+      container.removeEventListener("pointerdown", markIntent);
+      document.removeEventListener("keydown", markKeyIntent);
+    };
+  }, []);
+
+  const handleResumeReading = () => {
+    const target = resumeSource?.snapshot;
+    setShowResumeBanner(false);
+    if (!target) return;
+
+    // The resume banner sits IN-FLOW inside the scroll container, so its
+    // unmount shifts content under the viewport: apply the restore after
+    // that lands (double rAF) and keep re-asserting it on the timed passes
+    // while fonts/images/layout finish settling.
+    resumeVerifierRef.current?.arm(target);
+    armResumeIntentListeners();
+    resumeVerifyTimersRef.current.forEach((timer) => clearTimeout(timer));
+    resumeVerifyTimersRef.current = [];
+    requestAnimationFrame(() => requestAnimationFrame(resumeApplyStep));
+    resumeVerifyTimersRef.current = RESUME_VERIFY_DELAYS_MS.map((ms) =>
+      setTimeout(resumeApplyStep, ms)
+    );
   };
+
+  // A preference change (font size/family, line height, spacing) re-flows
+  // every paragraph, moving the restored offset - re-assert it, but only
+  // while the resume-verify window above is still active. Past that window
+  // the reader owns their position and is never yanked.
+  useEffect(() => {
+    if (!resumeVerifierRef.current?.isActive()) return;
+    const raf = requestAnimationFrame(resumeApplyStep);
+    return () => cancelAnimationFrame(raf);
+  }, [fontSize, fontFamily, lineHeight, paragraphSpacing, resumeApplyStep]);
 
   const handleTocEntryClick = (entry: PackageTocEntry) => {
     setShowToc(false);
+    // A TOC jump is deliberate navigation - it ends any active resume
+    // verify window (the restore must not fight the jump).
+    resumeVerifierRef.current?.notifyUserIntent();
     scrollToAnchor(entry.anchorId);
 
     // Save immediately rather than waiting for the scroll-stop debounce -
@@ -487,6 +738,7 @@ export default function ReaderPage() {
       chapterTitle: entry.title,
       anchorId: entry.anchorId,
     };
+    writeLocalRecovery(pendingProgressRef.current);
     if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
     scrollDebounceRef.current = setTimeout(flushProgressSave, SCROLL_SAVE_DEBOUNCE_MS);
   };
@@ -811,14 +1063,19 @@ export default function ReaderPage() {
       )}
 
       {/* Content Area */}
-      <div className={styles.content} ref={scrollContainerRef} onScroll={handleContentScroll}>
-        {showResumeBanner && progressData && canRead && content && (
+      <div
+        className={styles.content}
+        ref={scrollContainerRef}
+        onScroll={handleContentScroll}
+        data-testid="reader-scroll-container"
+      >
+        {showResumeBanner && resumeSource && canRead && content && (
           <div className={styles.resumeBanner}>
             <p>
               อ่านล่าสุดถึง{" "}
-              {progressData.currentChapterTitle
-                || (progressData.currentChapterNumber ? `บทที่ ${progressData.currentChapterNumber}` : "ตำแหน่งเดิม")}
-              {" "}• {progressData.progressPercent}%
+              {resumeSource.snapshot.chapterTitle
+                || (resumeSource.snapshot.chapterNumber ? `บทที่ ${resumeSource.snapshot.chapterNumber}` : "ตำแหน่งเดิม")}
+              {resumeSource.snapshot.percent > 0 ? ` • ${Math.round(resumeSource.snapshot.percent)}%` : ""}
             </p>
             <div className={styles.resumeBannerActions}>
               <button onClick={handleResumeReading} className={styles.resumeButton}>
