@@ -56,6 +56,8 @@ const state = vi.hoisted(() => {
     // still false, and only later renders flip canRead true WITHOUT the
     // effect re-running.
     episodePhase: "resolved" as "resolved" | "loading",
+    paidEpisode: false,
+    leasePhase: "idle" as "idle" | "held" | "lost" | "held-by-other",
     progressData: null as null | {
       progressPercent: number;
       scrollPosition: number | null;
@@ -78,7 +80,7 @@ const state = vi.hoisted(() => {
 
 vi.mock("@/lib/trpc", () => {
   const episodePayload = () => ({
-    episode: { id: state.episodeId, episodeNumber: 1, title: "ตอนที่ 1", price: "0", isFree: true, fileUrl: null },
+    episode: { id: state.episodeId, episodeNumber: 1, title: "ตอนที่ 1", price: "0", isFree: !state.paidEpisode, fileUrl: null },
     novel: { id: 11, title: "นิยายทดสอบ" },
     previousEpisode: null,
     nextEpisode: null,
@@ -127,7 +129,7 @@ vi.mock("@/_core/hooks/useAuth", () => ({
 }));
 
 vi.mock("@/_core/hooks/useReadingLease", () => ({
-  useReadingLease: () => ({ leaseState: { phase: "idle" as const }, transferLease: vi.fn() }),
+  useReadingLease: () => ({ leaseState: { phase: state.leasePhase }, transferLease: vi.fn() }),
 }));
 
 vi.mock("@/contexts/LanguageContext", () => ({
@@ -222,6 +224,8 @@ beforeEach(() => {
   state.resetFlights();
   state.setAutoSettle(true);
   state.episodePhase = "resolved";
+  state.paidEpisode = false;
+  state.leasePhase = "idle";
   state.progressData = null;
   window.localStorage.clear();
 });
@@ -231,7 +235,10 @@ afterEach(() => {
   cleanup();
   state.episodeId = 1;
   state.episodePhase = "resolved";
+  state.paidEpisode = false;
+  state.leasePhase = "idle";
   state.progressData = null;
+  delete (document as Document & { visibilityState?: string }).visibilityState;
 });
 
 describe("ReaderPage progress-save wiring (component-level, fake timers)", () => {
@@ -715,6 +722,395 @@ describe("ReaderPage progress-save wiring (component-level, fake timers)", () =>
       state.flights[2].handlers.onSuccess();
       state.flights[2].handlers.onSettled();
     });
+    view.unmount();
+  });
+
+  it("Android Chrome: an OLD gesture must not authorize synthetic scroll(0) before hidden", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(100_000);
+      const view = render(React.createElement(ReaderPage));
+      const scroll = setWritableScroll();
+      act(() => getScrollContainer().dispatchEvent(new Event("pointerdown", { bubbles: true })));
+      act(() => { getScrollContainer().scrollTop = 7200; });
+      fireScroll();
+      now.mockReturnValue(103_000); // 3 seconds since the last user gesture
+      act(() => { getScrollContainer().scrollTop = 0; });
+      fireScroll(); // delivered BEFORE visibilitychange:hidden
+      expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(7200);
+      // Resuming after the lifecycle event returns to the real position.
+      act(() => window.dispatchEvent(new Event("pagehide")));
+      act(() => window.dispatchEvent(new Event("pageshow")));
+      advance(1800);
+      expect(scroll.current()).toBe(7200);
+      view.unmount();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("Android Chrome: a parked viewport from episode A never restores onto episode B", () => {
+    const view = render(React.createElement(ReaderPage));
+    setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 5800; });
+    fireScroll();
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    state.episodeId = 2;
+    state.episodePhase = "loading";
+    act(() => view.rerender(React.createElement(ReaderPage)));
+    state.episodePhase = "resolved";
+    act(() => view.rerender(React.createElement(ReaderPage)));
+    const newEpisodeScroll = setWritableScroll();
+    act(() => window.dispatchEvent(new Event("pageshow")));
+    advance(1800);
+    expect(newEpisodeScroll.current()).toBe(0);
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(5800);
+    view.unmount();
+  });
+
+  it("Android Chrome: initial resume banner survives a synthetic scroll(0), but user scroll dismisses it", () => {
+    state.progressData = {
+      progressPercent: 41, scrollPosition: 6100, currentChapterNumber: null,
+      currentChapterTitle: null, anchorKey: null, lastReadAt: "2026-10-29T08:00:00.000Z",
+    };
+    const view = render(React.createElement(ReaderPage));
+    const hasResumeButton = () => Array.from(document.querySelectorAll("button")).some(
+      (button) => button.textContent?.trim() === "อ่านต่อ"
+    );
+    expect(hasResumeButton()).toBe(true);
+
+    setScrollMetrics(0);
+    fireScroll(); // Chrome may issue this even though the reader didn't touch the page
+    expect(hasResumeButton()).toBe(true);
+    expect(state.flights.every((flight) => flight.input.scrollPosition !== 0)).toBe(true);
+
+    act(() => getScrollContainer().dispatchEvent(new Event("wheel", { bubbles: true })));
+    setScrollMetrics(1900);
+    fireScroll();
+    expect(hasResumeButton()).toBe(false);
+    view.unmount();
+  });
+
+  it("Android Chrome: failed layout restoration reopens อ่านต่อ instead of stranding the user at zero", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const view = render(React.createElement(ReaderPage));
+    setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 6900; });
+    fireScroll();
+    act(() => {
+      visibility = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    // Simulate Chrome returning before the (large package) layout has a
+    // measurable scroll height; no automatic position can be honored.
+    Object.defineProperty(getScrollContainer(), "scrollHeight", { configurable: true, get: () => 0 });
+    Object.defineProperty(getScrollContainer(), "clientHeight", { configurable: true, get: () => 0 });
+    act(() => {
+      visibility = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    advance(1800);
+    expect(Array.from(document.querySelectorAll("button")).some(
+      (button) => button.textContent?.trim() === "อ่านต่อ"
+    )).toBe(true);
+    view.unmount();
+  });
+
+  it("Android Chrome: hidden -> synthetic scroll(0) -> visible restores the parked viewport without reloading", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const view = render(React.createElement(ReaderPage));
+    const scroll = setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 6400; });
+    fireScroll();
+
+    act(() => {
+      visibility = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const saved = () => JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}");
+    expect(saved().scrollTop).toBe(6400);
+    act(() => { getScrollContainer().scrollTop = 0; });
+    fireScroll(); // browser synthetic, not a finger gesture
+    expect(saved().scrollTop).toBe(6400);
+
+    act(() => {
+      visibility = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    advance(1800);
+    expect(scroll.current()).toBe(6400);
+    expect(saved().scrollTop).toBe(6400);
+    expect(state.flights.every((flight) => flight.input.scrollPosition !== 0)).toBe(true);
+    view.unmount();
+  });
+
+  it("Android Chrome: expired paid-reading lease hides content, then restores the viewport only after reacquisition", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    state.paidEpisode = true;
+    state.leasePhase = "held";
+    const view = render(React.createElement(ReaderPage));
+    setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 7900; });
+    fireScroll();
+
+    act(() => {
+      visibility = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    state.leasePhase = "lost";
+    act(() => view.rerender(React.createElement(ReaderPage)));
+    expect(document.querySelector('[data-testid="reader-scroll-container"]')).toBeNull();
+
+    act(() => {
+      visibility = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    // The lease server must authorize the renewed session first.
+    state.leasePhase = "held";
+    act(() => view.rerender(React.createElement(ReaderPage)));
+    const reattachedScroll = setWritableScroll();
+    advance(1800);
+    expect(reattachedScroll.current()).toBe(7900);
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(7900);
+    view.unmount();
+  });
+
+  it("Android Chrome: explicit user gesture overrides parked auto-restore", () => {
+    const view = render(React.createElement(ReaderPage));
+    const scroll = setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 5300; });
+    fireScroll();
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    act(() => {
+      getScrollContainer().dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      getScrollContainer().scrollTop = 0;
+    });
+    fireScroll();
+    act(() => window.dispatchEvent(new Event("pageshow")));
+    advance(1800);
+    expect(scroll.current()).toBe(0);
+    view.unmount();
+  });
+
+  it("R3R1 P1-01: a partial positive clamp is NOT success; the full snapshot stays available via อ่านต่อ", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const view = render(React.createElement(ReaderPage));
+    const scroll = setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 7300; });
+    fireScroll();
+    act(() => { visibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); });
+    Object.defineProperty(getScrollContainer(), "scrollHeight", {
+      configurable: true, get: () => 1800, // only 1000px available
+    });
+    act(() => { getScrollContainer().scrollTop = 0; });
+    act(() => { visibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+    advance(1800);
+    expect(scroll.current()).toBe(1000);
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(7300);
+    expect(Array.from(document.querySelectorAll("button")).some(
+      (b) => b.textContent?.trim() === "อ่านต่อ"
+    )).toBe(true);
+    view.unmount();
+  });
+
+  it("R3R1 P1-01: delayed long package layout eventually restores the exact saved position", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const view = render(React.createElement(ReaderPage));
+    const scroll = setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 9400; });
+    fireScroll();
+    act(() => { visibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); });
+    let height = 2000;
+    Object.defineProperty(getScrollContainer(), "scrollHeight", {
+      configurable: true, get: () => height,
+    });
+    act(() => { getScrollContainer().scrollTop = 0; });
+    act(() => { visibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+    advance(400);
+    expect(scroll.current()).toBe(1200); // partial layout cannot be completion
+    height = 20000;
+    advance(1400);
+    expect(scroll.current()).toBe(9400);
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(9400);
+    view.unmount();
+  });
+
+  it("R3R1 P1-02: recent swipe followed by abrupt synthetic zero must not overwrite progress", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(100000);
+      const view = render(React.createElement(ReaderPage));
+      const scroll = setWritableScroll();
+      act(() => { getScrollContainer().scrollTop = 7800; });
+      fireScroll();
+      act(() => getScrollContainer().dispatchEvent(new Event("touchmove", { bubbles: true })));
+      now.mockReturnValue(100150);
+      act(() => { getScrollContainer().scrollTop = 0; });
+      fireScroll();
+      expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(7800);
+      advance(1500);
+      expect(state.flights.every((f) => f.input.scrollPosition !== 0)).toBe(true);
+      expect(scroll.current()).toBe(0); // DOM may reset, but stored snapshot stays valid
+      view.unmount();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("R3R1 P1-02: intentional Home and genuine nearby swipe may reach 0", () => {
+    const view = render(React.createElement(ReaderPage));
+    const scroll = setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 4800; });
+    fireScroll();
+    act(() => getScrollContainer().dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Home", bubbles: true })
+    ));
+    act(() => { getScrollContainer().scrollTop = 0; });
+    fireScroll();
+    advance(SCROLL_DEBOUNCE_MS);
+    expect(state.flights.some((f) => f.input.scrollPosition === 0)).toBe(true);
+    act(() => { getScrollContainer().scrollTop = 600; });
+    fireScroll();
+    act(() => getScrollContainer().dispatchEvent(new Event("touchmove", { bubbles: true })));
+    act(() => { getScrollContainer().scrollTop = 0; });
+    fireScroll();
+    advance(SCROLL_DEBOUNCE_MS);
+    expect(scroll.current()).toBe(0);
+    expect(state.flights[state.flights.length - 1].input.scrollPosition).toBe(0);
+    view.unmount();
+  });
+
+  it("R3R1 P1-03: duplicated hidden/pagehide cannot overwrite the first genuine parked snapshot", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const view = render(React.createElement(ReaderPage));
+    const scroll = setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 8500; });
+    fireScroll();
+    act(() => {
+      visibility = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    act(() => { getScrollContainer().scrollTop = 950; });
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    const data = JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}");
+    expect(data.scrollTop).toBe(8500);
+    act(() => {
+      visibility = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    advance(1800);
+    expect(scroll.current()).toBe(8500);
+    view.unmount();
+  });
+
+  it("R3R1 P1-03: after the first restore a later genuine scroll can park a NEW position", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const view = render(React.createElement(ReaderPage));
+    const scroll = setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 5100; });
+    fireScroll();
+    act(() => { visibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); });
+    act(() => { visibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+    advance(1800);
+    expect(scroll.current()).toBe(5100);
+    act(() => { getScrollContainer().scrollTop = 6900; });
+    fireScroll();
+    act(() => { visibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); });
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(6900);
+    act(() => { visibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+    advance(1800);
+    expect(scroll.current()).toBe(6900);
+    view.unmount();
+  });
+
+  for (const backgroundSeconds of [15, 60, 120]) {
+    it(`R3R1 Android lifecycle ${backgroundSeconds}s hidden -> visible restores saved scroll without refresh`, () => {
+      let visibility = "visible";
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+      const view = render(React.createElement(ReaderPage));
+      const scroll = setWritableScroll();
+      act(() => { getScrollContainer().scrollTop = 6700; });
+      fireScroll();
+      act(() => { visibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); });
+      advance(backgroundSeconds * 1000);
+      act(() => { getScrollContainer().scrollTop = 0; });
+      fireScroll(); // browser reset while hidden: must be ignored
+      act(() => { visibility = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+      advance(1800);
+      expect(scroll.current()).toBe(6700);
+      expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(6700);
+      view.unmount();
+    });
+  }
+
+  it("R3R1: storage quota/SecurityError never crashes reader; in-memory viewport restores", () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+    try {
+      const view = render(React.createElement(ReaderPage));
+      const scroll = setWritableScroll();
+      act(() => { getScrollContainer().scrollTop = 6700; });
+      expect(() => fireScroll()).not.toThrow();
+      expect(() => act(() => {
+        visibility = "hidden";
+        document.dispatchEvent(new Event("visibilitychange"));
+      })).not.toThrow();
+      act(() => { getScrollContainer().scrollTop = 0; });
+      act(() => {
+        visibility = "visible";
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      advance(1800);
+      expect(scroll.current()).toBe(6700);
+      view.unmount();
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it("R3R1: parked viewport from user u1 must never restore for user u2", () => {
+    const view = render(React.createElement(ReaderPage));
+    setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 6400; });
+    fireScroll();
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    state.user.id = "u2";
+    act(() => view.rerender(React.createElement(ReaderPage)));
+    const fresh = setWritableScroll();
+    act(() => window.dispatchEvent(new Event("pageshow")));
+    advance(1800);
+    expect(fresh.current()).toBe(0);
+    expect(localStorage.getItem("ipe.readerResume.v1.uu2.e1")).toBeNull();
+    view.unmount();
+    state.user.id = "u1";
+  });
+
+  it("R3R1: intentional Home at scroll 0 writes local recovery immediately, even inside 1s throttle", () => {
+    const view = render(React.createElement(ReaderPage));
+    setWritableScroll();
+    act(() => { getScrollContainer().scrollTop = 6500; });
+    fireScroll();
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(6500);
+    act(() => getScrollContainer().dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Home", bubbles: true,
+    })));
+    act(() => { getScrollContainer().scrollTop = 0; });
+    fireScroll();
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(0);
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(JSON.parse(localStorage.getItem("ipe.readerResume.v1.uu1.e1") || "{}").scrollTop).toBe(0);
     view.unmount();
   });
 
