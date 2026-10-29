@@ -262,6 +262,20 @@ export default function ReaderPage() {
   const [savedIndicatorVisible, setSavedIndicatorVisible] = useState(false);
   const [showResumeBanner, setShowResumeBanner] = useState(false);
   const resumeBannerShownRef = useRef(false);
+  // Android Chrome can restore a live tab with scrollTop=0, or temporarily
+  // unmount this scroller while an expired paid-reading lease is reacquired.
+  // Park only the current reader's position, without bypassing lease checks.
+  const parkedViewportRef = useRef<{
+    episodeId: number;
+    userId: string | number;
+    position: ReadingPositionSnapshot;
+  } | null>(null);
+  const viewportContextRef = useRef({ episodeId, userId });
+  const [viewportReturnTick, setViewportReturnTick] = useState(0);
+  // A gesture is recent only briefly; an earlier tap must not authorize a
+  // synthetic scroll(0) emitted while Android suspends the tab minutes later.
+  const lastViewportGestureAtRef = useRef(0);
+  const explicitTopNavigationRef = useRef(false);
 
   // ============ Focus Mode (full-screen reading, collapsible header) ============
   // hasReadableContent mirrors the JSX's own "canRead && content" branch
@@ -430,18 +444,90 @@ export default function ReaderPage() {
     writeReadingRecovery(safeLocalStorage(), uid, eid, position);
   }, []);
 
+  const parkReadingViewport = useCallback(() => {
+    const uid = userIdRef.current;
+    const eid = episodeIdRef.current;
+    if (!uid || !eid || !canReadRef.current ||
+      viewportContextRef.current.episodeId !== eid ||
+      viewportContextRef.current.userId !== uid) return;
+    // visibilitychange(hidden), pagehide and beforeunload can arrive in any
+    // order. Keep the FIRST valid snapshot for this suspension; DOM offsets
+    // observed by later lifecycle callbacks may already be browser-adjusted.
+    const existing = parkedViewportRef.current;
+    if (existing && existing.episodeId === eid && existing.userId === uid) return;
+    const container = scrollContainerRef.current;
+    const pending = pendingProgressRef.current;
+    const offset = container?.scrollTop ?? 0;
+    // Latest genuine scroll data wins over a later layout-adjusted offset.
+    const position: ReadingPositionSnapshot | null = pending && pending.scrollTop > 0
+      ? { ...pending }
+      : container && offset > 0
+        ? {
+            percent: container.scrollHeight > container.clientHeight
+              ? Math.min(100, (offset / (container.scrollHeight - container.clientHeight)) * 100)
+              : 0,
+            scrollTop: offset,
+            chapterNumber: null,
+            chapterTitle: null,
+            anchorId: null,
+          }
+        : null;
+    if (!position || position.scrollTop <= 0) return;
+    parkedViewportRef.current = { episodeId: eid, userId: uid, position };
+    lastViewportGestureAtRef.current = 0;
+    pendingProgressRef.current = position;
+    writeLocalRecovery(position);
+  }, [writeLocalRecovery]);
+
+  const markViewportUserIntent = useCallback(() => {
+    // A tap may signal that the user wants control, but tapping a tab
+    // before Android suspends it must NOT authorize browser scroll(0).
+    parkedViewportRef.current = null;
+  }, []);
+
+  const markViewportScrollIntent = useCallback(() => {
+    markViewportUserIntent();
+    lastViewportGestureAtRef.current = Math.max(1, Date.now());
+  }, [markViewportUserIntent]);
+
+  const markViewportTopNavigation = useCallback(() => {
+    markViewportScrollIntent();
+    explicitTopNavigationRef.current = true;
+  }, [markViewportScrollIntent]);
+
   const handleContentScroll = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container || !canRead || !content) return;
+    // Android Chrome emits synthetic scroll events on background/reattach.
+    // Do not hide the resume control or overwrite saved progress with zero.
+    const parked = parkedViewportRef.current;
+    if (document.visibilityState === "hidden" ||
+      (parked && parked.episodeId === episodeIdRef.current &&
+        parked.userId === userIdRef.current)) return;
+    // A synthetic top-of-page event before a background transition must not
+    // overwrite the last genuine scroll, even before pagehide gets delivered.
+    const hasRecentGesture = lastViewportGestureAtRef.current > 0 &&
+      Date.now() - lastViewportGestureAtRef.current <= 750;
+    const previousTop = pendingProgressRef.current?.scrollTop ??
+      resumeSource?.snapshot.scrollTop ?? progressData?.scrollPosition ?? 0;
+    // A large discontinuous jump to zero after a recent tap/swipe can
+    // still be Chrome resetting its scroller. Require a continuous
+    // scroll-to-top from nearby OR an explicit Home key.
+    if (container.scrollTop === 0 && previousTop > 0 &&
+      (!hasRecentGesture ||
+        (!explicitTopNavigationRef.current &&
+          previousTop > Math.max(1200, container.clientHeight * 2)))) return;
+    explicitTopNavigationRef.current = false;
 
     const scrollableHeight = container.scrollHeight - container.clientHeight;
     const percent = scrollableHeight > 0
       ? Math.min(100, Math.max(0, (container.scrollTop / scrollableHeight) * 100))
       : 100;
     setLivePercent(percent);
-    // Once the reader starts scrolling manually, the stale "resume" banner
-    // no longer applies - hide it rather than leave it sitting there.
-    setShowResumeBanner(false);
+    // Layout/reflow/Chrome scroll restoration can emit scroll events without
+    // human intent. Only actual touch/pointer/wheel/keyboard scrolling
+    // dismisses the resume banner, or the explicit "อ่านต่อ" action.
+    if (hasRecentGesture) setShowResumeBanner(false);
 
     let chapterNumber: string | null = null;
     let chapterTitle: string | null = null;
@@ -478,14 +564,18 @@ export default function ReaderPage() {
     // debounced API flush only fires 1.5s after scrolling STOPS, and an app
     // switch/app kill inside that gap must not lose the position.
     const now = Date.now();
-    if (now - localRecoveryLastWriteRef.current >= LOCAL_RECOVERY_WRITE_THROTTLE_MS) {
+    // A deliberate return to the beginning is semantically important:
+    // persist it immediately even within the normal throttle window, so
+    // a fast background transition cannot resurrect an old local position.
+    if ((container.scrollTop === 0 && hasRecentGesture) ||
+      now - localRecoveryLastWriteRef.current >= LOCAL_RECOVERY_WRITE_THROTTLE_MS) {
       localRecoveryLastWriteRef.current = now;
       writeLocalRecovery(pendingProgressRef.current);
     }
 
     if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
     scrollDebounceRef.current = setTimeout(flushProgressSave, SCROLL_SAVE_DEBOUNCE_MS);
-  }, [canRead, content, toc, flushProgressSave, writeLocalRecovery]);
+  }, [canRead, content, toc, flushProgressSave, writeLocalRecovery, resumeSource, progressData]);
 
   // Periodic safety-net autosave + lifecycle best-effort saves. Mobile app
   // switches fire visibilitychange->hidden (reliably) and often pagehide,
@@ -496,16 +586,31 @@ export default function ReaderPage() {
     if (!canRead) return;
 
     periodicSaveIntervalRef.current = setInterval(flushProgressSave, PERIODIC_SAVE_INTERVAL_MS);
-    const handleBeforeUnload = () => flushProgressSave(true);
-    const handlePageHide = () => flushProgressSave(true);
+    const handleBeforeUnload = () => {
+      parkReadingViewport();
+      flushProgressSave(true);
+    };
+    const handlePageHide = () => {
+      parkReadingViewport();
+      flushProgressSave(true);
+    };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
+        parkReadingViewport();
         flushProgressSave(true);
+      } else {
+        setViewportReturnTick((tick) => tick + 1);
       }
     };
+    // A tab restored from bfcache can return without a fresh React mount.
+    // page lifecycle events only schedule a restore if we had a live
+    // viewport parked before the page was suspended.
+    const handleReturn = () => setViewportReturnTick((tick) => tick + 1);
     window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handleReturn);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("resume", handleReturn);
 
     return () => {
       if (periodicSaveIntervalRef.current) clearInterval(periodicSaveIntervalRef.current);
@@ -516,9 +621,65 @@ export default function ReaderPage() {
       // lives in the episode/user reset effect instead.
       window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handleReturn);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("resume", handleReturn);
     };
-  }, [canRead, flushProgressSave]);
+  }, [canRead, flushProgressSave, parkReadingViewport]);
+
+  // Lease loss can temporarily replace the whole reader DOM. The last real
+  // position is parked before the protected view returns, and restored ONLY
+  // after the normal canRead + lease gate permits the content again.
+  useEffect(() => {
+    if (showTransferCta) parkReadingViewport();
+  }, [showTransferCta, parkReadingViewport]);
+
+  // If Chrome reattached the scroller at zero, recover the live viewport
+  // without requiring a refresh or a second click on "อ่านต่อ". This is
+  // deliberately NOT run on a fresh page load (parkedViewportRef is empty).
+  useEffect(() => {
+    const parked = parkedViewportRef.current;
+    if (!parked || !canRead || !content || dataLoading || showTransferCta) return;
+    if (parked.episodeId !== episodeId || parked.userId !== userId) return;
+    let cancelled = false;
+    const restore = (final: boolean) => {
+      if (cancelled || document.visibilityState !== "visible" ||
+        parkedViewportRef.current !== parked ||
+        !canReadRef.current ||
+        episodeIdRef.current !== parked.episodeId ||
+        userIdRef.current !== parked.userId) return;
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const saved = parked.position.scrollTop;
+      const available = Math.max(0, container.scrollHeight - container.clientHeight);
+      const target = Math.min(saved, available);
+      const tolerance = Math.min(32, Math.max(2, saved * 0.005));
+      if (target > 0 && Math.abs(container.scrollTop - target) > tolerance) {
+        container.scrollTop = target;
+      }
+      // A clamp to the current short layout is NOT a successful restore,
+      // even if scrollTop is positive. Recheck again at every bounded pass.
+      const recovered = target > 0 && available >= saved - tolerance &&
+        Math.abs(container.scrollTop - saved) <= tolerance;
+      if (recovered) setLivePercent(parked.position.percent);
+      if (final) {
+        if (!recovered) {
+          // Retain the original full position; never advertise a partial
+          // clamp as "read resumed". A visible, explicit fallback remains.
+          setResumeSource({ origin: "local", snapshot: parked.position, at: Date.now() });
+          setShowResumeBanner(true);
+        }
+        if (parkedViewportRef.current === parked) parkedViewportRef.current = null;
+      }
+    };
+    const delays = [0, 120, 400, 1000, 1800];
+    const timers = delays.map((ms, index) =>
+      setTimeout(() => restore(index === delays.length - 1), ms));
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+    };
+  }, [canRead, content, dataLoading, showTransferCta, episodeId, userId, viewportReturnTick]);
 
   // Merge the server-saved position with this device's local recovery record
   // (newest wins - see mergeResumeSource) into the single resume source the
@@ -555,11 +716,15 @@ export default function ReaderPage() {
   // episode can ever flush or mark for the new one.
   useEffect(() => {
     resumeBannerShownRef.current = false;
+    parkedViewportRef.current = null;
+    lastViewportGestureAtRef.current = 0;
+    explicitTopNavigationRef.current = false;
     setShowResumeBanner(false);
     setShowToc(false);
     setShowReaderMenu(false);
     setShowReaderSettings(false);
     pendingProgressRef.current = null;
+    viewportContextRef.current = { episodeId, userId };
     localRecoveryLastWriteRef.current = 0;
 
     return () => {
@@ -694,6 +859,7 @@ export default function ReaderPage() {
   }, []);
 
   const handleResumeReading = () => {
+    markViewportUserIntent();
     const target = resumeSource?.snapshot;
     setShowResumeBanner(false);
     if (!target) return;
@@ -723,6 +889,7 @@ export default function ReaderPage() {
   }, [fontSize, fontFamily, lineHeight, paragraphSpacing, resumeApplyStep]);
 
   const handleTocEntryClick = (entry: PackageTocEntry) => {
+    markViewportUserIntent();
     setShowToc(false);
     // A TOC jump is deliberate navigation - it ends any active resume
     // verify window (the restore must not fight the jump).
@@ -1067,6 +1234,17 @@ export default function ReaderPage() {
         className={styles.content}
         ref={scrollContainerRef}
         onScroll={handleContentScroll}
+        onTouchStart={markViewportUserIntent}
+        onTouchMove={markViewportScrollIntent}
+        onPointerDown={markViewportUserIntent}
+        onWheel={markViewportScrollIntent}
+        onKeyDown={(event) => {
+          if (event.key === "Home") {
+            markViewportTopNavigation();
+          } else if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "End", " "].includes(event.key)) {
+            markViewportScrollIntent();
+          }
+        }}
         data-testid="reader-scroll-container"
       >
         {showResumeBanner && resumeSource && canRead && content && (
