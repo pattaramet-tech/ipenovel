@@ -523,6 +523,25 @@
   background-color: #0052a3;
 }
 
+/* Paginated packages: position indicator between the previous/next chapter
+   buttons ("บทที่ 2 • 3/12"). Shrinks/ellipsizes before the buttons do, so
+   three items still fit a 360px phone without wrapping. */
+.chapterIndicator {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: center;
+  text-align: center;
+  font-size: 0.85rem;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dark .chapterIndicator {
+  color: #999;
+}
+
 .loading,
 .error {
   display: flex;
@@ -984,6 +1003,18 @@
   background-color: rgba(77, 166, 255, 0.08);
 }
 
+/* Paginated packages: the chapter page currently being read. */
+.tocItemCurrent {
+  background-color: rgba(0, 102, 204, 0.12);
+  color: #0066cc;
+  font-weight: 600;
+}
+
+.dark .tocItemCurrent {
+  background-color: rgba(77, 166, 255, 0.12);
+  color: #4da6ff;
+}
+
 /* Edge watermark - fixed top/bottom strips + a small corner badge, styled
    like a mobile game HUD so it stays on screen while reading without
    covering the middle of the page. z-index 20 keeps it above plain content
@@ -1094,5 +1125,19 @@
 
   .novelTitle {
     font-size: 0.95rem;
+  }
+
+  /* Chapter navigation on phones: keep both buttons reachable and the
+     indicator readable without letting the row wrap or overflow. */
+  .navigation {
+    gap: 0.5rem;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  .navButton {
+    padding: 0.6rem 0.75rem;
+    font-size: 0.9rem;
+    white-space: nowrap;
   }
 }
