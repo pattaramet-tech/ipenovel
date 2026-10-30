@@ -1,6 +1,8 @@
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import { useCallback, useEffect, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useLocation } from "wouter";
 import { clearLegacyAuthLocalStorageFromWindow } from "./authClientStorage";
 import { classifyLogoutFailure } from "./logoutOutcome";
 import { resolveUnauthorizedRedirectTarget } from "./unauthorizedRedirect";
@@ -12,6 +14,7 @@ type UseAuthOptions = {
 export function useAuth(options?: UseAuthOptions) {
   const { redirectOnUnauthenticated = false } = options ?? {};
   const utils = trpc.useUtils();
+  const [, setLocation] = useLocation();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
     // auth.me is a read-only identity probe. Expected anonymous/expired
@@ -70,6 +73,47 @@ export function useAuth(options?: UseAuthOptions) {
   useEffect(() => {
     clearLegacyAuthLocalStorageFromWindow(typeof window === "undefined" ? null : window);
   }, []);
+
+  // R2 Reader Session Controls: (a) session cache handling — a signed-in
+  // identity CHANGE (login as a different account on the same browser) clears
+  // the whole query cache so no previous account's reader/library data can be
+  // served from cache; (b) a pending_choice session (third login) routes to
+  // the chooser automatically.
+  const queryClient = useQueryClient();
+  const userId = meQuery.data?.id ?? null;
+  // Track the last NON-NULL identity: meQuery's own pending state (null)
+  // must not look like an identity change — clearing on it would evict the
+  // auth.me cache mid-load and loop forever.
+  const lastIdentityRef = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    if (userId != null) {
+      if (lastIdentityRef.current != null && lastIdentityRef.current !== userId) {
+        queryClient.clear();
+      }
+      lastIdentityRef.current = userId;
+    }
+  }, [userId, queryClient]);
+
+  const sessionsQuery = trpc.auth.sessions.list.useQuery(undefined, {
+    enabled: Boolean(meQuery.data),
+    retry: false,
+    refetchOnWindowFocus: true,
+  });
+  // R2: only the PENDING session itself is routed to the chooser. Other
+  // (active) sessions of the same account must keep reading undisturbed —
+  // a pending login elsewhere never displaces an active reader (policy).
+  const pendingSessionChoice = Boolean(
+    sessionsQuery.data?.readerSessionControls &&
+      (sessionsQuery.data?.sessions ?? []).some(
+        s => s.status === "pending_choice" && s.current === true
+      )
+  );
+
+  useEffect(() => {
+    if (pendingSessionChoice) {
+      setLocation("/profile/sessions");
+    }
+  }, [pendingSessionChoice, setLocation]);
 
   const state = useMemo(() => {
     return {
@@ -139,5 +183,9 @@ export function useAuth(options?: UseAuthOptions) {
     ...state,
     refresh: () => meQuery.refetch(),
     logout,
+    // R2: true when this browser's session still needs its third-login
+    // chooser resolution (exposed for pages that want an inline banner).
+    pendingSessionChoice,
+    currentLogins: sessionsQuery.data ?? null,
   };
 }

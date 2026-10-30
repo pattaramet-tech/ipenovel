@@ -209,6 +209,7 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     reason: "This feature's OWN append-only audit trail, deliberately built with no foreign key specifically so it survives a target user's hard delete (see drizzle/schema.ts's adminUserAuditLogs doc comment) - the record of what was done TO this user must remain readable after they're gone, so this column alone must never block that deletion. Contrast actorAdminId above, which protects a different identity (WHO did it) and IS a blocker.",
   },
 
+
   // ---- IPE-NOTIFICATIONS (PAT-15–30): the account's own notification
   // inbox/settings/operations - all user_owned (these tables carry no
   // admin-actor columns; notificationBulkOperations.actorUserId is the
@@ -219,6 +220,46 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
   { table: "notificationRecipients", column: "userId", category: "user_owned", reference: "Notification Inbox", reason: "The account's notification inbox rows, including read/dismissed tombstones - durable per-user delivery state." },
   { table: "notificationPreferences", column: "userId", category: "user_owned", reference: "Notification Preferences", reason: "The account's per-kind notification opt-in/opt-out settings." },
   { table: "notificationBulkOperations", column: "actorUserId", category: "user_owned", reference: "Notification Bulk Operations", reason: "The actor here is the inbox owner themself (bulk mark-read/dismiss), so these are the account's own inbox operations - not an admin/audit reference." },
+
+  // ---- never_blocks: Reader Session Controls registry (migration 0066) ----
+  // The account's own session-security state. None of these rows represent
+  // protectable user data, and all three tables carry an ON DELETE CASCADE
+  // foreign key to users.id (auth_sessions_user_fk / session_slots_user_fk /
+  // reading_leases_user_fk), so a hard delete of the users row destroys them
+  // in the same statement - which is precisely the REQUIRED security
+  // outcome: every v2 cookie of a deleted account must die with it (the
+  // revocation floor; replay prevention). The two RSC columns whose names do
+  // not match the discovery pattern above are documented here for
+  // completeness rather than as entries, because the reflection test's
+  // staleness check compares against pattern-matched columns only:
+  //   authSessions.adoptOf - self-referencing rotation/adoption lineage
+  //     pointer to another authSessions row (FK SET NULL); lives and dies
+  //     with the session rows above, never third-party user data.
+  //   readingLeases.holderSessionId - pointer to the holding authSessions
+  //     row (FK CASCADE); no independent user data beyond the lease row
+  //     itself, which dies with the user via reading_leases_user_fk.
+  {
+    table: "authSessions",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Session Registry (Reader Session Controls)",
+    reason: "The account's own session-revocation ledger (migration 0066) - security state, not protectable user data. The FK auth_sessions_user_fk is ON DELETE CASCADE, so these rows are destroyed together with the users row, which is exactly the required security outcome: every v2 cookie of a hard-deleted account must die with it (revocation floor / replay prevention). sid/tokenHash are credential material that must be destroyed, never retained or exported.",
+  },
+  {
+    table: "sessionSlots",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Session Slot Counter (Reader Session Controls)",
+    reason: "A single advisory per-user counter row (the authoritative active count is recomputed from authSessions inside the user-lock transaction) - derived bookkeeping with no protectable content, destroyed with the users row by session_slots_user_fk ON DELETE CASCADE.",
+  },
+  {
+    table: "readingLeases",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Reading Lease (Reader Session Controls)",
+    reason: "The account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt) and carries nothing recoverable or exportable. Destroying it with the users row (reading_leases_user_fk ON DELETE CASCADE) revokes the lease, which is the required outcome of deleting the account.",
+  },
+
 ];
 
 /**

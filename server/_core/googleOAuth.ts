@@ -373,10 +373,50 @@ async function handleLoginCallback(req: Request, res: Response, deps: LoginCallb
     // user's own openId (never the Google ID token), the same
     // sdk.createSessionToken helper, the same COOKIE_NAME/SESSION_TTL_MS,
     // the same getSessionCookieOptions(req). No new session/JWT schema.
+    // R2 Reader Session Controls: register the login (rotation-aware) and
+    // mint a v2 token carrying the session's sid. F3: NO legacy-token
+    // downgrade — if durable registration fails the login fails without a
+    // session cookie.
+    const registry = await import("../services/sessionRegistry");
+    const sid = registry.generateSid();
+    const oldCookie = sdk.readSessionToken(req);
+    const oldSession = oldCookie ? await sdk.verifySession(oldCookie) : null;
     const sessionToken = await sdk.createSessionToken(resolution.user.openId, {
       name: resolution.user.name,
       expiresInMs: SESSION_TTL_MS,
+      sid,
     });
+    // R2/F3: a durable registry registration is part of the login contract —
+    // if it fails, the login FAILS with 503 and NO session cookie is issued
+    // (a cookie without a durable registry row would be an untracked
+    // credential; the revocation floor cannot cover it). The rotation
+    // lookup is a registry read, so it lives inside the same guard.
+    try {
+      const rotateRowId =
+        oldSession && oldSession.openId === resolution.user.openId
+          ? await registry.findRotatableRow({
+              userId: resolution.user.id,
+              sid: oldSession.sid,
+              token: oldCookie!,
+            })
+          : null;
+      await registry.allocateSessionRow({
+        userId: resolution.user.id,
+        token: sessionToken,
+        sid,
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+        createdVia: "google",
+        clientLabel: registry.labelFromUserAgent(req.headers["user-agent"]),
+        rotateRowId,
+      });
+      if (registry.isReaderSessionControlsEnabled()) {
+        await registry.reconcileAfterFlagOn(resolution.user.id);
+      }
+    } catch (registryError) {
+      console.error("[googleOAuth] Session registry unavailable - refusing to issue an untracked session:", safeErrorSummary(registryError));
+      res.status(503).json({ error: "Sign-in temporarily unavailable - please try again." });
+      return;
+    }
 
     clearGoogleOAuthCookies(req, res);
     const sessionCookieOptions = getSessionCookieOptions(req);

@@ -534,6 +534,7 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "The check-in EVENT record itself (date/streak) - the task spec's own Category B example list names \"check-ins\" explicitly; the actual reward VALUE this can carry is tracked separately and classified as economic (see dailyCheckinRewardGrants.userId above).",
   },
 
+
   // ---- IPE-NOTIFICATIONS (PAT-15–30): the account's own notification
   // inbox/settings/operations. These tables carry no admin-actor columns;
   // notificationBulkOperations.actorUserId is the inbox owner themself
@@ -544,6 +545,45 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
   { table: "notificationRecipients", column: "userId", category: "user_owned_hard_block", reason: "The user's notification inbox rows, including read/dismissed tombstones - durable per-user delivery state." },
   { table: "notificationPreferences", column: "userId", category: "user_owned_hard_block", reason: "The user's per-kind notification opt-in/opt-out choices - durable user settings." },
   { table: "notificationBulkOperations", column: "actorUserId", category: "user_owned_hard_block", reason: "The actor here is the inbox owner themself (bulk mark-read/dismiss), so the operation records are the user's own inbox history - not an admin/actor reference." },
+
+  // ---- deliberately_ignored: Reader Session Controls registry (migration 0066) ----
+  // The source account's own session-security state. None of these rows are
+  // recoverable user data: the recovery tool never moves, merges, or exports
+  // them; each row references ONLY the source account itself (no third
+  // party to strand); and all three tables expire or die by design
+  // (authSessions/readingLeases carry expiresAt; sessionSlots is an advisory
+  // counter recomputed from authSessions). Excluding them is safe and
+  // NECESSARY - any signed-in account always holds at least its own session
+  // rows, so treating them as source-owned hard-block data would block every
+  // recovery. The two RSC columns whose names do not match the discovery
+  // pattern above are documented here for completeness rather than as
+  // entries, because the reflection test's staleness check compares against
+  // pattern-matched columns only:
+  //   authSessions.adoptOf - self-referencing rotation/adoption lineage
+  //     pointer to another authSessions row; security-lineage bookkeeping,
+  //     never source-owned recoverable data.
+  //   readingLeases.holderSessionId - pointer to the holding authSessions
+  //     row; no user data beyond the lease row itself, which is excluded by
+  //     readingLeases.userId below.
+  {
+    table: "authSessions",
+    column: "userId",
+    category: "deliberately_ignored",
+    reason: "The source account's own session-revocation ledger (Reader Session Controls, migration 0066) - ephemeral security state bound solely to the source account itself, never moved, merged, or exported by recovery, carrying nothing recoverable (sid/tokenHash are credential material that must never be restored), and expiring by design via expiresAt. Excluding it is safe because a session row references no third party, and necessary because any signed-in account always holds its own session rows - a hard block here would make every recovery impossible.",
+  },
+  {
+    table: "sessionSlots",
+    column: "userId",
+    category: "deliberately_ignored",
+    reason: "A single advisory per-user login-slot counter (the authoritative count is recomputed from authSessions inside the user-lock transaction) - derived bookkeeping bound solely to the source account, carrying no recoverable or exportable content, so there is nothing for recovery to move and nothing to strand.",
+  },
+  {
+    table: "readingLeases",
+    column: "userId",
+    category: "deliberately_ignored",
+    reason: "The source account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt), references only the source account itself, and carries nothing recoverable or exportable; it is never moved by recovery and cannot strand third-party data.",
+  },
+
 ];
 
 /**

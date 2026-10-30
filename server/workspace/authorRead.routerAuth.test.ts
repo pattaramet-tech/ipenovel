@@ -21,7 +21,7 @@ function contextFor(role: "user" | "author" | "admin" | null): TrpcContext {
 }
 
 describe("R4A direct tRPC role gates (no database connection required)", () => {
-  it.each(["admin", "user", null] as const)(
+  it.each(["admin", "user"] as const)(
     "rejects %s at the separate Author-only read API before any DB lookup", async (role) => {
       const caller = appRouter.createCaller(contextFor(role));
       await expect(caller.workspace.authorRead.list()).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -29,6 +29,16 @@ describe("R4A direct tRPC role gates (no database connection required)", () => {
       await expect(caller.workspace.authorRead.draft({ workspaceId: 1, workItemId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
     },
   );
+
+  // Reader Session R2/R3 chain: the Author-only read API rides the
+  // authenticated chain, so an anonymous caller hits requireUser first
+  // (UNAUTHORIZED) and never reaches the author role gate.
+  it("rejects null (anonymous) at requireUser before any DB lookup", async () => {
+    const caller = appRouter.createCaller(contextFor(null));
+    await expect(caller.workspace.authorRead.list()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.workspace.authorRead.detail({ workspaceId: 1 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.workspace.authorRead.draft({ workspaceId: 1, workItemId: 1 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
 
   it("preserves all old platform-admin gates for an Author", async () => {
     const caller = appRouter.createCaller(contextFor("author"));

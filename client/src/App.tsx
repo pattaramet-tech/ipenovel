@@ -55,6 +55,7 @@ import { publicToasterTheme } from "./components/navbarVisibility";
 import Navbar from "./components/Navbar";
 import MigrationGate from "./components/MigrationGate";
 import MaintenanceAnnouncementBanner from "./components/MaintenanceAnnouncementBanner";
+import CurrentLoginsPage from "./pages/CurrentLoginsPage";
 import WorkspaceRoutePage from "./pages/WorkspaceRoutePage";
 import WorkspaceIntakePage from "./pages/WorkspaceIntakePage";
 
@@ -88,6 +89,7 @@ function Router() {
         <Route path={"/my-novels"} component={MyNovelsPage} />
         <Route path={"/my-library"} component={MyLibraryPage} />
         <Route path={"/profile"} component={ProfilePage} />
+        <Route path={"/profile/sessions"} component={CurrentLoginsPage} />
         <Route path={"/login"} component={LoginPage} />
         <Route path={"/account/upgrade-login"} component={UpgradeLoginPage} />
         <Route path={"/account/recovery"} component={AccountRecoveryPage} />

@@ -52,7 +52,12 @@ export type AnonymousCredentialReason =
   | "invalid_session_token"
   | "no_user_record"
   | "admin_session_invalid"
-  | "forced_relogin";
+  | "forced_relogin"
+  // R2 Reader Session Controls: the cookie's registry row is revoked or
+  // superseded — a terminal, registry-backed death (the revocation floor).
+  // Cleared exactly like invalid_session_token/forced_relogin: the browser
+  // must stop resending a session that can never verify again.
+  | "session_revoked";
 
 export class AnonymousCredentialError extends Error {
   readonly reason: AnonymousCredentialReason;

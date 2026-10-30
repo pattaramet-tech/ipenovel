@@ -66,11 +66,51 @@ export function registerOAuthRoutes(app: Express) {
         loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
         lastSignedIn: new Date(),
       });
+      const userRow = (await db.getUserByOpenId(userInfo.openId))!;
 
+      // R2 Reader Session Controls: register the login (rotation-aware) and
+      // mint a v2 token carrying the session's sid. F3: NO legacy-token
+      // downgrade — if durable registration fails the login fails without a
+      // session cookie.
+      const registry = await import("../services/sessionRegistry");
+      const sid = registry.generateSid();
+      const oldCookie = sdk.readSessionToken(req);
+      const oldSession = oldCookie ? await sdk.verifySession(oldCookie) : null;
+      const rotateRowId =
+        oldSession && oldSession.openId === userInfo.openId
+          ? await registry.findRotatableRow({
+              userId: userRow.id,
+              sid: oldSession.sid,
+              token: oldCookie!,
+            })
+          : null;
       const sessionToken = await sdk.createSessionToken(userInfo.openId, {
         name: normalizedName,
         expiresInMs: SESSION_TTL_MS,
+        sid,
       });
+      // R2/F3: a durable registry registration is part of the login contract —
+      // if it fails, the login FAILS with 503 and NO session cookie is issued
+      // (a cookie without a durable registry row would be an untracked
+      // credential; the revocation floor cannot cover it).
+      try {
+        await registry.allocateSessionRow({
+          userId: userRow.id,
+          token: sessionToken,
+          sid,
+          expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+          createdVia: "manus",
+          clientLabel: registry.labelFromUserAgent(req.headers["user-agent"]),
+          rotateRowId,
+        });
+        if (registry.isReaderSessionControlsEnabled()) {
+          await registry.reconcileAfterFlagOn(userRow.id);
+        }
+      } catch (registryError) {
+        console.error("[OAuth] Session registry unavailable - refusing to issue an untracked session:", safeErrorSummary(registryError));
+        res.status(503).json({ error: "Sign-in temporarily unavailable - please try again." });
+        return;
+      }
 
       const cookieOptions = getSessionCookieOptions(req);
       res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: SESSION_TTL_MS });

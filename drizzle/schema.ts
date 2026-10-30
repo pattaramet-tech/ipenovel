@@ -1,5 +1,8 @@
 import {
+  type AnyMySqlColumn,
   int,
+  tinyint,
+  char,
   mysqlEnum,
   mysqlTable,
   text,
@@ -3753,6 +3756,7 @@ export type PluginAccessGrant = typeof pluginAccessGrants.$inferSelect;
 export type PluginRefreshGrant = typeof pluginRefreshGrants.$inferSelect;
 export type PluginAuditLog = typeof pluginAuditLogs.$inferSelect;
 
+
 // IPE-NOTIFICATIONS (PAT-15–30): isolated notification tables, defined in
 // server/notifications/tables.ts and re-exported here (together with the
 // additive migration 0067_notifications_engagement) so the account
@@ -3760,3 +3764,105 @@ export type PluginAuditLog = typeof pluginAuditLogs.$inferSelect;
 // adminUserDeletionClassification, accountMergeInventory) can reflect over
 // them. Qualified by server/notifications/migrationContract.test.ts.
 export * from "../server/notifications/tables";
+
+
+// ============ READER SESSION CONTROLS (R2) ============
+
+/**
+ * Registry of issued login sessions. One row per minted cookie (per login).
+ * `sid` is the login identity for v2 tokens (mirrors the JWT `sid` claim);
+ * `tokenHash` is the sha256 of the raw cookie — the only way to bind a legacy
+ * (v1, sid-less) cookie and the exact-replay ledger for revocation.
+ * Terminal statuses (revoked/superseded) are permanent: no flag state can
+ * move them back — this table IS the revocation floor.
+ */
+export const authSessions = mysqlTable(
+  "authSessions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    sid: varchar("sid", { length: 64 }).notNull(),
+    tokenHash: char("tokenHash", { length: 64 }).notNull(),
+    tokenVersion: tinyint("tokenVersion").notNull().default(2),
+    status: mysqlEnum("status", [
+      "active",
+      "pending_choice",
+      "revoked",
+      "superseded",
+      "unslotted_legacy",
+    ]).notNull().default("active"),
+    revokedReason: varchar("revokedReason", { length: 64 }),
+    loginAt: timestamp("loginAt").defaultNow().notNull(),
+    lastSeenAt: timestamp("lastSeenAt"),
+    expiresAt: timestamp("expiresAt").notNull(),
+    createdVia: mysqlEnum("createdVia", ["google", "manus", "adoption", "offpath"]).notNull(),
+    // Display-only label derived from the login User-Agent. Never an authority.
+    clientLabel: varchar("clientLabel", { length: 255 }),
+    adoptOf: int("adoptOf"),
+  },
+  table => ({
+    sidUnique: uniqueIndex("auth_sessions_sid_unique").on(table.sid),
+    tokenHashUnique: uniqueIndex("auth_sessions_token_hash_unique").on(table.tokenHash),
+    userStatusIdx: index("auth_sessions_user_status_idx").on(table.userId, table.status),
+    userFk: foreignKey({
+      name: "auth_sessions_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+    adoptOfFk: foreignKey({
+      name: "auth_sessions_adopt_of_fk",
+      columns: [table.adoptOf],
+      // Self-reference: the cast breaks the TS circular initializer.
+      foreignColumns: [table.id as AnyMySqlColumn],
+    }).onDelete("set null"),
+  })
+);
+
+/** Advisory per-user slot counter; authoritative count is recomputed from authSessions. */
+export const sessionSlots = mysqlTable(
+  "sessionSlots",
+  {
+    userId: int("userId").primaryKey(),
+    activeCount: int("activeCount").notNull().default(0),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    // R4/IR-05: metadata parity with 0066_reader_session_controls.sql
+    // (CONSTRAINT `session_slots_user_fk` ... ON DELETE CASCADE). Metadata
+    // only — the live schema was created by the migration and is unchanged.
+    userFk: foreignKey({
+      name: "session_slots_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+  })
+);
+
+/** One row per user: at most one active paid-reading lease. */
+export const readingLeases = mysqlTable(
+  "readingLeases",
+  {
+    userId: int("userId").primaryKey(),
+    holderSessionId: int("holderSessionId").notNull(),
+    leaseVersion: int("leaseVersion").notNull().default(1),
+    acquiredAt: timestamp("acquiredAt").defaultNow().notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+  },
+  table => ({
+    // R4/IR-05: metadata parity with 0066 (CONSTRAINT
+    // `reading_leases_user_fk` / `reading_leases_session_fk` ... CASCADE).
+    userFk: foreignKey({
+      name: "reading_leases_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("cascade"),
+    sessionFk: foreignKey({
+      name: "reading_leases_session_fk",
+      columns: [table.holderSessionId],
+      foreignColumns: [authSessions.id],
+    }).onDelete("cascade"),
+  })
+);
+
+export type AuthSession = typeof authSessions.$inferSelect;
+export type InsertAuthSession = typeof authSessions.$inferInsert;

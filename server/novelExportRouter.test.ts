@@ -56,10 +56,14 @@ const PREVIEW_INPUT = { novelId: 1 };
 afterEach(() => vi.restoreAllMocks());
 
 describe("admin.novelExport - authorization", () => {
+  // Reader Session R2/R3 chain: adminProcedure rides authenticatedProcedure
+  // (requireUser → session gate → admin gate), so an ANONYMOUS caller hits
+  // requireUser first (UNAUTHORIZED) — the admin gate's FORBIDDEN applies to
+  // authenticated non-admins (next test).
   it("anonymous caller -> UNAUTHORIZED, the export service is never invoked", async () => {
     const previewSpy = vi.spyOn(novelExportService, "buildNovelExportPreview");
     const caller = appRouter.createCaller(contextFor(null));
-    await expect(caller.admin.novelExport.preview(PREVIEW_INPUT)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.novelExport.preview(PREVIEW_INPUT)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     expect(previewSpy).not.toHaveBeenCalled();
   });
 
@@ -133,13 +137,14 @@ describe("admin.novelExport - authorization", () => {
 });
 
 describe("admin.novelExport.thaiNovel* - authorization (IPE-059-B)", () => {
-  it("anonymous caller -> FORBIDDEN, the Thai-Novel service is never invoked", async () => {
+  // R2/R3 chain (see above): anonymous → UNAUTHORIZED at requireUser first.
+  it("anonymous caller -> UNAUTHORIZED, the Thai-Novel service is never invoked", async () => {
     const previewSpy = vi.spyOn(novelExportService, "buildThaiNovelExportPreview");
     const zipSpy = vi.spyOn(novelExportService, "buildThaiNovelZipExport");
     const caller = appRouter.createCaller(contextFor(null));
-    await expect(caller.admin.novelExport.thaiNovelPreview(PREVIEW_INPUT)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.novelExport.thaiNovelPreview(PREVIEW_INPUT)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     await expect(caller.admin.novelExport.thaiNovelDownloadZip(PREVIEW_INPUT)).rejects.toMatchObject({
-      code: "FORBIDDEN",
+      code: "UNAUTHORIZED",
     });
     expect(previewSpy).not.toHaveBeenCalled();
     expect(zipSpy).not.toHaveBeenCalled();

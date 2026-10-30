@@ -10,6 +10,25 @@ vi.mock("../db", async () => {
   return { ...actual };
 });
 
+// R2/F3: the Manus callback now performs a durable registry registration as
+// part of the login contract — mocked here at module level (vi.mock
+// intercepts the callback's dynamic import) so the AUTH_PROVIDER switch is
+// the only thing under test.
+vi.mock("../services/sessionRegistry", () => ({
+  generateSid: vi.fn(() => "sid-ff"),
+  findSessionByCookie: vi.fn(async () => null),
+  findRotatableRow: vi.fn(async () => null),
+  allocateSessionRow: vi.fn(async () => ({
+    id: 9002, userId: 1, sid: "sid-ff", tokenHash: "th", tokenVersion: 2,
+    status: "active", revokedReason: null, loginAt: new Date(), lastSeenAt: null,
+    expiresAt: new Date(Date.now() + 86400000), createdVia: "manus",
+    clientLabel: null, adoptOf: null,
+  })),
+  isReaderSessionControlsEnabled: vi.fn(() => false),
+  reconcileAfterFlagOn: vi.fn(async () => undefined),
+  labelFromUserAgent: vi.fn(() => "R2 Test Browser"),
+}));
+
 // Blocker 3: only one login provider is ever "active" server-side at a
 // time. These tests pin that GET /api/oauth/callback (the Manus flow)
 // respects AUTH_PROVIDER exactly the same way the new Google routes do -
@@ -70,7 +89,10 @@ describe("GET /api/oauth/callback (Manus) - AUTH_PROVIDER gating", () => {
     vi.spyOn(sdk, "getUserInfo").mockResolvedValue({ openId: "user-123", name: "Somchai" } as any);
     vi.spyOn(db, "assertDatabaseAvailable").mockResolvedValue(undefined);
     vi.spyOn(db, "upsertUser").mockResolvedValue(undefined);
+    vi.spyOn(db, "getUserByOpenId").mockResolvedValue({ id: 7, openId: "user-123", role: "user" } as any);
     vi.spyOn(sdk, "createSessionToken").mockResolvedValue("fake-manus-session-token");
+    // R2/F3: the registry is module-mocked at the top of this file — durable
+    // registration succeeds so the callback can mint its cookie.
   }
 
   it('AUTH_PROVIDER="manus" -> the Manus callback works exactly as before (token exchange, session cookie, redirect)', async () => {
