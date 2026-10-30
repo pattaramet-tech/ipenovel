@@ -3752,3 +3752,11 @@ export type PluginOAuthAuthorizationCode = typeof pluginOAuthAuthorizationCodes.
 export type PluginAccessGrant = typeof pluginAccessGrants.$inferSelect;
 export type PluginRefreshGrant = typeof pluginRefreshGrants.$inferSelect;
 export type PluginAuditLog = typeof pluginAuditLogs.$inferSelect;
+
+// IPE-NOTIFICATIONS (PAT-15–30): isolated notification tables, defined in
+// server/notifications/tables.ts and re-exported here (together with the
+// additive migration 0067_notifications_engagement) so the account
+// lifecycle safety inventories (accountRecoveryDataClassification,
+// adminUserDeletionClassification, accountMergeInventory) can reflect over
+// them. Qualified by server/notifications/migrationContract.test.ts.
+export * from "../server/notifications/tables";
