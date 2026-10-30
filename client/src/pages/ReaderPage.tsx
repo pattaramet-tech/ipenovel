@@ -9,6 +9,15 @@ import { MoreVertical, Type, Maximize2, Minimize2 } from "lucide-react";
 import styles from "./ReaderPage.module.css";
 import { formatEpisodeLabel } from "@/utils/episodeUtils";
 import { parsePackageToc, findTocEntryByChapterNumber, type PackageTocEntry } from "@/utils/packageTocUtils";
+import {
+  findSegmentIndexByAnchorId,
+  findSegmentIndexByChapterNumber,
+  packageOverallPercent,
+  resolveChapterRestoreScrollTop,
+  resolveInitialChapterIndex,
+  segmentPackageChaptersFromLines,
+  shouldPaginatePackage,
+} from "./readerChapterPagination";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import ReaderSettings from "@/components/ReaderSettings";
 import { useReaderPreferences, getFontFamilyStack } from "@/hooks/useReaderPreferences";
@@ -256,6 +265,10 @@ export default function ReaderPage() {
   const resumeVerifyTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const resumeIntentDetachRef = useRef<(() => void) | null>(null);
 
+  // P1 chapter pagination: which package chapter page is showing (0-based
+  // index into `chapters` below). Plain chapters and non-paginated packages
+  // never leave 0, so nothing else has to special-case them.
+  const [chapterIndex, setChapterIndex] = useState(0);
   const [showToc, setShowToc] = useState(false);
   const [showReaderMenu, setShowReaderMenu] = useState(false);
   const [livePercent, setLivePercent] = useState(0);
@@ -388,6 +401,55 @@ export default function ReaderPage() {
   const toc = useMemo(() => (isPackage ? parsePackageToc(content) : []), [isPackage, content]);
   const tocByLineIndex = useMemo(() => new Map(toc.map((entry) => [entry.lineIndex, entry])), [toc]);
 
+  // ==== P1 chapter pagination (package episodes) ====
+  // Split the package blob into one segment per recognized chapter heading
+  // (see readerChapterPagination.ts). `paginated` is true only for packages
+  // with more than one page to move between - every other shape (plain
+  // chapters, heading-less packages, single-chapter packages) keeps the
+  // legacy single-page rendering bit-for-bit.
+  const contentLines = useMemo(() => content.split("\n"), [content]);
+  const chapters = useMemo(
+    () => (isPackage ? segmentPackageChaptersFromLines(contentLines, toc) : []),
+    [isPackage, contentLines, toc]
+  );
+  const paginated = isPackage && shouldPaginatePackage(chapters);
+
+  // Latest-value refs (same pattern as episodeIdRef above): callbacks created
+  // once read these instead of closing over render-scoped values.
+  const chaptersRef = useRef(chapters);
+  chaptersRef.current = chapters;
+  const paginatedRef = useRef(paginated);
+  paginatedRef.current = paginated;
+  const chapterIndexRef = useRef(chapterIndex);
+  chapterIndexRef.current = chapterIndex;
+  // One-shot PER EPISODE: stores the episodeId the ?chapter= deep link was
+  // applied for. Navigating episode A -> B while this component stays
+  // mounted (SPA) must re-apply B's own link (R1) - the episode-change
+  // reset no longer touches this marker, and this effect owns chapter
+  // initialization for every new package.
+  const chapterDeepLinkAppliedRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!paginated || chapters.length === 0) return;
+    if (chapterDeepLinkAppliedRef.current === episodeId) return;
+    chapterDeepLinkAppliedRef.current = episodeId;
+    const requestedChapter = new URLSearchParams(window.location.search).get("chapter");
+    const initial = resolveInitialChapterIndex(chapters, { requestedChapter });
+    chapterIndexRef.current = initial;
+    setChapterIndex(initial);
+  }, [episodeId, paginated, chapters]);
+
+  // Keep the URL's ?chapter= in sync with the visible page (replaceState -
+  // chapter switching must not spam history entries), so a refresh or a
+  // shared link reopens the same chapter.
+  useEffect(() => {
+    if (!paginated || chapterDeepLinkAppliedRef.current !== episodeId) return;
+    const chapterNumber = chapters[chapterIndex]?.chapterNumber ?? null;
+    const search = chapterNumber ? `?chapter=${encodeURIComponent(chapterNumber)}` : "";
+    if (window.location.search === search) return;
+    window.history.replaceState(window.history.state, "", window.location.pathname + search);
+  }, [episodeId, paginated, chapters, chapterIndex]);
+
   // ==== Progress-save controller + resume verifier wiring ====
   // Both are created ONCE (lazy ref init) with identity-stable dependency
   // closures that read fresh values through the latest-refs above. This is
@@ -408,6 +470,12 @@ export default function ReaderPage() {
       }),
       getPending: () => pendingProgressRef.current,
       issueSave: (input, handlers) => {
+        // Percent is converted to the whole-package scale WHEN the snapshot
+        // is created (scroll handler / chapter switch), bound to THAT
+        // snapshot's chapter - never re-derived here from chapterIndexRef,
+        // because a debounced/queued flush can fire long after the reader
+        // moved to another page (the flight must carry the chapter the
+        // snapshot was taken in, R1 repair).
         saveMutateRef.current(input, handlers);
       },
       onAccepted: () => {
@@ -463,9 +531,19 @@ export default function ReaderPage() {
       ? { ...pending }
       : container && offset > 0
         ? {
-            percent: container.scrollHeight > container.clientHeight
-              ? Math.min(100, (offset / (container.scrollHeight - container.clientHeight)) * 100)
-              : 0,
+            // Same whole-package conversion as the scroll handler (R1):
+            // this fallback must agree with scroll-created snapshots.
+            percent: paginatedRef.current
+              ? packageOverallPercent(
+                  chapterIndexRef.current,
+                  container.scrollHeight > container.clientHeight
+                    ? Math.min(100, (offset / (container.scrollHeight - container.clientHeight)) * 100)
+                    : 0,
+                  chaptersRef.current.length
+                )
+              : container.scrollHeight > container.clientHeight
+                ? Math.min(100, (offset / (container.scrollHeight - container.clientHeight)) * 100)
+                : 0,
             scrollTop: offset,
             chapterNumber: null,
             chapterTitle: null,
@@ -552,8 +630,17 @@ export default function ReaderPage() {
       }
     }
 
+    // Paginated packages: the SAVED percent is the whole-package number for
+    // THIS page (packageOverallPercent) - bound to the snapshot NOW, so any
+    // later flush (debounce, periodic, dispose, queued follow-up) carries
+    // the percent of the chapter the snapshot was taken in, never of
+    // whatever page chapterIndexRef points at when the API call fires.
+    const savedPercent = paginatedRef.current
+      ? packageOverallPercent(chapterIndexRef.current, percent, chaptersRef.current.length)
+      : percent;
+
     pendingProgressRef.current = {
-      percent,
+      percent: savedPercent,
       scrollTop: container.scrollTop,
       chapterNumber,
       chapterTitle,
@@ -726,6 +813,10 @@ export default function ReaderPage() {
     pendingProgressRef.current = null;
     viewportContextRef.current = { episodeId, userId };
     localRecoveryLastWriteRef.current = 0;
+    // Chapter pagination does NOT reset here: the ?chapter= deep-link init
+    // effect above owns per-episode chapter initialization and re-runs for
+    // every new episodeId - resetting the chapter here instead would clobber
+    // that init (effects run once on mount too, R1 repair).
 
     return () => {
       // enabled deliberately does NOT read canRead: this closure was
@@ -764,15 +855,17 @@ export default function ReaderPage() {
   };
 
   // NovelDetail chapter projection links to the parent package plus a chapter
-  // query. Once package content is readable, jump to that internal TOC entry.
+  // query. Paginated packages have already navigated to that chapter via the
+  // deep-link init above (the anchor isn't in the DOM until its page is
+  // shown); the legacy single-page packages still scroll to it.
   useEffect(() => {
-    if (!canRead || !isPackage || toc.length === 0) return;
+    if (!canRead || !isPackage || paginated || toc.length === 0) return;
     const requestedChapter = new URLSearchParams(window.location.search).get("chapter");
     if (!requestedChapter) return;
     const entry = findTocEntryByChapterNumber(toc, requestedChapter);
     if (!entry) return;
     requestAnimationFrame(() => scrollToAnchor(entry.anchorId));
-  }, [episodeId, canRead, isPackage, toc]);
+  }, [episodeId, canRead, isPackage, paginated, toc]);
 
   // Restore the chosen resume position onto the container: the exact saved
   // scroll offset first (what the reader actually saw), chapter anchor as
@@ -783,6 +876,16 @@ export default function ReaderPage() {
       const metrics = container
         ? { scrollHeight: container.scrollHeight, clientHeight: container.clientHeight }
         : null;
+      // Paginated packages restore WITHIN the current chapter page: an exact
+      // offset saved by this layout, or the chapter top for offsets written
+      // before pagination (whole-package scroll positions no longer map onto
+      // a single chapter's height - see resolveChapterRestoreScrollTop).
+      if (paginatedRef.current) {
+        if (!container) return null;
+        const value = resolveChapterRestoreScrollTop(target, metrics);
+        container.scrollTop = value;
+        return value;
+      }
       const plan = resolveResumeScrollPlan(target, metrics);
       if (plan.kind === "scrollTop" && container) {
         container.scrollTop = plan.value;
@@ -802,6 +905,111 @@ export default function ReaderPage() {
     [toc]
   );
   applyResumeScrollRef.current = applyResumeScroll;
+
+  // Build a position snapshot for a chapter page, with the whole-package
+  // percent bound to THAT page (R1) - used for switch-time records when no
+  // scroll data exists yet (next/previous/TOC without scrolling).
+  const buildSwitchSnapshot = useCallback(
+    (segmentIndex: number, scrollTop: number): ReadingPositionSnapshot => {
+      const segment = chaptersRef.current[segmentIndex];
+      const container = scrollContainerRef.current;
+      const within =
+        container && container.scrollHeight > container.clientHeight
+          ? Math.min(100, Math.max(0, (scrollTop / (container.scrollHeight - container.clientHeight)) * 100))
+          : 0;
+      return {
+        percent: paginatedRef.current
+          ? packageOverallPercent(segmentIndex, within, chaptersRef.current.length)
+          : within,
+        scrollTop,
+        chapterNumber: segment?.chapterNumber ?? null,
+        chapterTitle: segment?.title ?? null,
+        anchorId: segment?.anchorId ?? null,
+      };
+    },
+    []
+  );
+
+  // Switch to a chapter page (TOC click, previous/next buttons, resume).
+  //
+  // Deliberate navigation - the position is recorded IMMEDIATELY (a forced
+  // flush through the single-flight controller, so rapid switches merge
+  // into at most one queued follow-up):
+  //  1. the OUTGOING page's position - the last real scroll snapshot, or a
+  //     synthesized one when the reader switched without scrolling at all
+  //     (a chapter switch must be recordable even without scrolling, R1);
+  //  2. the pending slot is then repointed at the NEW page's top, so closing
+  //     the reader right after switching still records the chapter the
+  //     reader is ON (the dispose flush sends it; periodic saves keep it).
+  //
+  // RESUME navigation ({@link options.fromResume}) is deliberately EXEMPT
+  // from all of that (R2): the destination's saved position (e.g. ch2@300)
+  // is the NEWEST truth, and the restore has not applied yet - synthesizing
+  // an outgoing snapshot of the first page, or writing the destination TOP,
+  // would overwrite that saved data with an older/emptier position before
+  // the restore lands (and permanently, if the reader closes mid-restore).
+  // So the switch itself writes nothing and drops the pending slot (a
+  // pre-resume pending must never resurface as a late flush either);
+  // handleResumeReading then re-asserts the DESTINATION everywhere (pending
+  // + local recovery + a queued flush, R3) - see its comment below.
+  const goToChapterIndex = useCallback(
+    (nextIndex: number, options?: { fromResume?: boolean }) => {
+      if (!paginatedRef.current) return;
+      const chaptersNow = chaptersRef.current;
+      const prev = chapterIndexRef.current;
+      if (nextIndex < 0 || nextIndex >= chaptersNow.length || nextIndex === prev) return;
+
+      if (options?.fromResume) {
+        // The switch itself writes nothing - handleResumeReading stamps the
+        // destination (pending + recovery + queued flush) right after this
+        // returns (R3), so any save this navigation produces IS the target.
+        resumeVerifierRef.current?.notifyUserIntent();
+        markViewportUserIntent();
+        pendingProgressRef.current = null;
+        chapterIndexRef.current = nextIndex;
+        setChapterIndex(nextIndex);
+        setLivePercent(0);
+        requestAnimationFrame(() => {
+          const container = scrollContainerRef.current;
+          if (container) container.scrollTop = 0;
+        });
+        return;
+      }
+
+      const container = scrollContainerRef.current;
+      const outgoing = pendingProgressRef.current ?? buildSwitchSnapshot(prev, container?.scrollTop ?? 0);
+      if (hasResumablePosition(outgoing)) {
+        pendingProgressRef.current = outgoing;
+        writeLocalRecovery(outgoing);
+        // A stale scroll-stop debounce must not fire later carrying the NEW
+        // page's pending - the forced flush below already carries this one.
+        if (scrollDebounceRef.current) {
+          clearTimeout(scrollDebounceRef.current);
+          scrollDebounceRef.current = null;
+        }
+        progressSaveRef.current?.flush(true);
+      }
+
+      const fresh = buildSwitchSnapshot(nextIndex, 0);
+      pendingProgressRef.current = fresh;
+      if (hasResumablePosition(fresh)) writeLocalRecovery(fresh);
+
+      // A page switch ends any active resume-verify window (the restore must
+      // not fight the navigation) and clears the parked viewport, exactly
+      // like the other deliberate-navigation gestures.
+      resumeVerifierRef.current?.notifyUserIntent();
+      markViewportUserIntent();
+
+      chapterIndexRef.current = nextIndex;
+      setChapterIndex(nextIndex);
+      setLivePercent(0);
+      requestAnimationFrame(() => {
+        const container = scrollContainerRef.current;
+        if (container) container.scrollTop = 0;
+      });
+    },
+    [buildSwitchSnapshot, markViewportUserIntent, writeLocalRecovery]
+  );
 
   // One scheduled verify pass (double-rAF + the timed passes below): the
   // verifier itself decides intent vs. layout-shift - see
@@ -864,6 +1072,44 @@ export default function ReaderPage() {
     setShowResumeBanner(false);
     if (!target) return;
 
+    // Paginated packages first open the SAVED chapter (by number, falling
+    // back to the anchor id), then the verify window below restores the
+    // within-chapter offset. The fromResume switch records nothing itself
+    // (R2) - the saved position must never be overwritten by the navigation
+    // that is on its way TO it - and the R3 block right after re-asserts
+    // the destination on every save surface.
+    if (paginatedRef.current) {
+      let segmentIndex = findSegmentIndexByChapterNumber(chaptersRef.current, target.chapterNumber);
+      if (segmentIndex < 0) {
+        segmentIndex = findSegmentIndexByAnchorId(chaptersRef.current, target.anchorId);
+      }
+      if (segmentIndex >= 0 && segmentIndex !== chapterIndexRef.current) {
+        goToChapterIndex(segmentIndex, { fromResume: true });
+      }
+      // R3: the destination is the AUTHORITATIVE position from the moment
+      // the reader commits to it ("อ่านต่อ" is an explicit choice):
+      //  - pending = target, so EVERY future flush (debounce, queued
+      //    follow-up, dispose) carries the destination - never a stale
+      //    pre-resume scroll of the outgoing page (also covers resuming
+      //    within the SAME chapter while a scroll save is pending);
+      //  - local recovery = target with a FRESH savedAt, so the record the
+      //    reader just resumed AWAY from (old chapter, older data) can
+      //    never win a later server-vs-local merge after a refresh;
+      //  - flush immediately: the single-flight controller queues it behind
+      //    any in-flight save and re-sends on settle, so an old request can
+      //    never be the LAST write on the server.
+      // The snapshot carries the REAL restored position (e.g. scrollTop
+      // 300) - never a 0px placeholder before the restore applies - and
+      // scrolling after the restore simply overwrites it with fresher truth.
+      pendingProgressRef.current = target;
+      writeLocalRecovery(target);
+      if (scrollDebounceRef.current) {
+        clearTimeout(scrollDebounceRef.current);
+        scrollDebounceRef.current = null;
+      }
+      progressSaveRef.current?.flush(true);
+    }
+
     // The resume banner sits IN-FLOW inside the scroll container, so its
     // unmount shifts content under the viewport: apply the restore after
     // that lands (double rAF) and keep re-asserting it on the timed passes
@@ -890,6 +1136,14 @@ export default function ReaderPage() {
 
   const handleTocEntryClick = (entry: PackageTocEntry) => {
     markViewportUserIntent();
+    // Paginated packages: a TOC entry IS a page - switch to it (the switch
+    // already ends the resume window and saves the outgoing position).
+    if (paginatedRef.current) {
+      const segmentIndex = findSegmentIndexByAnchorId(chaptersRef.current, entry.anchorId);
+      if (segmentIndex >= 0) goToChapterIndex(segmentIndex);
+      setShowToc(false);
+      return;
+    }
     setShowToc(false);
     // A TOC jump is deliberate navigation - it ends any active resume
     // verify window (the restore must not fight the jump).
@@ -1121,6 +1375,12 @@ export default function ReaderPage() {
     );
   }
 
+  // Visible page for paginated packages (one chapter at a time); every
+  // other shape renders the full content lines exactly as before.
+  const currentSegment = paginated ? chapters[chapterIndex] ?? null : null;
+  const visibleLines = currentSegment ? currentSegment.lines : contentLines;
+  const visibleLineOffset = currentSegment ? currentSegment.startLine : 0;
+
   return (
     <div className={`${styles.container} ${styles[theme]}`}>
       {/* Header - collapses when Focus Mode is on (see chromeState above);
@@ -1276,12 +1536,13 @@ export default function ReaderPage() {
             className={`${styles.episodeContent} ${styles.protected}`}
             style={readerContentStyle}
           >
-            {content.split("\n").map((para: string, idx: number) => {
-              const tocEntry = tocByLineIndex.get(idx);
+            {visibleLines.map((para: string, idx: number) => {
+              const globalIdx = visibleLineOffset + idx;
+              const tocEntry = tocByLineIndex.get(globalIdx);
               if (tocEntry) {
                 return (
                   <p
-                    key={idx}
+                    key={globalIdx}
                     id={tocEntry.anchorId}
                     data-toc-anchor="true"
                     data-chapter-number={tocEntry.chapterNumber}
@@ -1292,7 +1553,7 @@ export default function ReaderPage() {
                   </p>
                 );
               }
-              return <p key={idx}>{para}</p>;
+              return <p key={globalIdx}>{para}</p>;
             })}
           </div>
         ) : canRead && !content ? (
@@ -1464,46 +1725,87 @@ export default function ReaderPage() {
               </button>
             </div>
             <div className={styles.tocList}>
-              {toc.map((entry) => (
-                <button
-                  key={entry.anchorId}
-                  onClick={() => handleTocEntryClick(entry)}
-                  className={styles.tocItem}
-                >
-                  {entry.title}
-                </button>
-              ))}
+              {toc.map((entry) => {
+                const isCurrentChapter =
+                  !!currentSegment && currentSegment.anchorId === entry.anchorId;
+                return (
+                  <button
+                    key={entry.anchorId}
+                    onClick={() => handleTocEntryClick(entry)}
+                    className={
+                      isCurrentChapter ? `${styles.tocItem} ${styles.tocItemCurrent}` : styles.tocItem
+                    }
+                    aria-current={isCurrentChapter ? "true" : undefined}
+                  >
+                    {entry.title}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
       )}
 
-      {/* Navigation - hidden for packages: a package bundles many chapters,
-          so "previous/next episode" doesn't map onto anything meaningful.
-          The backend also always returns previousEpisode/nextEpisode as null
-          for packages, but skip rendering the bar entirely to avoid a blank
-          strip. Chapter navigation is unaffected. */}
-      {!isPackage && (
+      {/* Navigation bar. Plain chapters: previous/next EPISODE (a package
+          bundles many chapters, so episode navigation doesn't map onto
+          anything meaningful - the backend returns null neighbours there).
+          Paginated packages: previous/next CHAPTER plus a position indicator
+          ("บทที่ 2 • 3/12"), which is exactly the chapter navigation the
+          single-page layout used to lack. Locked/error states never reach
+          the paginated branch (no readable content -> no segments). */}
+      {(!isPackage || paginated) && (
         <div className={styles.navigation} ref={setNavigationEl}>
-          {previousEpisode ? (
-            <button
-              className={styles.navButton}
-              onClick={() => goToEpisode(previousEpisode.id)}
-            >
-              ← {t("reader.previousEpisode")}
-            </button>
+          {paginated ? (
+            <>
+              {chapterIndex > 0 ? (
+                <button
+                  className={styles.navButton}
+                  onClick={() => goToChapterIndex(chapterIndex - 1)}
+                >
+                  ← {t("reader.previousChapter")}
+                </button>
+              ) : (
+                <div />
+              )}
+              <span className={styles.chapterIndicator} aria-live="polite">
+                {currentSegment?.chapterNumber
+                  ? `${t("reader.chapterShort")} ${currentSegment.chapterNumber} • ${chapterIndex + 1}/${chapters.length}`
+                  : `${chapterIndex + 1}/${chapters.length}`}
+              </span>
+              {chapterIndex < chapters.length - 1 ? (
+                <button
+                  className={styles.navButton}
+                  onClick={() => goToChapterIndex(chapterIndex + 1)}
+                >
+                  {t("reader.nextChapter")} →
+                </button>
+              ) : (
+                <div />
+              )}
+            </>
           ) : (
-            <div />
-          )}
-          {nextEpisode ? (
-            <button
-              className={styles.navButton}
-              onClick={() => goToEpisode(nextEpisode.id)}
-            >
-              {t("reader.nextEpisode")} →
-            </button>
-          ) : (
-            <div />
+            <>
+              {previousEpisode ? (
+                <button
+                  className={styles.navButton}
+                  onClick={() => goToEpisode(previousEpisode.id)}
+                >
+                  ← {t("reader.previousEpisode")}
+                </button>
+              ) : (
+                <div />
+              )}
+              {nextEpisode ? (
+                <button
+                  className={styles.navButton}
+                  onClick={() => goToEpisode(nextEpisode.id)}
+                >
+                  {t("reader.nextEpisode")} →
+                </button>
+              ) : (
+                <div />
+              )}
+            </>
           )}
         </div>
       )}
