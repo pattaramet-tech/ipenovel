@@ -3,6 +3,12 @@ import { findDuplicatePayments, validateDuplicateException } from "../payments/d
 import { payments, orders } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 import { claimProviderTransaction, parseProviderSnapshot } from "../payments/providerClaim";
+import { recordOrderCompletionIfEnabled } from "../notifications/orderCompletionProducer";
+import { readNotificationRuntimeFlags } from "../notifications/runtimeGate";
+
+// IPE-NOTIFICATIONS P3-B: one flags snapshot for the whole process lifetime
+// (same policy as the API mount and the other notification producers).
+const NOTIFICATION_RUNTIME_FLAGS = readNotificationRuntimeFlags(process.env);
 
 import { ApprovalService } from "./approvalService";
 import { hasAdminGiftEntitlement } from "./adminGiftWalletAdjustmentService";
@@ -403,6 +409,19 @@ async function approvePaymentInTx(paymentId: number, approvedBy: string, adminLa
   // Finalize order completion (points, purchases, coupon usage)
   if (order.userId) {
     await finalizeOrderCompletion(order.id, order.userId, tx);
+    // IPE-NOTIFICATIONS P3-B: emit the order_completed receipt inside THIS
+    // transaction, only after finalizeOrderCompletion succeeded (the
+    // receipt asserts "purchases_finalized"). The UNIQUE event key makes an
+    // idempotent re-finalization or approval retry a dedupe no-op; an
+    // already-approved payment early-returns above and never emits. Orders
+    // without an owner (order.userId null) never emit. Gate OFF = zero
+    // notification SQL; no producer call on the early-return path.
+    await recordOrderCompletionIfEnabled(tx, {
+      orderId: order.id,
+      userId: order.userId,
+      flags: NOTIFICATION_RUNTIME_FLAGS,
+      env: process.env,
+    });
   }
 
   return { message: `Payment ${paymentId} approved successfully` };

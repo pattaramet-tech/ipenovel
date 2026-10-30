@@ -4,8 +4,29 @@ import { randomUUID } from "node:crypto";
 import mysql from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
 import { getTestDb } from "./test-helpers/testDb";
+import { assertSafeTestDatabaseUrl } from "./test-helpers/testDatabaseGuard";
 import { __setDbForTests } from "./db";
 import * as registry from "./services/sessionRegistry";
+// R40R61R1: the race-attribution connection MUST be the SAME MySQL instance
+// as the test database - previously hardcoded to the IPE-070R4B author's own
+// container (root@127.0.0.1:3311), which split the barrier across two
+// servers and broke sys.innodb_lock_waits attribution. Now guarded through
+// TEST_DATABASE_URL with a live DATABASE() = ipenovel_test check before any
+// transaction. Never falls back to DATABASE_URL.
+async function openAttributionConnection(): Promise<mysql.Connection> {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("TEST_DATABASE_URL is not set");
+  assertSafeTestDatabaseUrl(url);
+  const conn = await mysql.createConnection(url);
+  const [rows] = await conn.query("SELECT DATABASE() AS db");
+  const dbName = (rows as any[])[0]?.db;
+  if (dbName !== "ipenovel_test") {
+    await conn.end();
+    throw new Error(`Attribution connection must target ipenovel_test, got: ${String(dbName)}`);
+  }
+  return conn;
+}
+
 import * as leaseService from "./services/readingLease";
 import { authSessions, readingLeases, sessionSlots, users } from "../drizzle/schema";
 
@@ -130,7 +151,7 @@ describe("R3 Reader Session Controls — race/red proofs", () => {
     // not a global count). After release the revoke commits first → row
     // revoked; the queued promotion re-reads a terminal row and must NOT
     // revive it.
-    const raw = await mysql.createConnection("mysql://root:root@127.0.0.1:3311/ipenovel_test");
+    const raw = await openAttributionConnection();
     try {
       await raw.query("SET time_zone = '+00:00'");
       await raw.beginTransaction();

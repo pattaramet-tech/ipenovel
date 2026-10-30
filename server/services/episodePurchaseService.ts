@@ -8,6 +8,12 @@ import {
   walletTransactions,
   novels,
 } from "../../drizzle/schema";
+import { recordEpisodeWalletPurchaseIfEnabled } from "../notifications/episodePurchaseProducer";
+import { readNotificationRuntimeFlags } from "../notifications/runtimeGate";
+
+// IPE-NOTIFICATIONS P3-A: one flags snapshot for the whole process lifetime
+// (same policy as the API mount and the other notification producers).
+const NOTIFICATION_RUNTIME_FLAGS = readNotificationRuntimeFlags(process.env);
 import { resolveSaleMode } from "./readerService";
 import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
 
@@ -120,6 +126,28 @@ function describeResultShape(result: any) {
     keys: result && typeof result === "object" ? Object.keys(result).slice(0, 12) : undefined,
   };
 }
+/**
+ * Extract the auto-increment id from a Drizzle/mysql2 INSERT result.
+ * mysql2 resolves INSERTs as [ResultSetHeader, FieldPacket[]], so drizzle
+ * hands the RAW ARRAY to the caller - reading `.insertId` directly off it
+ * is always undefined. Also accepts flat ResultSetHeader objects and
+ * drizzle's `meta` wrapper for driver-shape tolerance. Returns null when no
+ * positive safe integer id can be proven.
+ */
+function extractInsertId(result: any): number | null {
+  const candidates = [
+    result,
+    Array.isArray(result) ? result[0] : undefined,
+    result?.meta,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) continue;
+    const insertId = (candidate as any).insertId;
+    if (Number.isSafeInteger(insertId) && insertId > 0) return insertId;
+  }
+  return null;
+}
+
 
 /**
  * Check if user already purchased an episode
@@ -413,7 +441,7 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
         note: `Episode purchase: Episode #${episode.episodeNumber}`,
       });
 
-      const transactionId = (transactionResult as any).insertId || null;
+      const transactionId = extractInsertId(transactionResult);
 
       // 11. Create episodePurchase record with walletTransaction link
       const purchaseResult = await tx.insert(episodePurchases).values({
@@ -425,7 +453,25 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
         purchasedAt: new Date(),
       });
 
-      const episodePurchaseId = (purchaseResult as any).insertId || 0;
+      // IPE-NOTIFICATIONS P3-A: qualify the authoritative purchase id from
+      // the INSERT result (positive safe integer). An unqualifiable id means
+      // no notifiable receipt exists - fail closed for the notification only:
+      // the purchase still succeeds with episodePurchaseId undefined.
+      const episodePurchaseId = extractInsertId(purchaseResult) ?? 0;
+
+      // Emit the episode_wallet_purchased receipt inside THIS transaction,
+      // after debit + entitlement succeeded. Notification-internal identity
+      // problems skip the notification without failing the purchase; only an
+      // infrastructure failure propagates, which rolls the whole purchase
+      // back (no partial money movement) and is retriable by the buyer.
+      if (episodePurchaseId > 0) {
+        await recordEpisodeWalletPurchaseIfEnabled(tx, {
+          purchaseId: episodePurchaseId,
+          userId,
+          flags: NOTIFICATION_RUNTIME_FLAGS,
+          env: process.env,
+        });
+      }
 
       // 12. Return success with actual balance after update
       return {

@@ -209,6 +209,18 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     reason: "This feature's OWN append-only audit trail, deliberately built with no foreign key specifically so it survives a target user's hard delete (see drizzle/schema.ts's adminUserAuditLogs doc comment) - the record of what was done TO this user must remain readable after they're gone, so this column alone must never block that deletion. Contrast actorAdminId above, which protects a different identity (WHO did it) and IS a blocker.",
   },
 
+
+  // ---- IPE-NOTIFICATIONS (PAT-15–30): the account's own notification
+  // inbox/settings/operations - all user_owned (these tables carry no
+  // admin-actor columns; notificationBulkOperations.actorUserId is the
+  // inbox owner themself, not a reviewer). Registered in drizzle/schema.ts
+  // + migration 0067_notifications_engagement (see
+  // server/notifications/migrationContract.test.ts). ----
+  { table: "notificationEvents", column: "targetUserId", category: "user_owned", reference: "Notification Events", reason: "A non-null targetUserId marks the one user a notification event was created for (NULL rows are fan-out events) - the event content belongs to that account." },
+  { table: "notificationRecipients", column: "userId", category: "user_owned", reference: "Notification Inbox", reason: "The account's notification inbox rows, including read/dismissed tombstones - durable per-user delivery state." },
+  { table: "notificationPreferences", column: "userId", category: "user_owned", reference: "Notification Preferences", reason: "The account's per-kind notification opt-in/opt-out settings." },
+  { table: "notificationBulkOperations", column: "actorUserId", category: "user_owned", reference: "Notification Bulk Operations", reason: "The actor here is the inbox owner themself (bulk mark-read/dismiss), so these are the account's own inbox operations - not an admin/audit reference." },
+
   // ---- never_blocks: Reader Session Controls registry (migration 0066) ----
   // The account's own session-security state. None of these rows represent
   // protectable user data, and all three tables carry an ON DELETE CASCADE
@@ -247,6 +259,7 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     reference: "Reading Lease (Reader Session Controls)",
     reason: "The account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt) and carries nothing recoverable or exportable. Destroying it with the users row (reading_leases_user_fk ON DELETE CASCADE) revokes the lease, which is the required outcome of deleting the account.",
   },
+
 ];
 
 /**
@@ -283,5 +296,17 @@ export const ADMIN_USER_DELETION_INDIRECT_TABLES: Array<{
     via: "orderId -> orders.userId",
     category: "economic",
     reason: "Cannot exist without a parent orders row, which is already checked directly. (payments.reviewedByUserId/approvedByAdminId are separately classified above as audit_or_actor - this entry is about the payment row's own ownership via its order, not those actor columns.)",
+  },
+  {
+    table: "notificationOutbox",
+    via: "eventId -> notificationEvents.targetUserId",
+    category: "user_owned",
+    reason: "Delivery processing state of a notification event - it cannot reference a user except through its event's classified targetUserId (fan-out events reach users only through notificationRecipients, which is already checked directly).",
+  },
+  {
+    table: "notificationDigestEpisodes",
+    via: "eventId -> notificationEvents.targetUserId",
+    category: "user_owned",
+    reason: "Digest episode membership of a notification event - same transitive ownership as notificationOutbox above.",
   },
 ];

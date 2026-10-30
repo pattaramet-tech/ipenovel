@@ -7,7 +7,7 @@ import {
   ACCOUNT_MERGED_RELOGIN_REQUIRED_MESSAGE,
   isCompletedAccountMergeSource,
 } from "./_core/accountMergeSessionGate";
-import { evaluateGoogleConnectionCutoff } from "./_core/env";
+import { ENV, evaluateGoogleConnectionCutoff } from "./_core/env";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
@@ -37,6 +37,22 @@ import { paymentQrRouter, paymentQrSettingsRouter } from "./payments/qrRouter";
 import { paymentReceiverSettingsRouter } from "./payments/receiverRouter";
 import { autoApprovalSettingsRouter, isAutoPolicyKey } from "./payments/autoApprovalSettings";
 import { isReceiverSettingKey } from "./payments/receiverSettings";
+import { createNotificationsRouter } from "./notifications/api";
+import {
+  createLazyNotificationsApiStore,
+  readCursorSigningKeyFromEnv,
+  requireNotificationsEnabled,
+} from "./notifications/appWiring";
+import { recordEpisodeCreationNotificationIfEnabled } from "./notifications/episodePublicationProducer";
+import { recordOrderCompletionIfEnabled } from "./notifications/orderCompletionProducer";
+import { readNotificationRuntimeFlags } from "./notifications/runtimeGate";
+  // IPE-NOTIFICATIONS P1 provenance note: the catalog update/publish paths
+  // deliberately do NOT call the novel publication producer - an absent
+  // marker proves nothing about first-ever publication (legacy and
+  // Workspace-published novels carry no marker), so without durable
+  // provenance those paths fail closed by not emitting. The only wired,
+  // provable path is createAuthorOwnedNovelWithDb creating a novel
+  // "published" inside its own transaction (see server/db.ts).
 
 import {
   assertCheckoutAvailable,
@@ -461,9 +477,44 @@ const dashboardRouter = router({
     }),
 });
 
+// ============ NOTIFICATIONS (IPE-NOTIFICATIONS / PAT-15-30) ============
+// Fail-closed by default over ONE flags snapshot fixed for the process
+// lifetime: NOTIFICATIONS_ENABLED must be exactly "true" AND
+// NOTIFICATIONS_CURSOR_SIGNING_KEY must be an even-length hex string
+// decoding to >=32 bytes, or every notifications procedure fails closed
+// (NOT_FOUND when disabled; per-call failure when enabled with a missing/
+// invalid key) BEFORE any notification database access - the application
+// itself always starts. No placeholder signing key ever exists: the key is
+// resolved lazily on first gated use and cached. Requires migration 0067
+// on the target database - see server/notifications/appWiring.ts for the
+// deployment ordering. No producer/worker is wired here; this is the
+// inbox API surface only.
+const notificationFlags = readNotificationRuntimeFlags(process.env);
+let notificationsCursorSigningKey: Buffer | null = null;
+function resolveNotificationsCursorSigningKey(): Buffer {
+  if (notificationsCursorSigningKey === null) {
+    notificationsCursorSigningKey = readCursorSigningKeyFromEnv(process.env);
+  }
+  return notificationsCursorSigningKey;
+}
+function requireNotificationsReady(): void {
+  if (!notificationFlags.notificationsEnabled) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Notifications are not available" });
+  }
+  // Enabled deployments fail closed per call on a missing/invalid key
+  // instead of failing the whole application at startup.
+  resolveNotificationsCursorSigningKey();
+}
+const notificationsRouter = createNotificationsRouter({
+  store: createLazyNotificationsApiStore(async () => db.getDb(), notificationFlags),
+  cursorSigningKey: resolveNotificationsCursorSigningKey,
+  gate: requireNotificationsReady,
+});
+
 export const appRouter = router({
   system: systemRouter,
   workspace: workspaceRouter,
+  notifications: notificationsRouter,
 
   // ============ HOME PAGE ============
   home: router({
@@ -1146,7 +1197,19 @@ export const appRouter = router({
             // STEP 8: Clear cart (within transaction)
             // Pass tx so cart clear uses the same transaction
             await db.clearCart(cart.id, tx);
-            
+
+            // IPE-NOTIFICATIONS P3-B: emit the order_completed receipt inside
+            // THIS transaction, after debit + approval + finalize + cart
+            // clear all succeeded (the receipt asserts "purchases_finalized").
+            // UNIQUE event key makes approval retries / re-finalization a
+            // dedupe no-op. Gate OFF = zero notification SQL.
+            await recordOrderCompletionIfEnabled(tx, {
+              orderId: newOrder.id,
+              userId: ctx.user.id,
+              flags: notificationFlags,
+              env: process.env,
+            });
+
             return newOrder;
           });
 
@@ -2072,6 +2135,10 @@ export const appRouter = router({
               } else {
                 await db.updateNovel(novelId, data, tx);
               }
+              // IPE-NOTIFICATIONS P1 provenance note: no producer call here.
+              // archived -> published without durable first-publication
+              // provenance fails closed by not emitting (see the P1 provenance
+              // note above); the publication itself behaves normally.
             });
           } catch (error) {
             mapCatalogMutation(error);
@@ -2096,6 +2163,8 @@ export const appRouter = router({
           try {
             await withCatalogNovelWrite(ctx.user.id, input.novelId, async (tx) => {
               await db.updateNovel(input.novelId, { publicationStatus: "published" }, tx);
+              // IPE-NOTIFICATIONS P1 provenance note: no producer call here
+              // (same fail-closed provenance rule as catalog.update above).
             });
           } catch (error) {
             mapCatalogMutation(error);
@@ -2179,7 +2248,26 @@ export const appRouter = router({
         .mutation(async ({ input, ctx }) => {
           try {
             return await withCatalogNovelWrite(ctx.user.id, input.novelId, async (tx) => {
-              return db.createEpisode(input, tx);
+              const created = await db.createEpisode(input, tx);
+              // IPE-NOTIFICATIONS P2-A: a brand-new episode created
+              // published under a CURRENTLY published novel claims its
+              // first-publication marker and writes event/outbox/digest in
+              // THIS transaction (marker-atomic, gated; disabled = zero
+              // notification SQL). The adapter mirrors db.createEpisode's
+              // effective publication rule (isPublished !== false - an
+              // omitted flag is born published), ignores any client-supplied
+              // backdated publishedAt, and never queries the wishlist
+              // audience. Updates/republishes are deliberately not wired (no
+              // durable provenance); audience selection stays in the
+              // delivery worker.
+              await recordEpisodeCreationNotificationIfEnabled(tx, {
+                createdEpisodeId: (created as { id?: unknown } | null | undefined)?.id,
+                novelId: input.novelId,
+                requestedIsPublished: input.isPublished,
+                flags: notificationFlags,
+                env: process.env,
+              });
+              return created;
             });
           } catch (error) {
             mapCatalogMutation(error);

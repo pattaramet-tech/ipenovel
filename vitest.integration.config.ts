@@ -73,6 +73,17 @@ export default defineConfig({
       JWT_SECRET: "integration-test-only-jwt-secret-0123456789abcdef",
       VITE_APP_ID: "ipenovel-integration-test-app",
       PLUGIN_FOUNDATION_ENABLED: "true",
+      // R40R55 S6: notification producers run FOR REAL in the integration
+      // project so the disposable-database financial tests can assert
+      // notificationEvents / notificationOutbox consistency from SQL rows.
+      // Config-level (not vi.hoisted) for the same module-load-time reason
+      // as the values above: db.ts snapshots NOTIFICATION_RUNTIME_FLAGS
+      // while the module is being imported. The activation instant is a
+      // fixed past UTC timestamp - every synthetic test event occurs after
+      // it, so events are eligible; the values are throwaway test fixtures
+      // scoped to the disposable ipenovel_test database only.
+      NOTIFICATIONS_ENABLED: "true",
+      NOTIFICATIONS_ACTIVATION_AT: "2026-10-01T00:00:00.000Z",
     },
     globalSetup: ["./vitest.integration.globalsetup.ts"],
     // Runs inside each worker's own module registry, unlike globalSetup -

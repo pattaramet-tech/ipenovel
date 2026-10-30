@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { NotificationPreferencesContainer } from "@/components/NotificationBellContainer";
 import { useLocation } from "wouter";
 import {
   Loader2,
@@ -233,6 +234,13 @@ export default function ProfilePage() {
             dailyCheckin.getStatus query is never fired for a signed-out
             visitor. */}
         <DailyCheckinCard />
+
+        {/* Notification preferences (R40R58) - gated container renders
+            null unless the local UI gate is on and the viewer is signed in. */}
+        <Card className="p-6 mb-8">
+          <h2 className="text-2xl font-bold mb-6 text-slate-900">การตั้งค่าการแจ้งเตือน</h2>
+          <NotificationPreferencesContainer />
+        </Card>
 
         {/* Personal Info Section */}
         <Card className="p-6 mb-8">

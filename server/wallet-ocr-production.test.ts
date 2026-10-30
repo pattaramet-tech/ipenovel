@@ -192,8 +192,11 @@ describe("Wallet OCR Production Safety Tests", () => {
     it("should store all confidence values correctly", async () => {
       const topup = await db.createWalletTopup(testUserId, "300.00", testSlipUrl);
 
+      // R40R54R3: the staging helper can no longer write "approved" (that
+      // requires the wallet credit in the authoritative approval path) -
+      // confidence metadata persistence is staged at pending_review instead.
       await db.updateWalletTopupWithOCRApproval(topup.id, {
-        status: "approved",
+        status: "pending_review",
         ocrConfidence: 92,
         visionConfidence: 88,
         structuredConfidence: 95,
@@ -229,10 +232,12 @@ describe("Wallet OCR Production Safety Tests", () => {
       const topup1 = await db.createWalletTopup(testUserId, "300.00", testSlipUrl);
       const topup2 = await db.createWalletTopup(testUserId, "300.00", testSlipUrl);
 
-      // Auto-approved
-      await db.updateWalletTopupWithOCRApproval(topup1.id, {
+      // Auto-approved - R40R54R3: an "approved" decision must come from the
+      // authoritative transactional approval, not the staging helper.
+      await db.approveWalletTopupWithOCR(topup1.id, {
         status: "approved",
         ocrDecision: "approved",
+        creditedAmount: "300.00",
       });
 
       // Needs review
@@ -253,16 +258,20 @@ describe("Wallet OCR Production Safety Tests", () => {
       const topup1 = await db.createWalletTopup(testUserId, "300.00", testSlipUrl);
       const topup2 = await db.createWalletTopup(testUserId, "300.00", testSlipUrl);
 
-      // OCR auto-approval
-      await db.updateWalletTopupWithOCRApproval(topup1.id, {
+      // OCR auto-approval - R40R54R3: authoritative approval path
+      await db.approveWalletTopupWithOCR(topup1.id, {
         status: "approved",
         approvalSource: "ocr_auto",
+        ocrDecision: "approved",
+        creditedAmount: "300.00",
       });
 
-      // Manual approval
-      await db.updateWalletTopupWithOCRApproval(topup2.id, {
+      // Manual approval - R40R54R3: authoritative approval path
+      await db.approveWalletTopupWithOCR(topup2.id, {
         status: "approved",
         approvalSource: "manual",
+        ocrDecision: "approved",
+        creditedAmount: "300.00",
       });
 
       const updated1 = await db.getWalletTopupById(topup1.id);
@@ -284,8 +293,10 @@ describe("Wallet OCR Production Safety Tests", () => {
         accountNumber: "1234567890",
       };
 
+      // R40R54R3: extracted-OCR-data persistence is staged at pending_review
+      // (the staging helper no longer writes "approved").
       await db.updateWalletTopupWithOCRApproval(topup.id, {
-        status: "approved",
+        status: "pending_review",
         extractedData: JSON.stringify(extractedData),
       });
 
