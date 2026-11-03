@@ -78,6 +78,12 @@ import {
   adminGiftEntitlements,
   adminGiftWalletAdjustments,
   adminUserAuditLogs,
+  notificationEvents,
+  notificationOutbox,
+  notificationRecipients,
+  notificationPreferences,
+  notificationBulkOperations,
+  notificationDigestEpisodes,
   Novel,
   couponUsages as couponUsagesTable,
   pluginAccessGrants,
@@ -87,6 +93,14 @@ import {
   pluginRefreshGrants,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { recordNovelFirstPublicationIfEnabled } from "./notifications/novelPublicationProducer";
+import { readNotificationRuntimeFlags } from "./notifications/runtimeGate";
+import { recordWalletTopupOutcomeIfEnabled } from "./notifications/walletTopupProducer";
+
+// IPE-NOTIFICATIONS: one flags snapshot for the whole process lifetime (same
+// policy as the API mount in server/routers.ts) - mid-process environment
+// changes cannot activate or deactivate notification producers.
+const NOTIFICATION_RUNTIME_FLAGS = readNotificationRuntimeFlags(process.env);
 import { pickRandom } from "./utils/random";
 import { getBangkokBusinessDate, getNextBangkokDayStart, getPreviousBangkokBusinessDate } from "./_core/timezone";
 import { getEffectiveDailyCheckinConfig } from "./_core/dailyCheckinConfig";
@@ -3061,6 +3075,17 @@ export async function createAuthorOwnedNovelWithDb(
     if (!insertedId) {
       throw new Error("Failed to extract inserted novel ID from database result");
     }
+    // IPE-NOTIFICATIONS P1: a novel born "published" inside this very
+    // transaction is provably first-public (the row cannot predate its own
+    // creation). Gated by NOTIFICATIONS_ENABLED AND
+    // NOTIFICATIONS_CATALOG_FANOUT_ENABLED; disabled = zero notification SQL.
+    if ((data.publicationStatus || "published") !== "archived") {
+      await recordNovelFirstPublicationIfEnabled(tx, {
+        novelId: insertedId,
+        flags: NOTIFICATION_RUNTIME_FLAGS,
+        env: process.env,
+      });
+    }
     return {
       id: insertedId,
       author: profile.effectiveAuthorName,
@@ -5421,6 +5446,17 @@ export async function approveWalletTopup(topupId: number, adminUserId: number | 
       createdAt: new Date(),
     });
 
+    // IPE-NOTIFICATIONS P3-C: emit the wallet_topup_approved receipt inside
+    // THIS transaction, after the conditional status update won AND the
+    // wallet credit + ledger + log all succeeded.
+    await recordWalletTopupOutcomeIfEnabled(tx, {
+      topupId,
+      userId: topup.userId,
+      settlement: "credited",
+      flags: NOTIFICATION_RUNTIME_FLAGS,
+      env: process.env,
+    });
+
     // Step 7: Return updated topup
     const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
     return updated[0];
@@ -5477,6 +5513,18 @@ export async function rejectWalletTopup(topupId: number, adminUserId: number, re
       note: `Slip rejected: ${reason}`,
       createdBy: adminUserId,
       createdAt: new Date(),
+    });
+
+    // IPE-NOTIFICATIONS P3-C: emit the wallet_topup_rejected receipt inside
+    // THIS transaction, after the conditional rejection update won (only
+    // pending/pending_review states) AND the rejection log succeeded.
+    // Already-approved top-ups cannot reach this path (WHERE clause).
+    await recordWalletTopupOutcomeIfEnabled(tx, {
+      topupId,
+      userId: topup[0].userId,
+      settlement: "rejected",
+      flags: NOTIFICATION_RUNTIME_FLAGS,
+      env: process.env,
     });
 
     return tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1).then(r => r[0]);
@@ -7621,12 +7669,24 @@ export async function markDailyCheckinCouponUsed(couponId: number, userId: numbe
 }
 
 /**
- * Update wallet top-up with OCR results and approval
+ * Update wallet top-up with OCR STAGING results (R40R54R3 contract).
+ *
+ * This helper is for pre-decision OCR staging/metadata only: it may move a
+ * pending topup to pending_review and persist OCR metadata. It can never
+ * settle money - "approved" requires the wallet credit that only the
+ * transactional approveWalletTopup/approveWalletTopupWithOCR paths perform,
+ * and rejected/cancelled belong to the authoritative review endpoints.
+ *
+ * Returns a structured outcome: { updated: true, topup } when the staging
+ * UPDATE won, or { updated: false, topup } when the topup already settled
+ * concurrently (approved/rejected/cancelled) - `topup` is then the
+ * authoritative row and callers must report its real status, never
+ * pending_review.
  */
 export async function updateWalletTopupWithOCRApproval(
   topupId: number,
   updates: {
-    status?: string;
+    status?: "pending_review";
     slipSubmittedAt?: Date;
     extractedData?: string;
     ocrConfidence?: number;
@@ -7640,7 +7700,16 @@ export async function updateWalletTopupWithOCRApproval(
     approvedAt?: Date;
     creditedAmount?: string;
   }
-) {
+): Promise<{ updated: boolean; topup: any }> {
+  // Fail closed BEFORE any database access: a settlement status passed here
+  // would either credit nothing (fake "approved") or bypass the review
+  // endpoints ("rejected"/"cancelled").
+  if (updates.status !== undefined && updates.status !== "pending_review") {
+    throw new Error(
+      "updateWalletTopupWithOCRApproval is OCR staging-only: status must be pending_review (settlement requires the authoritative approval transaction)"
+    );
+  }
+
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -7662,9 +7731,39 @@ export async function updateWalletTopupWithOCRApproval(
   if (updates.approvedAt) updateData.approvedAt = updates.approvedAt;
   if (updates.creditedAmount) updateData.creditedAmount = updates.creditedAmount;
 
-  await db.update(walletTopups).set(updateData).where(eq(walletTopups.id, topupId));
+  // R40R54R2: only (re-)stage while the topup is still pending/pending_review.
+  // The previous id-only UPDATE let a slow OCR result revert an APPROVED
+  // (credited), REJECTED, or CANCELLED topup back to pending_review, which a
+  // later approval could then credit a second time.
+  const updateResult = await db
+    .update(walletTopups)
+    .set(updateData)
+    .where(and(
+      eq(walletTopups.id, topupId),
+      or(
+        eq(walletTopups.status, "pending" as any),
+        eq(walletTopups.status, "pending_review" as any),
+      ),
+    ));
 
-  return (await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1))[0];
+  const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+  const affectedRows = (resultHeader as any)?.affectedRows || 0;
+  if (affectedRows === 0) {
+    // Stale outcome: the topup settled concurrently. Return the authoritative
+    // row without staging it back to pending_review, so callers can report
+    // the real status and skip review notifications.
+    const existing = await db
+      .select()
+      .from(walletTopups)
+      .where(eq(walletTopups.id, topupId))
+      .limit(1);
+    return { updated: false, topup: existing[0] };
+  }
+
+  const staged = (
+    await db.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1)
+  )[0];
+  return { updated: true, topup: staged };
 }
 
 /**
@@ -7799,8 +7898,11 @@ export async function approveWalletTopupWithOCR(
         return existing[0];
       }
     } else {
-      // For pending_review: update regardless of current status (admin review)
-      await tx
+      // For pending_review: only (re-)stage while the topup is still in a
+      // pre-decision state. Terminal states (approved/rejected/cancelled) are
+      // NEVER reverted by a late OCR result - a stale OCR outcome arriving
+      // after manual/provider settlement must not re-open the review.
+      const updateResult = await tx
         .update(walletTopups)
         .set({
           status: "pending_review" as any,
@@ -7816,7 +7918,23 @@ export async function approveWalletTopupWithOCR(
           approvalSource: ocrData.approvalSource as any,
           updatedAt: new Date(),
         })
-        .where(eq(walletTopups.id, topupId));
+        .where(and(
+          eq(walletTopups.id, topupId),
+          or(
+            eq(walletTopups.status, "pending" as any),
+            eq(walletTopups.status, "pending_review" as any),
+          ),
+        ));
+
+      const resultHeader = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+      const affectedRows = (resultHeader as any)?.affectedRows || 0;
+      if (affectedRows === 0) {
+        // Stale OCR outcome racing a terminal transition: return the current
+        // row UNCHANGED so the caller sees the authoritative settled state
+        // instead of reverting an approved/rejected/cancelled topup.
+        const existing = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
+        return existing[0];
+      }
       
       const updated = await tx.select().from(walletTopups).where(eq(walletTopups.id, topupId)).limit(1);
       return updated[0];
@@ -7873,6 +7991,17 @@ export async function approveWalletTopupWithOCR(
         note: `Slip approved by ${ocrData.approvalSource === "ocr_auto" ? "OCR" : "admin"}`,
         createdBy: adminUserId || 0,
         createdAt: new Date(),
+      });
+
+      // IPE-NOTIFICATIONS P3-C: receipt emitted inside THIS transaction,
+      // after the conditional status update won AND credit + ledger + log
+      // succeeded (approved path only; pending_review returns above).
+      await recordWalletTopupOutcomeIfEnabled(tx, {
+        topupId,
+        userId: topup.userId,
+        settlement: "credited",
+        flags: NOTIFICATION_RUNTIME_FLAGS,
+        env: process.env,
       });
     }
 
@@ -8380,6 +8509,13 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   { table: "pluginOAuthAuthorizationCodes", check: async (userId, db) => (await db.select({ id: pluginOAuthAuthorizationCodes.id }).from(pluginOAuthAuthorizationCodes).where(eq(pluginOAuthAuthorizationCodes.userId, userId)).limit(1)).length },
   { table: "pluginAccessGrants", check: async (userId, db) => (await db.select({ id: pluginAccessGrants.id }).from(pluginAccessGrants).where(eq(pluginAccessGrants.userId, userId)).limit(1)).length },
   { table: "pluginRefreshGrants", check: async (userId, db) => (await db.select({ id: pluginRefreshGrants.id }).from(pluginRefreshGrants).where(eq(pluginRefreshGrants.userId, userId)).limit(1)).length },
+  // IPE-NOTIFICATIONS (PAT-15–30) - the account's own notification
+  // inbox/settings/operations (see accountRecoveryDataClassification.ts;
+  // entries mirrored here so the no-drift cross-check stays exact).
+  { table: "notificationEvents", check: async (userId, db) => (await db.select({ id: notificationEvents.id }).from(notificationEvents).where(eq(notificationEvents.targetUserId, userId)).limit(1)).length },
+  { table: "notificationRecipients", check: async (userId, db) => (await db.select({ id: notificationRecipients.id }).from(notificationRecipients).where(eq(notificationRecipients.userId, userId)).limit(1)).length },
+  { table: "notificationPreferences", check: async (userId, db) => (await db.select({ id: notificationPreferences.id }).from(notificationPreferences).where(eq(notificationPreferences.userId, userId)).limit(1)).length },
+  { table: "notificationBulkOperations", check: async (userId, db) => (await db.select({ id: notificationBulkOperations.id }).from(notificationBulkOperations).where(eq(notificationBulkOperations.actorUserId, userId)).limit(1)).length },
 ];
 
 /** Category B ("User-owned data") from the recovery-safety spec - cart,
@@ -8812,6 +8948,47 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     category: "indirect_economic",
     userIdColumnName: "userId",
     countFor: joinedParentUserIdCount(orderHistory, orderHistory.orderId, orders, orders.id, orders.userId),
+  },
+
+  // IPE-NOTIFICATIONS (PAT-15–30) - the account's own notification
+  // inbox/settings/operations. accountMergeInventory derives its lists
+  // from the recovery classification, which now classifies these tables,
+  // so the real registry must count them too (no-drift cross-check).
+  {
+    table: "notificationEvents",
+    category: "user_owned",
+    userIdColumnName: "targetUserId",
+    countFor: plainUserIdCount(notificationEvents, notificationEvents.targetUserId),
+  },
+  {
+    table: "notificationRecipients",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(notificationRecipients, notificationRecipients.userId),
+  },
+  {
+    table: "notificationPreferences",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(notificationPreferences, notificationPreferences.userId),
+  },
+  {
+    table: "notificationBulkOperations",
+    category: "user_owned",
+    userIdColumnName: "actorUserId",
+    countFor: plainUserIdCount(notificationBulkOperations, notificationBulkOperations.actorUserId),
+  },
+  {
+    table: "notificationOutbox",
+    category: "indirect_user_owned",
+    userIdColumnName: "userId",
+    countFor: joinedParentUserIdCount(notificationOutbox, notificationOutbox.eventId, notificationEvents, notificationEvents.id, notificationEvents.targetUserId),
+  },
+  {
+    table: "notificationDigestEpisodes",
+    category: "indirect_user_owned",
+    userIdColumnName: "userId",
+    countFor: joinedParentUserIdCount(notificationDigestEpisodes, notificationDigestEpisodes.eventId, notificationEvents, notificationEvents.id, notificationEvents.targetUserId),
   },
 ];
 
@@ -9337,6 +9514,37 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
     category: "audit_or_actor",
     from: adminUserAuditLogs,
     condition: (id) => eq(adminUserAuditLogs.actorAdminId, id),
+  },
+  // IPE-NOTIFICATIONS (PAT-15–30) - the account's own notification
+  // inbox/settings/operations (see adminUserDeletionClassification.ts;
+  // entries mirrored here so the delete assessment stays exhaustive).
+  {
+    table: "notificationEvents",
+    reference: "Notification Events",
+    category: "user_owned",
+    from: notificationEvents,
+    condition: (id) => eq(notificationEvents.targetUserId, id),
+  },
+  {
+    table: "notificationRecipients",
+    reference: "Notification Inbox",
+    category: "user_owned",
+    from: notificationRecipients,
+    condition: (id) => eq(notificationRecipients.userId, id),
+  },
+  {
+    table: "notificationPreferences",
+    reference: "Notification Preferences",
+    category: "user_owned",
+    from: notificationPreferences,
+    condition: (id) => eq(notificationPreferences.userId, id),
+  },
+  {
+    table: "notificationBulkOperations",
+    reference: "Notification Bulk Operations",
+    category: "user_owned",
+    from: notificationBulkOperations,
+    condition: (id) => eq(notificationBulkOperations.actorUserId, id),
   },
 ];
 

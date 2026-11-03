@@ -534,6 +534,18 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "The check-in EVENT record itself (date/streak) - the task spec's own Category B example list names \"check-ins\" explicitly; the actual reward VALUE this can carry is tracked separately and classified as economic (see dailyCheckinRewardGrants.userId above).",
   },
 
+
+  // ---- IPE-NOTIFICATIONS (PAT-15–30): the account's own notification
+  // inbox/settings/operations. These tables carry no admin-actor columns;
+  // notificationBulkOperations.actorUserId is the inbox owner themself
+  // (bulk mark-read/dismiss), not a reviewer identity. Registered in
+  // drizzle/schema.ts + migration 0067_notifications_engagement (see
+  // server/notifications/migrationContract.test.ts). ----
+  { table: "notificationEvents", column: "targetUserId", category: "user_owned_hard_block", reason: "A non-null targetUserId marks the one user a notification event was created for (NULL rows are fan-out events with no single owner). The event and its delivery state belong to that user and are never re-parented by the recovery workflow." },
+  { table: "notificationRecipients", column: "userId", category: "user_owned_hard_block", reason: "The user's notification inbox rows, including read/dismissed tombstones - durable per-user delivery state." },
+  { table: "notificationPreferences", column: "userId", category: "user_owned_hard_block", reason: "The user's per-kind notification opt-in/opt-out choices - durable user settings." },
+  { table: "notificationBulkOperations", column: "actorUserId", category: "user_owned_hard_block", reason: "The actor here is the inbox owner themself (bulk mark-read/dismiss), so the operation records are the user's own inbox history - not an admin/actor reference." },
+
   // ---- deliberately_ignored: Reader Session Controls registry (migration 0066) ----
   // The source account's own session-security state. None of these rows are
   // recoverable user data: the recovery tool never moves, merges, or exports
@@ -571,6 +583,7 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "deliberately_ignored",
     reason: "The source account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt), references only the source account itself, and carries nothing recoverable or exportable; it is never moved by recovery and cannot strand third-party data.",
   },
+
 ];
 
 /**
@@ -624,5 +637,17 @@ export const ACCOUNT_RECOVERY_INDIRECT_TABLES: Array<{
     category: "economic_hard_block",
     reason:
       "The status-transition audit trail of the source account's own orders - every row hangs off a parent orders row (already economic_hard_block) and cannot exist without it, so Account Recovery's presence checks are covered by orders itself. Listed here because the Advanced Account Merge inventory (accountMergeInventory.ts), which needs a COMPLETE per-row picture of everything transitively owned by the source rather than mere presence, must count and preserve it. orderHistory.actorUserId is separately classified deliberately_ignored above (it records WHO performed a transition, often an admin/system actor); this entry is about the row's ownership via its order, which the actor column does not represent.",
+  },
+  {
+    table: "notificationOutbox",
+    via: "eventId -> notificationEvents.targetUserId",
+    category: "user_owned_hard_block",
+    reason: "Delivery processing state of a notification event. For targeted events it hangs off the classified notificationEvents.targetUserId; fan-out events (NULL targetUserId) reach users only through notificationRecipients, which is already checked directly.",
+  },
+  {
+    table: "notificationDigestEpisodes",
+    via: "eventId -> notificationEvents.targetUserId",
+    category: "user_owned_hard_block",
+    reason: "Digest episode membership of a notification event - same transitive ownership as notificationOutbox above.",
   },
 ];

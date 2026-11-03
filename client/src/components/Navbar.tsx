@@ -15,6 +15,7 @@ import {
   shouldThemePublicNavbar,
 } from "./navbarVisibility";
 import PublicThemeSelector, { createThemeMenuKeyDownHandler } from "./PublicThemeSelector";
+import { NotificationBellContainer } from "./NotificationBellContainer";
 import { usePublicTheme } from "@/contexts/PublicThemeContext";
 import { publicDarkThemeAttribute } from "@/lib/publicTheme";
 import "../styles/public-storefront.css";
@@ -397,6 +398,12 @@ export default function Navbar() {
             )}
             <LanguageSwitcher />
 
+            {/* R40R58: notification bell - authenticated users only; the
+                container itself is build-time gated (local qualification)
+                and renders null otherwise. The server stays the security
+                boundary; guests get no bell and no notification queries. */}
+            {isAuthenticated && <NotificationBellContainer />}
+
             <button
               onClick={() => navigate("/cart")}
               aria-label={`${t("nav.cart")}${cartCount > 0 ? ` (${cartCount})` : ""}`}
@@ -534,6 +541,13 @@ export default function Navbar() {
         {mobileMenuOpen && (
           <div ref={mobilePanelRef} id="ipe-mobile-navigation" className="lg:hidden pb-4 border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="flex flex-col gap-2 pt-4">
+              {/* R40R58: mobile notification bell - same gated container as
+                  the desktop row; renders only for authenticated users. */}
+              {isAuthenticated && (
+                <div className="flex items-center justify-end px-4">
+                  <NotificationBellContainer />
+                </div>
+              )}
               {/* Mobile Nav Links */}
               {primaryLinks.map((link) => {
                 if (link.auth && !isAuthenticated) return null;

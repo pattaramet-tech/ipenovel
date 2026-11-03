@@ -23,14 +23,60 @@ import { prepareSlipImageForOcr } from "./ocrImageInputService";
 
 export interface WalletTopupSubmissionResult {
   topupId: number;
-  status: "pending_review" | "approved";
-  ocrDecision: "approved" | "needs_review" | "rejected";
+  /**
+   * R40R54R3: authoritative status. A stale staging outcome (the topup
+   * settled concurrently while OCR was running) reports the real terminal
+   * state - never a fabricated pending_review.
+   */
+  status: "pending_review" | "approved" | "rejected" | "cancelled";
+  ocrDecision?: "approved" | "needs_review" | "rejected";
   reviewReason?: string;
   ocrConfidence?: number;
   finalConfidence?: number;
   duplicateStatus?: any;
   userMessage: string;
   creditedAmount?: string;
+  /**
+   * R40R54R3: true when the staging UPDATE lost a concurrent settlement
+   * race - no Discord review notification is sent and the wallet is never
+   * touched for such outcomes.
+   */
+  stale?: boolean;
+}
+
+/**
+ * R40R54R3: builds the response for a STALE staging outcome - the topup
+ * settled concurrently (approved/rejected/cancelled) before this OCR result
+ * landed. Reports the authoritative row state (never pending_review), never
+ * sends a Discord review notification, and never touches the wallet.
+ */
+function staleOutcomeResult(
+  topupId: number,
+  current: any
+): WalletTopupSubmissionResult {
+  const status = (current?.status ?? "pending_review") as WalletTopupSubmissionResult["status"];
+  const rowDecision = current?.ocrDecision;
+  const ocrDecision =
+    rowDecision === "approved" || rowDecision === "needs_review" || rowDecision === "rejected"
+      ? rowDecision
+      : undefined;
+  const userMessage =
+    status === "approved"
+      ? "รายการเติมเงินนี้ได้รับการอนุมัติไปแล้ว"
+      : status === "rejected"
+        ? "รายการเติมเงินนี้ถูกปฏิเสธไปแล้ว"
+        : status === "cancelled"
+          ? "รายการเติมเงินนี้ถูกยกเลิกไปแล้ว"
+          : "รายการเติมเงินนี้ถูกดำเนินการไปแล้ว";
+  return {
+    topupId,
+    status,
+    ocrDecision,
+    userMessage,
+    creditedAmount:
+      status === "approved" ? (current?.creditedAmount ?? undefined) : undefined,
+    stale: true,
+  };
 }
 
 /**
@@ -339,14 +385,29 @@ async function autoApproveWalletTopup(
     });
   }
 
+  // R40R54R3: report from the AUTHORITATIVE row. On the winner path it is the
+  // just-approved topup; on a stale outcome (the topup settled concurrently
+  // between the pending check and the guarded approval UPDATE) its status is
+  // the real one - never claim "approved"/credited for a rejected/cancelled
+  // topup.
+  const settled = updatedTopup.status === "approved";
+  const rowDecision = updatedTopup.ocrDecision;
+  const ocrDecision =
+    rowDecision === "approved" || rowDecision === "needs_review" || rowDecision === "rejected"
+      ? rowDecision
+      : undefined;
   return {
     topupId,
-    status: "approved",
-    ocrDecision: "approved",
+    status: updatedTopup.status as WalletTopupSubmissionResult["status"],
+    ocrDecision,
     ocrConfidence: ocrConfidenceValue,
     finalConfidence: finalConfidenceValue,
-    userMessage: "เติมเงินสำเร็จ ระบบอนุมัติอัตโนมัติแล้ว",
-    creditedAmount: creditedAmountStr,
+    userMessage: settled
+      ? "เติมเงินสำเร็จ ระบบอนุมัติอัตโนมัติแล้ว"
+      : "รายการเติมเงินนี้ถูกดำเนินการไปแล้ว แอดมินจะตรวจสอบให้",
+    creditedAmount: settled
+      ? String(updatedTopup.creditedAmount ?? creditedAmountStr)
+      : undefined,
   };
 }
 
@@ -392,14 +453,23 @@ async function handlePendingReview(
     });
   }
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const outcome = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
 
-  if (!updatedTopup) {
+  if (!outcome?.topup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
   }
+
+  if (!outcome.updated) {
+    // R40R54R3 stale outcome: the topup settled concurrently while OCR was
+    // running - report the authoritative state and never send a Discord
+    // review notification for an already-settled topup.
+    return staleOutcomeResult(topupId, outcome.topup);
+  }
+
+  const updatedTopup = outcome.topup;
 
   // Send Discord notification for OCR review (non-blocking)
   if (topup) {
@@ -448,7 +518,7 @@ async function handleDuplicate(
 ): Promise<WalletTopupSubmissionResult> {
   const duplicateType = verificationResult.reviewReason?.replace("DUPLICATE_", "") || "UNKNOWN";
   const updateData = {
-    status: "pending_review",
+    status: "pending_review" as const,
     slipSubmittedAt: new Date(),
     extractedData: JSON.stringify(extractedData),
     ocrConfidence: verificationResult?.breakdown?.ocrConfidence ? Math.round(verificationResult.breakdown.ocrConfidence) : undefined,
@@ -466,14 +536,23 @@ async function handleDuplicate(
     approvalSource: "manual",
   };
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const outcome = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
 
-  if (!updatedTopup) {
+  if (!outcome?.topup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
   }
+
+  if (!outcome.updated) {
+    // R40R54R3 stale outcome: the topup settled concurrently while OCR was
+    // running - report the authoritative state and never send a Discord
+    // review notification for an already-settled topup.
+    return staleOutcomeResult(topupId, outcome.topup);
+  }
+
+  const updatedTopup = outcome.topup;
 
   // Send Discord notification for duplicate detection (non-blocking)
   if (topup) {
@@ -521,21 +600,30 @@ async function handleOCRError(
   topup?: any // Topup object for Discord notification
 ): Promise<WalletTopupSubmissionResult> {
   const updateData = {
-    status: "pending_review",
+    status: "pending_review" as const,
     slipSubmittedAt: new Date(),
     ocrDecision: "needs_review",
     reviewReason,
     approvalSource: "manual",
   };
 
-  const updatedTopup = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
+  const outcome = await db.updateWalletTopupWithOCRApproval(topupId, updateData);
 
-  if (!updatedTopup) {
+  if (!outcome?.topup) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "Failed to update wallet top-up",
     });
   }
+
+  if (!outcome.updated) {
+    // R40R54R3 stale outcome: the topup settled concurrently while OCR was
+    // running - report the authoritative state and never send a Discord
+    // review notification for an already-settled topup.
+    return staleOutcomeResult(topupId, outcome.topup);
+  }
+
+  const updatedTopup = outcome.topup;
 
   // Send Discord notification for OCR error (non-blocking)
   if (topup) {

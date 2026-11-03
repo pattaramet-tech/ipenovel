@@ -3,7 +3,27 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import mysql from "mysql2/promise";
 import { getTestDb } from "./test-helpers/testDb";
+import { assertSafeTestDatabaseUrl } from "./test-helpers/testDatabaseGuard";
 import { __setDbForTests } from "./db";
+
+// R40R61R1: race-attribution connections MUST target the SAME MySQL instance
+// as the test database - previously hardcoded to the IPE-070R4B author's own
+// container (root@127.0.0.1:3311), splitting the barrier across two servers.
+// Guarded through TEST_DATABASE_URL with a live DATABASE() = ipenovel_test
+// check before any transaction. Never falls back to DATABASE_URL.
+async function openAttributionConnection(): Promise<mysql.Connection> {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("TEST_DATABASE_URL is not set");
+  assertSafeTestDatabaseUrl(url);
+  const conn = await mysql.createConnection(url);
+  const [rows] = await conn.query("SELECT DATABASE() AS db");
+  const dbName = (rows as any[])[0]?.db;
+  if (dbName !== "ipenovel_test") {
+    await conn.end();
+    throw new Error(`Attribution connection must target ipenovel_test, got: ${String(dbName)}`);
+  }
+  return conn;
+}
 import { appRouter } from "./routers";
 import { sdk } from "./_core/sdk";
 import type { TrpcContext } from "./_core/context";
@@ -244,7 +264,7 @@ describe("R4 Reader Session Controls — barrier proofs", () => {
     // operations must queue on lockLeaseRow BEFORE either can insert. After
     // release they genuinely race the absent-row insert (dup-key typed path
     // vs live-holder path) — not a mere Promise.allSettled toss.
-    const raw = await mysql.createConnection("mysql://root:root@127.0.0.1:3311/ipenovel_test");
+    const raw = await openAttributionConnection();
     try {
       await raw.query("SET time_zone = '+00:00'");
       await raw.beginTransaction();
@@ -304,7 +324,7 @@ describe("R4 Reader Session Controls — barrier proofs", () => {
     // resolver queues on lockUserSlotRow; WHILE it waits, free a slot via a
     // normal committed displacement. The post-wait quota read must see the
     // freed slot (locking current read), not a pre-wait snapshot.
-    const raw = await mysql.createConnection("mysql://root:root@127.0.0.1:3311/ipenovel_test");
+    const raw = await openAttributionConnection();
     try {
       await raw.query("SET time_zone = '+00:00'");
       await raw.beginTransaction();
@@ -471,7 +491,7 @@ describe("R4 Reader Session Controls — barrier proofs", () => {
 
   /** raw connection helper for the interleave tests below. */
   async function rawConn() {
-    const c = await mysql.createConnection("mysql://root:root@127.0.0.1:3311/ipenovel_test");
+    const c = await openAttributionConnection();
     await c.query("SET time_zone = '+00:00'");
     return c;
   }

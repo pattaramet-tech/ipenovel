@@ -63,11 +63,16 @@ describe("submitWalletTopupSlip - OCR image preparation failure (H)", () => {
       createdAt: new Date(),
       slipSubmittedAt: null,
     });
+    // R40R54R3: the staging helper returns a structured {updated, topup}
+    // outcome - a winning staging reports updated=true with the staged row.
     (db.updateWalletTopupWithOCRApproval as any).mockResolvedValue({
-      id: 42,
-      status: "pending_review",
-      ocrDecision: "needs_review",
-      reviewReason: "OCR_PROCESSING_ERROR",
+      updated: true,
+      topup: {
+        id: 42,
+        status: "pending_review",
+        ocrDecision: "needs_review",
+        reviewReason: "OCR_PROCESSING_ERROR",
+      },
     });
     (getEffectiveOCRConfig as any).mockResolvedValue({
       enabled: true,

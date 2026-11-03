@@ -470,6 +470,13 @@
       "when": 1791700000000,
       "tag": "0066_reader_session_controls",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "5",
+      "when": 1791800000000,
+      "tag": "0067_notifications_engagement",
+      "breakpoints": true
     }
   ]
 }

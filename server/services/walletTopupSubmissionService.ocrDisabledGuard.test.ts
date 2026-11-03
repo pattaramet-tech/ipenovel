@@ -59,11 +59,16 @@ describe("submitWalletTopupSlip - OCR_DISABLED guard occurs before any provider 
       createdAt: new Date(),
       slipSubmittedAt: null,
     });
+    // R40R54R3: the staging helper returns a structured {updated, topup}
+    // outcome - a winning staging reports updated=true with the staged row.
     (db.updateWalletTopupWithOCRApproval as any).mockResolvedValue({
-      id: 42,
-      status: "pending_review",
-      ocrDecision: "needs_review",
-      reviewReason: "OCR_DISABLED",
+      updated: true,
+      topup: {
+        id: 42,
+        status: "pending_review",
+        ocrDecision: "needs_review",
+        reviewReason: "OCR_DISABLED",
+      },
     });
     (getEffectiveOCRConfig as any).mockResolvedValue({
       enabled: false,
@@ -113,10 +118,13 @@ describe("submitWalletTopupSlip - OCR_DISABLED guard occurs before any provider 
       slipSubmittedAt: null,
     });
     (db.updateWalletTopupWithOCRApproval as any).mockResolvedValue({
-      id: 43,
-      status: "pending_review",
-      ocrDecision: "needs_review",
-      reviewReason: "SHADOW_MODE",
+      updated: true,
+      topup: {
+        id: 43,
+        status: "pending_review",
+        ocrDecision: "needs_review",
+        reviewReason: "SHADOW_MODE",
+      },
     });
     (getEffectiveOCRConfig as any).mockResolvedValue({
       enabled: true,
