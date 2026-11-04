@@ -3765,6 +3765,15 @@ export type PluginAuditLog = typeof pluginAuditLogs.$inferSelect;
 // them. Qualified by server/notifications/migrationContract.test.ts.
 export * from "../server/notifications/tables";
 
+// ---- IPE-ENGAGEMENT (P2R3B-R8A): feedback / support tickets / content
+// reports / novel comments / star ratings + idempotency and rate-limit
+// infrastructure. Additive candidate migration 0068_engagement_foundation
+// (see server/engagement/migrationContract.test.ts). NOT APPLIED to any
+// database yet; every consumer is OFF by default and router registration,
+// user-reference lifecycle classification and disposable-DB qualification
+// are prerequisites recorded in docs/engagement/.
+export * from "../server/engagement/tables";
+
 
 // ============ READER SESSION CONTROLS (R2) ============
 
