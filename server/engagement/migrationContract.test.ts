@@ -26,7 +26,16 @@ const REPO_ROOT = join(__dirname, "..", "..");
 const SQL_PATH = join(REPO_ROOT, "drizzle", "0068_engagement_foundation.sql");
 const JOURNAL_PATH = join(REPO_ROOT, "drizzle", "meta", "_journal.json");
 
-const sql = readFileSync(SQL_PATH, "utf8");
+/**
+ * R5R3: normalize line endings BEFORE parsing so the contract behaves
+ * identically on LF and CRLF (and lone-CR) checkouts — git autocrlf may
+ * materialize the SQL file either way on Windows.
+ */
+export function normalizeEol(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+const sql = normalizeEol(readFileSync(SQL_PATH, "utf8"));
 const mysqlDialect = new MySqlDialect();
 const journal = JSON.parse(readFileSync(JOURNAL_PATH, "utf8")) as {
   entries: Array<{ idx: number; tag: string }>;
@@ -85,10 +94,10 @@ function describeEngagementTables(): EngagementTableSpec[] {
 }
 
 /** tableName -> SQL CREATE TABLE body (statement minus the header line). */
-function sqlCreateBlocks(): Map<string, string> {
+function sqlCreateBlocks(text: string = sql): Map<string, string> {
   const blocks = new Map<string, string>();
   const re = /CREATE TABLE `([a-zA-Z]+)` \(([\s\S]*?)\n\);/g;
-  for (const match of sql.matchAll(re)) {
+  for (const match of text.matchAll(re)) {
     blocks.set(match[1], match[2]);
   }
   return blocks;
@@ -416,6 +425,53 @@ describe("0068_engagement_foundation migration contract", () => {
       sqlPk: ["userId"],
       drizzlePk: ["id"],
     });
+  });
+
+  // ---- R5R3: EOL independence ----
+
+  it("R5R3: CRLF and CR-only checkouts produce the SAME clean contract as LF", () => {
+    const specs = describeEngagementTables();
+    const variants: Array<[string, string]> = [
+      ["LF", sql],
+      ["CRLF", sql.replace(/\n/g, "\r\n")],
+      ["CR", sql.replace(/\n/g, "\r")],
+    ];
+    for (const [label, text] of variants) {
+      // production behavior: normalizeEol runs at the read site BEFORE parsing
+      const blocks = sqlCreateBlocks(normalizeEol(text));
+      expect({ label, tables: blocks.size }).toEqual({ label, tables: 13 });
+      const issues: ContractIssue[] = [];
+      for (const table of specs) {
+        const block = blocks.get(table.tableName)!;
+        issues.push(...columnContractIssues(table.tableName, block, table));
+        issues.push(...indexContractIssues(table.tableName, block, table));
+      }
+      expect({ label, issues }).toEqual({ label, issues: [] });
+    }
+  });
+
+  it("R5R3 NEGATIVE: raw CRLF text fed WITHOUT normalization surfaces drizzle_only drift (proves why normalization is mandatory)", () => {
+    const crlfRaw = sql.replace(/\n/g, "\r\n");
+    const rawBlocks = sqlCreateBlocks(crlfRaw);
+    const specs = describeEngagementTables();
+    let drizzleOnly = 0;
+    for (const table of specs) {
+      drizzleOnly += columnContractIssues(table.tableName, rawBlocks.get(table.tableName)!, table).filter(
+        (i) => i.kind === "drizzle_only_column"
+      ).length;
+    }
+    expect(drizzleOnly).toBeGreaterThan(0);
+  });
+
+  it("R5R3 NEGATIVE: raw CRLF lines WITHOUT normalization are detected as drizzle_only drift (proves the parser needs the normalized text)", () => {
+    // feed a raw CRLF block straight into the parity helper: each line ends
+    // with \r, so the line-regex `$` anchor fails and every column surfaces
+    // as drizzle_only — this is exactly the failure mode the normalization
+    // at the read site prevents
+    const block = "  `id` int NOT NULL AUTO_INCREMENT,\r\n  `userId` int NOT NULL";
+    const spec = describeEngagementTables().find((t) => t.tableName === "engagementFeedback")!;
+    const issues = columnContractIssues("engagementFeedback", block, spec);
+    expect(issues.filter((i) => i.kind === "drizzle_only_column").length).toBeGreaterThan(0);
   });
 
   it("journal registers exactly one 0068 entry directly after 0067", () => {
