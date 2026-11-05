@@ -260,6 +260,23 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     reason: "The account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt) and carries nothing recoverable or exportable. Destroying it with the users row (reading_leases_user_fk ON DELETE CASCADE) revokes the lease, which is the required outcome of deleting the account.",
   },
 
+
+  // ---- IPE-ENGAGEMENT (P2R3B-R8A, migration candidate 0068): user-owned
+  // engagement content must block deletion; admin/staff actor stamps must
+  // also block (audit_or_actor) so who-did-what evidence survives.
+  { table: "engagementFeedback", column: "userId", category: "user_owned", reference: "Feedback Submissions", reason: "The account's own one-way feedback submissions - durable user-authored content." },
+  { table: "supportTickets", column: "ownerUserId", category: "user_owned", reference: "Support Tickets", reason: "Tickets the account opened with support - durable private conversation ownership." },
+  { table: "supportTicketMessages", column: "actorUserId", category: "user_owned", reference: "Support Ticket Messages", reason: "Authorship of durable conversation content (customer requests and staff-authored work records alike) - deletion would destroy who-said-what inside support history." },
+  { table: "contentReports", column: "reporterUserId", category: "user_owned", reference: "Content Reports", reason: "Reports the account filed, including confidential details - durable reporter-owned records." },
+  { table: "novelComments", column: "authorUserId", category: "user_owned", reference: "Novel Comments", reason: "Authorship of public UGC comments - deletion would orphan or anonymously erase public speech attribution." },
+  { table: "novelRatings", column: "userId", category: "user_owned", reference: "Novel Ratings", reason: "The account's own star ratings feeding the public aggregate - deletion would corrupt novelRatingAggregates sums/counts." },
+  { table: "engagementIdempotencyRecords", column: "userId", category: "user_owned", reference: "Engagement Idempotency Records", reason: "The account's own client retry tokens and stored replay results - per-user operational state." },
+  { table: "supportTickets", column: "assignedAdminId", category: "audit_or_actor", reference: "Ticket Assignment", reason: "The account (as staff) claimed assignment on a third party's ticket - deleting it would orphan the assignment reference." },
+  { table: "supportTicketStatusEvents", column: "actorUserId", category: "audit_or_actor", reference: "Ticket Status Events", reason: "The account (as staff/customer actor) performed recorded transitions inside append-only audit history." },
+  { table: "supportTicketMessageRedactions", column: "redactedByAdminUserId", category: "audit_or_actor", reference: "Ticket Message Redactions", reason: "The account (as admin) performed recorded redactions inside append-only audit history." },
+  { table: "contentReportDecisions", column: "adminUserId", category: "audit_or_actor", reference: "Content Report Decisions", reason: "The account (as admin) issued resolution/dismissal decisions - append-only audit evidence that must keep its actor." },
+  { table: "novelCommentModerationAudit", column: "actorUserId", category: "audit_or_actor", reference: "Comment Moderation Audit", reason: "The account (as moderator) performed recorded hide/restore actions - append-only audit evidence." },
+
 ];
 
 /**

@@ -84,6 +84,19 @@ import {
   notificationPreferences,
   notificationBulkOperations,
   notificationDigestEpisodes,
+  engagementFeedback,
+  supportTickets,
+  supportTicketMessages,
+  supportTicketStatusEvents,
+  supportTicketMessageRedactions,
+  contentReports,
+  contentReportDecisions,
+  novelComments,
+  novelCommentModerationAudit,
+  novelRatings,
+  novelRatingAggregates,
+  engagementIdempotencyRecords,
+  rateLimitWindows,
   Novel,
   couponUsages as couponUsagesTable,
   pluginAccessGrants,
@@ -8516,6 +8529,17 @@ const ACCOUNT_RECOVERY_USER_OWNED_DATA_CHECKS: Array<{
   { table: "notificationRecipients", check: async (userId, db) => (await db.select({ id: notificationRecipients.id }).from(notificationRecipients).where(eq(notificationRecipients.userId, userId)).limit(1)).length },
   { table: "notificationPreferences", check: async (userId, db) => (await db.select({ id: notificationPreferences.id }).from(notificationPreferences).where(eq(notificationPreferences.userId, userId)).limit(1)).length },
   { table: "notificationBulkOperations", check: async (userId, db) => (await db.select({ id: notificationBulkOperations.id }).from(notificationBulkOperations).where(eq(notificationBulkOperations.actorUserId, userId)).limit(1)).length },
+  // IPE-ENGAGEMENT (P2R3B-R8A) - the account's own feedback/tickets/reports/
+  // comments/ratings/idempotency state (see
+  // accountRecoveryDataClassification.ts; entries mirrored here so the
+  // no-drift cross-check stays exact).
+  { table: "engagementFeedback", check: async (userId, db) => (await db.select({ id: engagementFeedback.id }).from(engagementFeedback).where(eq(engagementFeedback.userId, userId)).limit(1)).length },
+  { table: "supportTickets", check: async (userId, db) => (await db.select({ id: supportTickets.id }).from(supportTickets).where(eq(supportTickets.ownerUserId, userId)).limit(1)).length },
+  { table: "supportTicketMessages", check: async (userId, db) => (await db.select({ id: supportTicketMessages.id }).from(supportTicketMessages).where(eq(supportTicketMessages.actorUserId, userId)).limit(1)).length },
+  { table: "contentReports", check: async (userId, db) => (await db.select({ id: contentReports.id }).from(contentReports).where(eq(contentReports.reporterUserId, userId)).limit(1)).length },
+  { table: "novelComments", check: async (userId, db) => (await db.select({ id: novelComments.id }).from(novelComments).where(eq(novelComments.authorUserId, userId)).limit(1)).length },
+  { table: "novelRatings", check: async (userId, db) => (await db.select({ id: novelRatings.id }).from(novelRatings).where(eq(novelRatings.userId, userId)).limit(1)).length },
+  { table: "engagementIdempotencyRecords", check: async (userId, db) => (await db.select({ id: engagementIdempotencyRecords.id }).from(engagementIdempotencyRecords).where(eq(engagementIdempotencyRecords.userId, userId)).limit(1)).length },
 ];
 
 /** Category B ("User-owned data") from the recovery-safety spec - cart,
@@ -8990,6 +9014,66 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     userIdColumnName: "userId",
     countFor: joinedParentUserIdCount(notificationDigestEpisodes, notificationDigestEpisodes.eventId, notificationEvents, notificationEvents.id, notificationEvents.targetUserId),
   },
+
+  // IPE-ENGAGEMENT (P2R3B-R8A) - user-owned engagement rows, derived from
+  // the recovery classification like every other entry (see
+  // accountMergeInventory.ts). Conflict keys mirror the real UNIQUE
+  // constraints minus the user column (novelRatings userId+novelId;
+  // idempotency entity+userId+clientRequestKey). Append-only audit/decision
+  // descendants (ticket status events, message redactions, report decisions,
+  // comment moderation audits) are deliberately NOT merge-inventoried: they
+  // hang off their parent entity id, which never changes on merge, and their
+  // user column is an actor stamp (deliberately_ignored in the recovery
+  // classification).
+  {
+    table: "engagementFeedback",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(engagementFeedback, engagementFeedback.userId),
+    conflictKeyColumns: ["clientRequestKey"],
+  },
+  {
+    table: "supportTickets",
+    category: "user_owned",
+    userIdColumnName: "ownerUserId",
+    countFor: plainUserIdCount(supportTickets, supportTickets.ownerUserId),
+    conflictKeyColumns: ["clientRequestKey"],
+  },
+  {
+    table: "supportTicketMessages",
+    category: "user_owned",
+    userIdColumnName: "actorUserId",
+    countFor: plainUserIdCount(supportTicketMessages, supportTicketMessages.actorUserId),
+    conflictKeyColumns: ["ticketId", "clientRequestKey"],
+  },
+  {
+    table: "contentReports",
+    category: "user_owned",
+    userIdColumnName: "reporterUserId",
+    countFor: plainUserIdCount(contentReports, contentReports.reporterUserId),
+    conflictKeyColumns: ["clientRequestKey"],
+  },
+  {
+    table: "novelComments",
+    category: "user_owned",
+    userIdColumnName: "authorUserId",
+    countFor: plainUserIdCount(novelComments, novelComments.authorUserId),
+    conflictKeyColumns: ["clientRequestKey"],
+  },
+  {
+    table: "novelRatings",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(novelRatings, novelRatings.userId),
+    conflictKeyColumns: ["novelId"],
+  },
+  {
+    table: "engagementIdempotencyRecords",
+    category: "user_owned",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(engagementIdempotencyRecords, engagementIdempotencyRecords.userId),
+    conflictKeyColumns: ["entity", "clientRequestKey"],
+  },
 ];
 
 /** Table names this registry actually queries - cross-checked against
@@ -9296,12 +9380,14 @@ export type AdminUserDeleteAssessment = {
  * tables (cartItems/orderItems/payments-via-orders - already covered by
  * their parent row).
  */
-const ADMIN_USER_DELETE_CHECKS: Array<{
+export const ADMIN_USER_DELETE_CHECKS: Array<{
   table: string;
   reference: string;
   category: AdminUserDeleteBlockerCategory;
   from: any;
   condition: (userId: number) => any;
+  /** R2: columns this check covers (OR-grouped for multi-column conditions) - introspectable no-drift metadata. */
+  coversColumns?: string[];
 }> = [
   { table: "orders", reference: "Orders", category: "economic", from: orders, condition: (id) => eq(orders.userId, id) },
   { table: "purchases", reference: "Purchases", category: "economic", from: purchases, condition: (id) => eq(purchases.userId, id) },
@@ -9546,6 +9632,23 @@ const ADMIN_USER_DELETE_CHECKS: Array<{
     from: notificationBulkOperations,
     condition: (id) => eq(notificationBulkOperations.actorUserId, id),
   },
+
+  // IPE-ENGAGEMENT (P2R3B-R8A) - user-owned engagement content (blocks
+  // deletion) and admin/staff actor references (audit_or_actor: also block,
+  // so who-did-what evidence survives - see
+  // adminUserDeletionClassification.ts).
+  { table: "engagementFeedback", reference: "Feedback Submissions", category: "user_owned", coversColumns: ["userId"], from: engagementFeedback, condition: (id) => eq(engagementFeedback.userId, id) },
+  { table: "supportTickets", reference: "Support Tickets", category: "user_owned", coversColumns: ["ownerUserId"], from: supportTickets, condition: (id) => eq(supportTickets.ownerUserId, id) },
+  { table: "supportTicketMessages", reference: "Support Ticket Messages", category: "user_owned", coversColumns: ["actorUserId"], from: supportTicketMessages, condition: (id) => eq(supportTicketMessages.actorUserId, id) },
+  { table: "contentReports", reference: "Content Reports", category: "user_owned", coversColumns: ["reporterUserId"], from: contentReports, condition: (id) => eq(contentReports.reporterUserId, id) },
+  { table: "novelComments", reference: "Novel Comments", category: "user_owned", coversColumns: ["authorUserId"], from: novelComments, condition: (id) => eq(novelComments.authorUserId, id) },
+  { table: "novelRatings", reference: "Novel Ratings", category: "user_owned", coversColumns: ["userId"], from: novelRatings, condition: (id) => eq(novelRatings.userId, id) },
+  { table: "engagementIdempotencyRecords", reference: "Engagement Idempotency Records", category: "user_owned", coversColumns: ["userId"], from: engagementIdempotencyRecords, condition: (id) => eq(engagementIdempotencyRecords.userId, id) },
+  { table: "supportTickets", reference: "Ticket Assignment", category: "audit_or_actor", coversColumns: ["assignedAdminId"], from: supportTickets, condition: (id) => eq(supportTickets.assignedAdminId, id) },
+  { table: "supportTicketStatusEvents", reference: "Ticket Status Events", category: "audit_or_actor", coversColumns: ["actorUserId"], from: supportTicketStatusEvents, condition: (id) => eq(supportTicketStatusEvents.actorUserId, id) },
+  { table: "supportTicketMessageRedactions", reference: "Ticket Message Redactions", category: "audit_or_actor", coversColumns: ["redactedByAdminUserId"], from: supportTicketMessageRedactions, condition: (id) => eq(supportTicketMessageRedactions.redactedByAdminUserId, id) },
+  { table: "contentReportDecisions", reference: "Content Report Decisions", category: "audit_or_actor", coversColumns: ["adminUserId"], from: contentReportDecisions, condition: (id) => eq(contentReportDecisions.adminUserId, id) },
+  { table: "novelCommentModerationAudit", reference: "Comment Moderation Audit", category: "audit_or_actor", coversColumns: ["actorUserId"], from: novelCommentModerationAudit, condition: (id) => eq(novelCommentModerationAudit.actorUserId, id) },
 ];
 
 /**

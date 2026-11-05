@@ -584,6 +584,31 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     reason: "The source account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt), references only the source account itself, and carries nothing recoverable or exportable; it is never moved by recovery and cannot strand third-party data.",
   },
 
+
+  // ---- IPE-ENGAGEMENT (P2R3B-R8A): feedback / support tickets / content
+  // reports / novel comments / star ratings + idempotency (migration
+  // candidate 0068_engagement_foundation, NOT applied yet). All 12
+  // user-referencing columns registered below; no economic category exists
+  // in this feature (engagement never carries money/points).
+
+  // user_owned_hard_block: the account's own engagement content and retry state
+  { table: "engagementFeedback", column: "userId", category: "user_owned_hard_block", reason: "The account's own one-way feedback submissions (subject/message/status history) - durable user-authored content." },
+  { table: "supportTickets", column: "ownerUserId", category: "user_owned_hard_block", reason: "Tickets the account opened with support - durable private conversation ownership (owner isolation is the ticket system's core policy)." },
+  { table: "supportTicketMessages", column: "actorUserId", category: "user_owned_hard_block", reason: "Authorship of durable conversation content: for a customer account these are the account's own support requests; for a staff account these are the staff member's own authored work records. Either way the rows are authorship-owned content, not a reviewer stamp on third-party data (never re-parented by recovery)." },
+  { table: "contentReports", column: "reporterUserId", category: "user_owned_hard_block", reason: "Reports the account filed, including confidential details - durable reporter-owned records whose confidentiality must survive." },
+  { table: "novelComments", column: "authorUserId", category: "user_owned_hard_block", reason: "Authorship of public UGC comments (same attribution principle as novels.authorUserId: re-parenting would silently rewrite the public author of speech). A source that authored comments is not an empty account and routes to the merge path." },
+  { table: "novelRatings", column: "userId", category: "user_owned_hard_block", reason: "The account's own star rating per novel - durable per-user opinion state feeding the public aggregate." },
+  { table: "engagementIdempotencyRecords", column: "userId", category: "user_owned_hard_block", reason: "The account's own client retry tokens (idempotency fingerprints + stored replay results) - per-user operational state that must not leak across accounts." },
+
+  // deliberately_ignored: admin/staff ACTOR stamps on engagement workflows -
+  // the source account's own data is untouched by them, exactly like
+  // reviewedBy/approvedBy columns elsewhere.
+  { table: "supportTickets", column: "assignedAdminId", category: "deliberately_ignored", reason: "Which admin claimed assignment on a third party's support ticket - an assignment stamp, not the source account's own data." },
+  { table: "supportTicketStatusEvents", column: "actorUserId", category: "deliberately_ignored", reason: "Who performed a ticket status transition on some other user's ticket - an actor stamp inside append-only audit history." },
+  { table: "supportTicketMessageRedactions", column: "redactedByAdminUserId", category: "deliberately_ignored", reason: "Which admin redacted a third party's ticket message - an actor stamp inside append-only audit history." },
+  { table: "contentReportDecisions", column: "adminUserId", category: "deliberately_ignored", reason: "Which admin resolved/dismissed a third party's report - the decision-maker stamp inside append-only audit evidence." },
+  { table: "novelCommentModerationAudit", column: "actorUserId", category: "deliberately_ignored", reason: "Which moderator hid/restored a comment - the actor stamp inside append-only audit evidence." },
+
 ];
 
 /**
