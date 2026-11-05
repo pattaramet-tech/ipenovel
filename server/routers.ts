@@ -14,6 +14,7 @@ import * as db from "./db";
 import * as leaseService from "./services/readingLease";
 import { sdk } from "./_core/sdk";
 import * as sessionRegistryModule from "./services/sessionRegistry";
+import * as packageUpgradeService from "./services/packageUpgradeService";
 
 // C1 promotion trigger helper (unslotted → active when a slot frees).
 async function registryMaybePromote(sessionId: number) {
@@ -757,6 +758,10 @@ export const appRouter = router({
       return {
         novel,
         categories: categories.map((c: any) => c.category),
+        // R8-3: server-provided feature readiness - the storefront upgrade
+        // CTA renders ONLY when the upgrade pipeline is actually enabled,
+        // so a disabled flag can never lead users into a dead-end dialog.
+        packageUpgradeEnabled: packageUpgradeService.isPackageUpgradeEnabled(),
       };
     }),
 
@@ -920,6 +925,21 @@ export const appRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "This episode has already been purchased" });
         }
 
+        // P3: refuse the package while the user has an upgrade for it whose
+        // order is still live (created but not yet approved/rejected) -
+        // otherwise the package could be bought TWICE through parallel
+        // checkout paths (upgrade slip + cart checkout).
+        const pendingUpgrade = await packageUpgradeService.hasPendingUpgradeOrderForPackage(
+          ctx.user.id,
+          input.episodeId
+        );
+        if (pendingUpgrade) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "มีรายการอัปเกรดแพ็กนี้ที่รอชำระอยู่ กรุณารอผลการชำระก่อน",
+          });
+        }
+
         const cart = await db.getOrCreateCart(ctx.user.id);
         if (!cart) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
@@ -1036,6 +1056,12 @@ export const appRouter = router({
             // separate cartItems table current on every backend - see
             // getCartItemsForUpdate's own comment in server/db.ts.
             const cartItems = await db.getCartItemsForUpdate(cartId, tx);
+            // R2-03 (under the cart lock): a package with a live upgrade
+            // order must not be settled through the cart alongside its slip.
+            await packageUpgradeService.assertNoPendingUpgradeForPackages(
+              ctx.user.id,
+              cartItems.map((item: { episodeId: number }) => item.episodeId)
+            );
             if (cartItems.length === 0) {
               throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
             }
@@ -1122,6 +1148,13 @@ export const appRouter = router({
         if (cartItems.length === 0) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Cart is empty" });
         }
+        // R2-03: refuse a wallet checkout of a package whose upgrade order
+        // is still pending (the deeper re-check under the cart lock runs
+        // inside createOrderFromCart's transaction below).
+        await packageUpgradeService.assertNoPendingUpgradeForPackages(
+          ctx.user.id,
+          cartItems.map((item: { episodeId: number }) => item.episodeId)
+        );
 
         try {
           // STEP 1: Calculate total amount BEFORE creating order
@@ -1169,13 +1202,31 @@ export const appRouter = router({
             // IPE-005: serialize the full wallet/order/finalization mutation
             // before any classified Source write in this transaction.
             await db.assertAccountMergeClassifiedMutationAllowed(ctx.user.id, tx);
-            // STEP 3: Create order (within transaction)
-            // Pass tx so all writes use the same transaction
-            const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItems, input.couponCode, input.pointsToRedeem, undefined, tx);
 
-            // STEP 4: Debit wallet (within transaction)
-            // Pass tx so wallet debit uses the same transaction
-            await db.debitWalletBalance(ctx.user.id, totalAmount, "order", newOrder.id, tx);
+            // P3-R4 checkout atomicity: lock the cart and RE-READ its items
+            // inside the transaction, then re-run the pending-upgrade guard
+            // on the locked read - a concurrent upgrade execute (which locks
+            // the same cart before its claim) is fully serialized here.
+            const lockedCartId = await db.lockCartForCheckout(ctx.user.id, tx);
+            const cartItemsInTx = await db.getCartItemsForUpdate(lockedCartId ?? cart.id, tx);
+            if (cartItemsInTx.length === 0) {
+              throw new Error("Cart is empty");
+            }
+            await packageUpgradeService.assertNoPendingUpgradeForPackages(
+              ctx.user.id,
+              cartItemsInTx.map((item: { episodeId: number }) => item.episodeId)
+            );
+
+            // STEP 3: Create order (within transaction) - pricing ALWAYS from
+            // the locked in-transaction items via quoteCartPricing inside
+            // createOrderFromCart.
+            const newOrder = await orderService.createOrderFromCart(String(ctx.user.id), cartItemsInTx, input.couponCode, input.pointsToRedeem, undefined, tx);
+
+            // STEP 4: Debit wallet (within transaction) - P3-R4: debit the
+            // FINAL order total computed INSIDE this transaction
+            // (newOrder.totalAmount), never the pre-transaction estimate.
+            const finalAmount = (newOrder as { totalAmount: string }).totalAmount;
+            await db.debitWalletBalance(ctx.user.id, finalAmount, "order", newOrder.id, tx);
             
             // STEP 5: Update order status (within transaction)
             // Pass tx so order update uses the same transaction
@@ -1216,6 +1267,9 @@ export const appRouter = router({
           return { order, success: true };
         } catch (error: any) {
           const message = error?.message ? orderService.toSafeCouponClientMessage(error) : "Wallet checkout failed";
+          if (message === "PENDING_UPGRADE_ORDER_EXISTS") {
+            throw new TRPCError({ code: "CONFLICT", message });
+          }
           throw new TRPCError({ code: "BAD_REQUEST", message });
         }
       }),
@@ -4105,6 +4159,76 @@ export const appRouter = router({
           episodePurchaseId: result.episodePurchaseId,
           newBalance: result.newBalance,
         };
+      }),
+
+    // P3: chapter-to-package upgrade. The quote is a SERVER-side snapshot
+    // (package price / chapter credit / payable) with an expiry; execution
+    // goes through the ordinary order pipeline (createOrderFromCart ->
+    // wallet debit or slip approval -> finalizeOrderCompletion), so the
+    // entitlement lands exactly like a normal package purchase while the
+    // provably-paid chapter credit is deducted once.
+    // P3: gated by PACKAGE_UPGRADE_ENABLED (default OFF - fails closed).
+    // Execute is a checkout: honors checkout maintenance/slip availability
+    // and applies coupon/points AFTER the chapter credit (R2-04).
+    packageUpgradeQuote: protectedProcedure
+      .input(z.object({
+        packageEpisodeId: z.number().int().positive(),
+        couponCode: z.string().min(1).max(100).optional(),
+        pointsToRedeem: z.string().max(20).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        if (!packageUpgradeService.isPackageUpgradeEnabled()) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "FEATURE_DISABLED" });
+        }
+        try {
+          return await packageUpgradeService.quotePackageUpgrade(ctx.user.id, input.packageEpisodeId, {
+            couponCode: input.couponCode,
+            pointsToRedeem: input.pointsToRedeem,
+          });
+        } catch (error) {
+          if (error instanceof packageUpgradeService.PackageUpgradeError) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error.code });
+          }
+          if (error instanceof Error) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: orderService.toSafeCouponClientMessage(error) });
+          }
+          throw error;
+        }
+      }),
+
+    packageUpgradeExecute: protectedProcedure
+      .input(z.object({
+        upgradeId: z.number().int().positive(),
+        method: z.enum(["wallet", "slip"]),
+        idempotencyKey: z.string().min(8).max(128),
+        couponCode: z.string().min(1).max(100).optional(),
+        pointsToRedeem: z.string().max(20).optional(),
+        // R7-02: MANDATORY price confirmation - the net total the customer
+        // confirmed on the dialog. The server re-validates it against its
+        // own pricing before creating the order; missing OR mismatching is
+        // refused with STALE_QUOTE (fail closed, client-safe retry).
+        expectedFinalTotal: z.string().regex(/^\d+(\.\d{1,2})?$/),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        if (!packageUpgradeService.isPackageUpgradeEnabled()) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "FEATURE_DISABLED" });
+        }
+        await assertCheckoutAvailable("reader.packageUpgradeExecute");
+        if (input.method === "slip") {
+          // R3-5: a SLIP upgrade additionally requires slip checkout to be open.
+          await assertSlipCheckoutAvailable("reader.packageUpgradeExecute.slip");
+        }
+        try {
+          return await packageUpgradeService.executePackageUpgrade(ctx.user.id, input);
+        } catch (error) {
+          if (error instanceof packageUpgradeService.PackageUpgradeError) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: error.code });
+          }
+          if (error instanceof Error) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: orderService.toSafeCouponClientMessage(error) });
+          }
+          throw error;
+        }
       }),
 
     myPurchases: protectedProcedure

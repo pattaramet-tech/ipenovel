@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { BookOpen, Search, ChevronDown, ChevronUp } from "lucide-react";
 import {
   formatEpisodeLabel,
@@ -43,6 +43,31 @@ export default function NovelDetailPage() {
   // the chapter and file sections track expansion independently. Absent keys
   // fall back to isGroupExpanded()'s default (first group open, rest closed).
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  // P3: chapter-to-package upgrade dialog (quote shows package price /
+  // chapter credit / payable BEFORE any confirmation - server-computed).
+  const [upgradeDialogEpisode, setUpgradeDialogEpisode] = useState<any>(null);
+  const [upgradeQuote, setUpgradeQuote] = useState<any>(null);
+  const [upgradeIdempotencyKey, setUpgradeIdempotencyKey] = useState("");
+  const [upgradeCoupon, setUpgradeCoupon] = useState("");
+  const [upgradePoints, setUpgradePoints] = useState("");
+  // R6-2: the coupon/points the CURRENT quote was priced with - pay stays
+  // disabled until a re-quote covers any changed/removed input.
+  const [upgradeQuotedWith, setUpgradeQuotedWith] = useState<{ coupon: string; points: string }>({ coupon: "", points: "" });
+  // R7-01: quote-flight bookkeeping. Every quote request gets a monotonic
+  // ticket; ONLY the newest ticket may write quote state, so a slow/stale
+  // response can never overwrite the latest quote. The input the request
+  // was ISSUED with is captured here too - the response is bound to that
+  // input, never to whatever happens to be typed when it resolves.
+  const upgradeQuoteSeqRef = useRef(0);
+  const upgradeQuoteRequestedRef = useRef<{ coupon: string; points: string }>({ coupon: "", points: "" });
+  const upgradeInputsDirty =
+    upgradeQuote != null &&
+    (upgradeQuotedWith.coupon !== upgradeCoupon || upgradeQuotedWith.points !== upgradePoints);
+  // R6-1: the net total the customer will actually be charged (post
+  // coupon/points) - sent to the server as the confirmation binding.
+  const upgradeExpectedFinalTotal = upgradeQuote
+    ? upgradeQuote.finalTotal ?? upgradeQuote.payableAmount
+    : null;
 
   // Parse identifier as number (id) - guard against NaN
   const novelId = identifier ? parseInt(identifier, 10) : 0;
@@ -146,6 +171,117 @@ export default function NovelDetailPage() {
       setPurchasingEpisodeId(null);
     },
   });
+
+  // P3: chapter-to-package upgrade. Price / chapter credit / payable all
+  // come from ONE server-side quote (the same pricing family as cart
+  // checkout); this dialog only displays them and confirms the method.
+  const mapUpgradeError = (message?: string) => {
+    switch (message) {
+      case "ALREADY_OWNED_PACKAGE":
+        return "คุณมีสิทธิ์อ่านแพ็กนี้อยู่แล้ว";
+      case "QUOTE_EXPIRED":
+      case "STALE_QUOTE":
+        return "ราคาอัปเกรดเปลี่ยนแปลง กรุณาตรวจราคาใหม่อีกครั้ง";
+      case "INSUFFICIENT_WALLET_BALANCE":
+        return "ยอดเงินในกระเป๋าไม่พอ กรุณาเติมเงิน";
+      case "PACKAGE_NOT_RANGE_MAPPED":
+      case "PACKAGE_NOT_UPGRADABLE":
+        return "แพ็กนี้ยังไม่รองรับการอัปเกรดจากบท";
+      case "UPGRADE_ALREADY_PROCESSING":
+        return "มีรายการอัปเกรดนี้อยู่ระหว่างดำเนินการ";
+      case "PACKAGE_NOT_FOUND":
+        return "ไม่พบแพ็กนี้";
+      default:
+        return message || "อัปเกรดไม่สำเร็จ กรุณาลองใหม่";
+    }
+  };
+  // R7-01: quote settlement logic lives in the PER-CALL mutate options
+  // (see openUpgradeDialog) - the shared useMutation config cannot tell
+  // WHICH request a response belongs to, so it cannot guard staleness.
+  const upgradeQuoteMutation = trpc.reader.packageUpgradeQuote.useMutation({});
+  const upgradeExecuteMutation = trpc.reader.packageUpgradeExecute.useMutation({
+    onSuccess: (data) => {
+      if (data.method === "wallet") {
+        toast.success(`อัปเกรดแพ็กสำเร็จ ชำระแล้ว ฿${(data as { amountPaid?: string }).amountPaid ?? data.payableAmount}`);
+      } else {
+        toast.success("สร้างคำสั่งซื้ออัปเกรดแล้ว กรุณาชำระเงินผ่านหน้าคำสั่งซื้อ");
+      }
+      setUpgradeDialogEpisode(null);
+      setUpgradeQuote(null);
+      utils.novels.episodes.invalidate();
+      utils.cart.get.invalidate();
+    },
+    onError: (error) => toast.error(mapUpgradeError(error.message)),
+  });
+  const openUpgradeDialog = (episode: any, coupon?: string, points?: string) => {
+    if (!user) {
+      toast.error("กรุณาเข้าสู่ระบบก่อนใช้งาน");
+      return;
+    }
+    setUpgradeIdempotencyKey(`upgrade-${user.id}-${episode.id}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    setUpgradeQuote(null);
+    setUpgradeDialogEpisode(episode);
+    // R7-01: bind THIS request to the input it is issued with. The seq
+    // captured in the per-call callbacks identifies the request that a
+    // response belongs to - if a newer request has been issued since, this
+    // response is STALE and must not touch quote state.
+    upgradeQuoteSeqRef.current += 1;
+    const requestSeq = upgradeQuoteSeqRef.current;
+    upgradeQuoteRequestedRef.current = { coupon: coupon ?? "", points: points ?? "" };
+    upgradeQuoteMutation.mutate(
+      {
+        packageEpisodeId: episode.id,
+        ...(coupon ? { couponCode: coupon } : {}),
+        ...(points ? { pointsToRedeem: points } : {}),
+      },
+      {
+        onSuccess: (data) => {
+          if (upgradeQuoteSeqRef.current !== requestSeq) return; // stale response
+          // R2-03: quote hitting a LIVE pending upgrade order navigates to
+          // it instead of offering a second payment path.
+          const awaiting = (data as { awaitingPayment?: boolean }).awaitingPayment;
+          const liveOrderId = (data as { orderId?: number }).orderId;
+          if (awaiting && liveOrderId) {
+            setUpgradeDialogEpisode(null);
+            toast.info("มีคำสั่งซื้ออัปเกรดรอชำระอยู่แล้ว");
+            setLocation(`/orders/${liveOrderId}`);
+            return;
+          }
+          setUpgradeQuote(data);
+          setUpgradeQuotedWith(upgradeQuoteRequestedRef.current);
+        },
+        onError: (error) => {
+          // R7-01: a late error from a superseded request must not close
+          // the dialog over a newer in-flight quote.
+          if (upgradeQuoteSeqRef.current !== requestSeq) return;
+          setUpgradeDialogEpisode(null);
+          toast.error(mapUpgradeError(error.message));
+        },
+      }
+    );
+  };
+  const confirmUpgradeWallet = () => {
+    if (!upgradeQuote || upgradeInputsDirty) return;
+    upgradeExecuteMutation.mutate({
+      upgradeId: upgradeQuote.upgradeId,
+      method: "wallet",
+      idempotencyKey: upgradeIdempotencyKey,
+      expectedFinalTotal: upgradeExpectedFinalTotal ?? undefined,
+      ...(upgradeCoupon ? { couponCode: upgradeCoupon } : {}),
+      ...(upgradePoints ? { pointsToRedeem: upgradePoints } : {}),
+    });
+  };
+  const confirmUpgradeSlip = () => {
+    if (!upgradeQuote || upgradeInputsDirty) return;
+    upgradeExecuteMutation.mutate({
+      upgradeId: upgradeQuote.upgradeId,
+      method: "slip",
+      idempotencyKey: upgradeIdempotencyKey,
+      expectedFinalTotal: upgradeExpectedFinalTotal ?? undefined,
+      ...(upgradeCoupon ? { couponCode: upgradeCoupon } : {}),
+      ...(upgradePoints ? { pointsToRedeem: upgradePoints } : {}),
+    });
+  };
 
   const handleBuyNow = (episodeId: number) => {
     setPurchasingEpisodeId(episodeId);
@@ -547,6 +683,21 @@ export default function NovelDetailPage() {
                 >
                   {isSelected ? "อยู่ในตะกร้า" : "เพิ่มลงตะกร้า"}
                 </button>
+                {/* R8-3: the upgrade CTA needs the SERVER's readiness
+                    signal, not just local entitlement data - a disabled
+                    feature flag must never render the entry point. */}
+                {visibleReaderEpisodes.length > 0 && novel?.packageUpgradeEnabled === true && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openUpgradeDialog(episode);
+                    }}
+                    className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md transition border border-amber-500 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950"
+                    title="ซื้อบทรายบทไว้แล้ว? อัปเกรดเป็นแพ็กโดยหักยอดที่ชำระแล้ว"
+                  >
+                    อัปเกรดจากบทที่ซื้อแล้ว
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -857,6 +1008,117 @@ export default function NovelDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* P3: chapter-to-package upgrade confirmation - shows the
+          server-computed package price / chapter credit / payable BEFORE
+          any confirmation (spec: แสดงราคาแพ็ก ยอดหัก และยอดจ่ายจริง). */}
+      {upgradeDialogEpisode && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setUpgradeDialogEpisode(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg bg-background border border-border p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold mb-1">อัปเกรดเป็นแพ็ก</h3>
+            <p className="text-sm text-muted-foreground mb-4">
+              {upgradeDialogEpisode.title || upgradeDialogEpisode.episodeNumber}
+            </p>
+            {upgradeQuoteMutation.isPending || !upgradeQuote ? (
+              <p className="text-sm text-muted-foreground py-4">กำลังคำนวณยอดอัปเกรด…</p>
+            ) : (
+              <div className="space-y-2 text-sm mb-4">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">ราคาแพ็ก</span>
+                  <span className="font-medium">฿{upgradeQuote.packagePrice}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    ยอดหักจากบทที่ซื้อแล้ว ({upgradeQuote.items.length} บท)
+                  </span>
+                  <span className="font-medium text-green-600">− ฿{upgradeQuote.creditAmount}</span>
+                </div>
+                <div className="flex justify-between border-t border-border pt-2">
+                  <span className="font-semibold">ยอดที่ต้องชำระ</span>
+                  <span className="font-bold">฿{upgradeQuote.payableAmount}</span>
+                </div>
+                <p className="text-xs text-muted-foreground pt-1">
+                  ราคามีอายุ 15 นาที หากมีการเปลี่ยนแปลงระบบจะให้ตรวจราคาใหม่อีกครั้ง
+                </p>
+              </div>
+            )}
+            <div className="flex gap-2 mb-3">
+              <Input
+                placeholder="คูปอง (ถ้ามี)"
+                value={upgradeCoupon}
+                onChange={(e) => setUpgradeCoupon(e.target.value)}
+                className="text-xs"
+              />
+              <Input
+                placeholder="แต้มที่จะใช้"
+                value={upgradePoints}
+                onChange={(e) => setUpgradePoints(e.target.value)}
+                className="text-xs w-28"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={upgradeQuoteMutation.isPending || !upgradeDialogEpisode}
+                onClick={() =>
+                  upgradeDialogEpisode &&
+                  openUpgradeDialog(upgradeDialogEpisode, upgradeCoupon || undefined, upgradePoints || undefined)
+                }
+              >
+                ตรวจราคา
+              </Button>
+            </div>
+            {upgradeQuote?.finalTotal && Number(upgradeQuote.finalTotal) !== Number(upgradeQuote.payableAmount) ? (
+              <div className="flex justify-between text-sm mb-4">
+                <span className="text-muted-foreground">ยอดจ่ายหลังคูปอง/แต้ม</span>
+                <span className="font-bold">฿{upgradeQuote.finalTotal}</span>
+              </div>
+            ) : null}
+            {upgradeQuote != null && upgradeInputsDirty ? (
+              <p className="text-xs text-amber-600 mb-2">
+                คูปอง/แต้มมีการเปลี่ยนแปลง กรุณากด "ตรวจราคา" ใหม่ก่อนยืนยัน
+              </p>
+            ) : null}
+            <div className="flex flex-col gap-2">
+              <Button
+                disabled={
+                  upgradeQuoteMutation.isPending ||
+                  upgradeExecuteMutation.isPending ||
+                  !upgradeQuote ||
+                  upgradeInputsDirty
+                }
+                onClick={confirmUpgradeWallet}
+              >
+                {upgradeExecuteMutation.isPending
+                  ? "กำลังดำเนินการ…"
+                  : `ยืนยันชำระผ่าน Wallet${upgradeExpectedFinalTotal ? ` ฿${upgradeExpectedFinalTotal}` : ""}`}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  upgradeQuoteMutation.isPending ||
+                  upgradeExecuteMutation.isPending ||
+                  !upgradeQuote ||
+                  upgradeInputsDirty ||
+                  Number(upgradeExpectedFinalTotal) === 0
+                }
+                onClick={confirmUpgradeSlip}
+                title="ชำระผ่าน QR/สลิป ที่หน้าคำสั่งซื้อ"
+              >
+                ชำระผ่าน QR / สลิป
+              </Button>
+              <Button variant="ghost" onClick={() => setUpgradeDialogEpisode(null)}>
+                ยกเลิก
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

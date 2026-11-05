@@ -76,6 +76,8 @@ import {
   workspaceKanbanTransitions,
   workspacePublishOwnershipTransitions,
   adminGiftEntitlements,
+  packageUpgrades,
+  packageUpgradeCreditItems,
   adminGiftWalletAdjustments,
   adminUserAuditLogs,
   notificationEvents,
@@ -8441,6 +8443,8 @@ const ACCOUNT_RECOVERY_ECONOMIC_DATA_CHECKS: Array<{
   { table: "orders", check: async (userId, db) => (await db.select({ id: orders.id }).from(orders).where(eq(orders.userId, userId)).limit(1)).length },
   { table: "purchases", check: async (userId, db) => (await db.select({ id: purchases.id }).from(purchases).where(eq(purchases.userId, userId)).limit(1)).length },
   { table: "episodePurchases", check: async (userId, db) => (await db.select({ id: episodePurchases.id }).from(episodePurchases).where(eq(episodePurchases.userId, userId)).limit(1)).length },
+  { table: "packageUpgrades", check: async (userId, db) => (await db.select({ id: packageUpgrades.id }).from(packageUpgrades).where(eq(packageUpgrades.userId, userId)).limit(1)).length },
+  { table: "packageUpgradeCreditItems", check: async (userId, db) => (await db.select({ id: packageUpgradeCreditItems.id }).from(packageUpgradeCreditItems).where(eq(packageUpgradeCreditItems.userId, userId)).limit(1)).length },
   { table: "walletAccounts", check: async (userId, db) => (await db.select({ id: walletAccounts.id }).from(walletAccounts).where(eq(walletAccounts.userId, userId)).limit(1)).length },
   { table: "walletTransactions", check: async (userId, db) => (await db.select({ id: walletTransactions.id }).from(walletTransactions).where(eq(walletTransactions.userId, userId)).limit(1)).length },
   { table: "walletTopups", check: async (userId, db) => (await db.select({ id: walletTopups.id }).from(walletTopups).where(eq(walletTopups.userId, userId)).limit(1)).length },
@@ -8802,6 +8806,24 @@ const ACCOUNT_MERGE_TABLE_CHECKS: AccountMergeTableCheck[] = [
     userIdColumnName: "userId",
     countFor: plainUserIdCount(adminGiftEntitlements, adminGiftEntitlements.userId),
     conflictKeyColumns: ["episodeId"],
+  },
+  {
+    // P3 chapter-to-package upgrade receipts - per-user financial evidence
+    // (price/credit/payable snapshots + orderId), re-parented with the
+    // account like the purchases they culminate in.
+    table: "packageUpgrades",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(packageUpgrades, packageUpgrades.userId),
+    conflictKeyColumns: ["packageEpisodeId"],
+  },
+  {
+    // P3 per-chapter credit breakdown of an upgrade receipt - financial
+    // evidence bound to the receipt's owner, moved with the account.
+    table: "packageUpgradeCreditItems",
+    category: "economic",
+    userIdColumnName: "userId",
+    countFor: plainUserIdCount(packageUpgradeCreditItems, packageUpgradeCreditItems.userId),
   },
   {
     table: "adminGiftWalletAdjustments",

@@ -477,6 +477,20 @@
       "when": 1791800000000,
       "tag": "0067_notifications_engagement",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "5",
+      "when": 1791900000000,
+      "tag": "0068_package_upgrade_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "5",
+      "when": 1792000000000,
+      "tag": "0069_package_upgrade_exec_lock",
+      "breakpoints": true
     }
   ]
 }

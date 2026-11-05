@@ -20,6 +20,10 @@ const providerAutoApprovalSource = fs.readFileSync(
   path.join(root, "payments", "providerAutoApproval.ts"),
   "utf8"
 );
+const packageUpgradeServiceSource = fs.readFileSync(
+  path.join(root, "services", "packageUpgradeService.ts"),
+  "utf8"
+);
 const adminGiftAdjustmentSource = fs.readFileSync(
   path.join(root, "services", "adminGiftWalletAdjustmentService.ts"),
   "utf8"
@@ -145,6 +149,19 @@ const productionGuardEvidence: Record<string, string[]> = {
     "assertAccountMergeClassifiedMutationAllowed(input.userId, db)",
     ".insert(pluginRefreshGrants)",
   ],
+  // P3: the whole upgrade execution (order creation + wallet debit +
+  // entitlement finalization + credit-ledger writes) runs under ONE
+  // classified-mutation guard inside the wallet branch of
+  // executePackageUpgrade; the slip branch defers to the payment
+  // approval pipeline's own payment guard before any entitlement lands.
+  packageUpgrades: [
+    "assertAccountMergeClassifiedMutationAllowed(userId, tx)",
+    ".update(packageUpgrades)",
+  ],
+  packageUpgradeCreditItems: [
+    "assertAccountMergeClassifiedMutationAllowed(userId, tx)",
+    ".insert(packageUpgradeCreditItems)",
+  ],
 };
 
 const allProductionSources = [
@@ -156,6 +173,7 @@ const allProductionSources = [
   providerVerificationSource,
   providerAutoApprovalSource,
   adminGiftAdjustmentSource,
+  packageUpgradeServiceSource,
   workspaceServiceSource,
   workspaceGoogleDocsSource,
   workspaceEditorialBoardSource,
