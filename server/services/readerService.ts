@@ -228,7 +228,13 @@ export async function canReadEpisode(userId: number | undefined, episodeId: numb
   // Free episodes are readable by everyone
   if (episode[0].isFree) return true;
 
-  return hasPurchasedEpisode(userId, episodeId);
+  if (await hasPurchasedEpisode(userId, episodeId)) return true;
+
+  // A chapter split out of a package the user owns is readable through that
+  // package's PERSISTED mapping (never a guessed range). Lazy import: the
+  // ownership module itself depends on this module's helpers.
+  const { isChapterCoveredByOwnedPackage } = await import("./packageOwnershipService");
+  return isChapterCoveredByOwnedPackage(userId, episodeId);
 }
 
 /**

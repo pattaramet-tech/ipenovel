@@ -150,6 +150,11 @@ export default function NovelDetailPage() {
         // atomic debit step itself failed/couldn't be confirmed, not that the
         // user's balance was too low - don't tell them to top up.
         toast.error("ตัดเงินจากกระเป๋าไม่สำเร็จ กรุณาลองใหม่อีกครั้ง หากยังพบปัญหาให้ติดต่อแอดมิน");
+      } else if (errorMsg === "ALREADY_OWNED_VIA_PACKAGE") {
+        // Server-side pay guard: the chapter is inside a package this user
+        // already owns - never charge twice; it is readable right away.
+        toast.info("บทนี้อยู่ในแพ็กที่คุณเป็นเจ้าของแล้ว อ่านได้ทันทีโดยไม่ต้องซื้อซ้ำ");
+        utils.novels.episodes.invalidate();
       } else if (errorMsg === "PACKAGE_MUST_USE_CART") {
         // Direct wallet purchase (reader.purchaseEpisode) is chapter-only;
         // this episode is actually a package, which must go through cart/checkout.
@@ -361,14 +366,18 @@ export default function NovelDetailPage() {
   // Grouping always orders episodes numerically within a group regardless of
   // the active sortBy, since a table of contents should read top-to-bottom by
   // chapter number - groupEpisodesByHundreds sorts each bucket internally.
-  // The public storefront is package-first. Legacy chapter rows stay visible
-  // only when they are actually free or already owned; locked chapter rows are
-  // historical commerce artifacts and must not masquerade as current products.
-  const visibleReaderEpisodes = useMemo(
-    () => filteredAndSortedEpisodes.readerEpisodes.filter((ep: any) =>
-      ep?.isFree === true || ep?.isPurchased === true || ep?.hasPurchased === true
-    ),
-    [filteredAndSortedEpisodes.readerEpisodes]
+  // Chapter rows are sold individually again (package -> chapter split): every
+  // published chapter row is listed, with its own price/buy button. Chapters
+  // already unlocked through an owned package are shown as readable and never
+  // offered for sale (the server refuses that purchase too).
+  const visibleReaderEpisodes = filteredAndSortedEpisodes.readerEpisodes;
+  // Chapters the user actually PAID for (server evidence: wallet/order
+  // purchase). Free chapters, admin gifts and package coverage are never
+  // upgrade credit, so they never show the P3 upgrade entry point; the
+  // credit amount itself always comes from the server quote.
+  const paidReaderEpisodes = useMemo(
+    () => visibleReaderEpisodes.filter((ep: any) => ep?.hasPaidPurchase === true && ep?.isFree !== true),
+    [visibleReaderEpisodes]
   );
   const readerEpisodeGroups = useMemo(
     () => groupEpisodesByHundreds(visibleReaderEpisodes),
@@ -478,6 +487,8 @@ export default function NovelDetailPage() {
     // for episodes the user actually paid for.
     const isPurchased = episode.isPurchased === true || episode.hasPurchased === true;
     const isFree = episode.isFree === true;
+    // Unlocked through a package the user owns: readable, never for sale.
+    const isCoveredByPackage = !isPurchased && !isFree && episode.coveredByOwnedPackage === true;
 
     return (
       <Card
@@ -498,6 +509,11 @@ export default function NovelDetailPage() {
               {isPurchased && (
                 <Badge className="shrink-0 text-xs bg-blue-100 text-blue-700 font-medium">
                   ปลดล็อกแล้ว
+                </Badge>
+              )}
+              {isCoveredByPackage && (
+                <Badge className="shrink-0 text-xs bg-amber-100 text-amber-700 font-medium">
+                  ปลดล็อกผ่านแพ็ก
                 </Badge>
               )}
             </div>
@@ -531,11 +547,30 @@ export default function NovelDetailPage() {
                 <BookOpen className="w-3.5 h-3.5 mr-1.5" />
                 {episode.progressPercent > 0 ? "อ่านต่อ" : "อ่าน"}
               </button>
+            ) : isCoveredByPackage ? (
+              <button
+                onClick={() => setLocation(`/read/${episode.id}`)}
+                className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition"
+              >
+                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                อ่าน
+              </button>
             ) : (
-              // Legacy chapter rows remain visible for TOC/backward compatibility,
-              // but new commerce is package-only: never offer per-chapter purchase.
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>🔒</span><span>ล็อก</span>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm text-foreground">฿{episode.price ?? "-"}</span>
+                <button
+                  onClick={() => {
+                    if (!user) {
+                      toast.error("กรุณาเข้าสู่ระบบก่อนซื้อ");
+                      return;
+                    }
+                    handleBuyNow(episode.id);
+                  }}
+                  disabled={purchaseEpisodeMutation.isPending}
+                  className="inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition disabled:opacity-60"
+                >
+                  ซื้อบทนี้
+                </button>
               </div>
             )}
           </div>
@@ -686,7 +721,7 @@ export default function NovelDetailPage() {
                 {/* R8-3: the upgrade CTA needs the SERVER's readiness
                     signal, not just local entitlement data - a disabled
                     feature flag must never render the entry point. */}
-                {visibleReaderEpisodes.length > 0 && novel?.packageUpgradeEnabled === true && (
+                {paidReaderEpisodes.length > 0 && novel?.packageUpgradeEnabled === true && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -981,7 +1016,7 @@ export default function NovelDetailPage() {
                     content must stay visible and readable here. */}
                 {visibleReaderEpisodes.length > 0 && (
                   <div>
-                    <h3 className="text-lg font-semibold mb-3 text-blue-600">ตอนฟรี / ที่ซื้อแล้ว ({visibleReaderEpisodes.length})</h3>
+                    <h3 className="text-lg font-semibold mb-3 text-blue-600">รายบท ({visibleReaderEpisodes.length})</h3>
                     {renderEpisodeGroupAccordion(readerEpisodeGroups, "chapter", renderChapterEpisodeCard)}
                   </div>
                 )}

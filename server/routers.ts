@@ -15,6 +15,61 @@ import * as leaseService from "./services/readingLease";
 import { sdk } from "./_core/sdk";
 import * as sessionRegistryModule from "./services/sessionRegistry";
 import * as packageUpgradeService from "./services/packageUpgradeService";
+import * as packageChapterSplitService from "./services/packageChapterSplit.service";
+import * as packageChapterSplitImport from "./services/packageChapterSplitImport";
+import {
+  ALREADY_OWNED_VIA_PACKAGE_MESSAGE,
+  PackageOwnershipError,
+  assertNoChapterCoveredByOwnedPackage,
+  getChapterIdsCoveredByOwnedPackages,
+  getPaidEpisodeIds,
+} from "./services/packageOwnershipService";
+
+/**
+ * Package-split pay guard as a tRPC CONFLICT: a chapter covered by a package
+ * the user already owns (or has a live order for) is never charged again.
+ * With `tx`, the check runs as locking reads inside that transaction.
+ */
+async function assertNoOwnedPackageCoverage(userId: number, episodeIds: number[], tx?: any): Promise<void> {
+  try {
+    await assertNoChapterCoveredByOwnedPackage(userId, episodeIds, tx);
+  } catch (error) {
+    if (error instanceof PackageOwnershipError) {
+      throw new TRPCError({ code: "CONFLICT", message: ALREADY_OWNED_VIA_PACKAGE_MESSAGE });
+    }
+    throw error;
+  }
+}
+
+const packageSplitInputSchema = z.object({
+  packageEpisodeId: z.number().int().positive(),
+  pricing: z.object({
+    chapterPrice: z.string().max(20),
+    overrides: z.record(z.string(), z.string().max(20)).optional(),
+  }),
+  publish: z.boolean().default(false),
+});
+
+function mapPackageSplitError(error: unknown): TRPCError {
+  if (error instanceof packageChapterSplitService.PackageSplitError) {
+    switch (error.code) {
+      case "PACKAGE_NOT_FOUND":
+        return new TRPCError({ code: "NOT_FOUND", message: error.code });
+      case "STALE_PLAN":
+        return new TRPCError({ code: "CONFLICT", message: error.code });
+      case "PLAN_NOT_APPLICABLE":
+        return new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: error.code,
+          cause: { issues: error.issues },
+        });
+      default:
+        return new TRPCError({ code: "BAD_REQUEST", message: error.code });
+    }
+  }
+  if (error instanceof TRPCError) return error;
+  return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "PACKAGE_SPLIT_FAILED" });
+}
 
 // C1 promotion trigger helper (unslotted → active when a slot frees).
 async function registryMaybePromote(sessionId: number) {
@@ -784,6 +839,26 @@ export const appRouter = router({
         }
       }
 
+      // Chapters unlocked through an owned package (persisted split mapping).
+      // Kept separate from isPurchased: the user never paid for these rows.
+      let coveredByOwnedPackage = new Set<number>();
+      // Paid purchases only (wallet / approved order) - NOT gifts, free rows
+      // or package coverage. Drives the P3 upgrade entry point; the credit
+      // amount itself is always computed server-side by the upgrade quote.
+      let paidEpisodeIds = new Set<number>();
+      if (userId) {
+        try {
+          coveredByOwnedPackage = await getChapterIdsCoveredByOwnedPackages(userId, input.novelId);
+        } catch (error) {
+          console.error("[novels.episodes] Package coverage enrichment failed", { novelId: input.novelId });
+        }
+        try {
+          paidEpisodeIds = await getPaidEpisodeIds(userId, episodes.map((ep: any) => ep.id));
+        } catch (error) {
+          console.error("[novels.episodes] Paid-purchase enrichment failed", { novelId: input.novelId });
+        }
+      }
+
       // Enrich episodes with purchase status. IMPORTANT: isPurchased/hasPurchased
       // must be computed from actual purchase records only (episodePurchases +
       // legacy purchases) - never from admin role or canReadEpisode(), otherwise
@@ -804,7 +879,8 @@ export const appRouter = router({
               });
             }
           }
-          const canRead = isFree || hasPurchased || isAdmin;
+          const isCoveredByOwnedPackage = coveredByOwnedPackage.has(ep.id);
+          const canRead = isFree || hasPurchased || isCoveredByOwnedPackage || isAdmin;
           const progress = progressMap.get(ep.id);
 
           // Never leak full episode content in the list endpoint - that's what
@@ -832,6 +908,8 @@ export const appRouter = router({
             isFree,
             hasPurchased,
             isPurchased: hasPurchased,
+            coveredByOwnedPackage: isCoveredByOwnedPackage,
+            hasPaidPurchase: !isFree && paidEpisodeIds.has(ep.id),
             canRead,
             hasContent,
             hasLegacyFile,
@@ -924,6 +1002,7 @@ export const appRouter = router({
         if (hasPurchased) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "This episode has already been purchased" });
         }
+        await assertNoOwnedPackageCoverage(ctx.user.id, [input.episodeId]);
 
         // P3: refuse the package while the user has an upgrade for it whose
         // order is still live (created but not yet approved/rejected) -
@@ -1062,6 +1141,11 @@ export const appRouter = router({
               ctx.user.id,
               cartItems.map((item: { episodeId: number }) => item.episodeId)
             );
+            await assertNoOwnedPackageCoverage(
+              ctx.user.id,
+              cartItems.map((item: { episodeId: number }) => item.episodeId),
+              tx
+            );
             if (cartItems.length === 0) {
               throw new TRPCError({ code: "BAD_REQUEST", message: "Your cart is empty. Please add items before checkout." });
             }
@@ -1155,6 +1239,10 @@ export const appRouter = router({
           ctx.user.id,
           cartItems.map((item: { episodeId: number }) => item.episodeId)
         );
+        await assertNoOwnedPackageCoverage(
+          ctx.user.id,
+          cartItems.map((item: { episodeId: number }) => item.episodeId)
+        );
 
         try {
           // STEP 1: Calculate total amount BEFORE creating order
@@ -1216,6 +1304,11 @@ export const appRouter = router({
               ctx.user.id,
               cartItemsInTx.map((item: { episodeId: number }) => item.episodeId)
             );
+            await assertNoOwnedPackageCoverage(
+              ctx.user.id,
+              cartItemsInTx.map((item: { episodeId: number }) => item.episodeId),
+              tx
+            );
 
             // STEP 3: Create order (within transaction) - pricing ALWAYS from
             // the locked in-transaction items via quoteCartPricing inside
@@ -1266,6 +1359,7 @@ export const appRouter = router({
 
           return { order, success: true };
         } catch (error: any) {
+          if (error instanceof TRPCError && error.message === ALREADY_OWNED_VIA_PACKAGE_MESSAGE) throw error;
           const message = error?.message ? orderService.toSafeCouponClientMessage(error) : "Wallet checkout failed";
           if (message === "PENDING_UPGRADE_ORDER_EXISTS") {
             throw new TRPCError({ code: "CONFLICT", message });
@@ -2380,6 +2474,36 @@ export const appRouter = router({
       // dryRun: true parses + validates the zip (including reading every
       // referenced .txt file) without writing to the database, so the admin
       // UI can show a preview/error list before committing.
+      // Legacy package -> chapter backfill (admin only). Scan and preview
+      // are read-only; apply recomputes the plan in one transaction and is
+      // bound to the previewed planHash (STALE_PLAN on any drift). The
+      // package row itself is never modified.
+      packageSplitScan: adminProcedure
+        .input(z.object({ novelId: z.number().int().positive().optional() }).optional())
+        .query(async ({ input }) => {
+          return packageChapterSplitService.scanLegacyPackages({ novelId: input?.novelId });
+        }),
+
+      packageSplitPreview: adminProcedure
+        .input(packageSplitInputSchema)
+        .query(async ({ input }) => {
+          try {
+            return await packageChapterSplitService.previewPackageSplit(input);
+          } catch (error) {
+            throw mapPackageSplitError(error);
+          }
+        }),
+
+      packageSplitApply: adminProcedure
+        .input(packageSplitInputSchema.extend({ planHash: z.string().regex(/^[0-9a-f]{64}$/) }))
+        .mutation(async ({ input }) => {
+          try {
+            return await packageChapterSplitService.applyPackageSplit(input);
+          } catch (error) {
+            throw mapPackageSplitError(error);
+          }
+        }),
+
       importPackageZip: authorCatalogProcedure
         .input(
           z.object({
@@ -2392,6 +2516,11 @@ export const appRouter = router({
             // are certain no matching package exists yet.
             mode: z.enum(["create_only", "upsert"]).default("upsert"),
             dryRun: z.boolean().default(true),
+            // Package + chapters mode (opt-in): package rows may set
+            // splitChapters/chapterPrice/publishChapters and the manifest may
+            // carry saleMode=chapter rows that must match the split exactly.
+            // Off = the original package-only import, unchanged.
+            packageWithChapters: z.boolean().default(false),
           })
         )
         .mutation(async ({ input, ctx }) => {
@@ -2405,10 +2534,13 @@ export const appRouter = router({
 
           let parsed;
           try {
-            parsed = packageZipImportService.parsePackageZip(zipBuffer);
+            parsed = packageZipImportService.parsePackageZip(zipBuffer, {
+              packageWithChapters: input.packageWithChapters,
+            });
           } catch (error) {
             throw new TRPCError({ code: "BAD_REQUEST", message: (error as Error).message });
           }
+          const splitPlan = input.packageWithChapters ? packageChapterSplitImport.planZipChapterSplits(parsed) : null;
 
           if (input.dryRun) {
             // Full diff preview: shows exactly what the real import would do
@@ -2434,6 +2566,64 @@ export const appRouter = router({
               // never full `content` over the wire.
               rows: preview.rows,
               imported: false,
+              chapterSplit: splitPlan
+                ? {
+                    errors: splitPlan.errors,
+                    packages: splitPlan.packages,
+                    previews:
+                      splitPlan.errors.length === 0
+                        ? await packageChapterSplitImport.previewZipChapterSplits(input.novelId, parsed, splitPlan)
+                        : [],
+                  }
+                : undefined,
+            };
+          }
+
+          if (splitPlan) {
+            // Package + chapters mode is ALL-OR-NOTHING for the whole ZIP:
+            // any parse error or split planning error blocks it before a
+            // single row is written, and the write itself is one transaction
+            // (package upserts + chapters + mappings) that rolls back on any
+            // database conflict or split failure.
+            const blocking = [...parsed.errors, ...splitPlan.errors];
+            if (blocking.length > 0) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `ZIP_IMPORT_BLOCKED: ${blocking.map((e) => `แถว ${e.row}: ${e.message}`).join(" | ")}`,
+              });
+            }
+            let atomic;
+            try {
+              atomic = await packageChapterSplitImport.importPackageZipWithChapterSplitsAtomic({
+                novelId: input.novelId,
+                parsed,
+                plan: splitPlan,
+                mode: input.mode,
+                actorUserId: ctx.user.id,
+              });
+            } catch (error) {
+              if (error instanceof packageChapterSplitImport.ZipImportAtomicError) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: `ZIP_IMPORT_ROLLED_BACK: ${error.row != null ? `แถว ${error.row}: ` : ""}${error.message}`,
+                });
+              }
+              if ((error as { statusCode?: number } | null)?.statusCode) mapCatalogMutation(error);
+              throw new TRPCError({ code: "BAD_REQUEST", message: "ZIP_IMPORT_ROLLED_BACK: การนำเข้าล้มเหลว ไม่มีข้อมูลใดถูกบันทึก" });
+            }
+            return {
+              manifestFileName: parsed.manifestFileName,
+              totalRows: parsed.rows.length,
+              validRows: parsed.rows.length,
+              successCount: atomic.results.length,
+              errorCount: 0,
+              createdCount: atomic.createdCount,
+              updatedCount: atomic.updatedCount,
+              preservedFileUrlCount: atomic.preservedFileUrlCount,
+              results: atomic.results,
+              errors: [] as typeof parsed.errors,
+              imported: true,
+              chapterSplitResults: atomic.chapterSplitResults,
             };
           }
 
@@ -2451,6 +2641,7 @@ export const appRouter = router({
             results: summary.results,
             errors: [...parsed.errors, ...summary.errors],
             imported: true,
+            chapterSplitResults: undefined,
           };
         }),
 
@@ -4135,6 +4326,7 @@ export const appRouter = router({
             "INVALID_EPISODE_PRICE",
             "INVALID_WALLET_BALANCE",
             "PACKAGE_MUST_USE_CART",
+            "ALREADY_OWNED_VIA_PACKAGE",
           ]);
 
           if (result.error && passthroughCodes.has(result.error)) {
