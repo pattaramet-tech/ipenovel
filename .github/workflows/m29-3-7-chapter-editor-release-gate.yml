@@ -58,6 +58,11 @@ jobs:
       - name: Prepare disposable test database and apply migrations
         run: pnpm test:db:prepare
 
+      - name: Notifications First-Event E2E
+        run: >-
+          pnpm exec vitest run -c vitest.integration.config.ts
+          server/notifications/firstEventE2E.integration.test.ts
+
       - name: Full NQA and Workspace unit regression
         run: >-
           pnpm exec vitest run -c vitest.config.ts
