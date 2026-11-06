@@ -259,7 +259,27 @@ export const ADMIN_USER_DELETION_CLASSIFICATION: AdminUserDeletionColumnClassifi
     reference: "Reading Lease (Reader Session Controls)",
     reason: "The account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt) and carries nothing recoverable or exportable. Destroying it with the users row (reading_leases_user_fk ON DELETE CASCADE) revokes the lease, which is the required outcome of deleting the account.",
   },
-
+  {
+    table: "packageUpgrades",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Chapter-to-Package Upgrade receipts (migration 0068; file originally numbered 0067)",
+    reason: "The account's own append-only financial evidence for chapter-to-package upgrades (P3, migration 0068; file originally numbered 0067): price/credit/payable snapshots plus an orderId pointer. No protectable third-party data, no FK constraint (same convention as every entitlement table), so the rows simply outlive the users row as audit evidence - deleting the account must not be blocked by them, and their financial totals are already reflected in walletAccounts/orders, which carry the blocking classification.",
+  },
+  {
+    table: "packageUpgradeCreditItems",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Chapter-to-Package Upgrade credit ledger (migration 0068; file originally numbered 0067)",
+    reason: "Per-chapter breakdown of a packageUpgrades receipt (P3, migration 0068; file originally numbered 0067) - provenance snapshots of already-classified money records (episodePurchases/orderItems), bound solely to the receipt owner, no FK, and never third-party data; outlives the users row as append-only audit evidence exactly like its parent receipt.",
+  },
+  {
+    table: "packageUpgradeExecLocks",
+    column: "userId",
+    category: "never_blocks",
+    reference: "Upgrade execution mutex rows (migration 0069)",
+    reason: "Pure infrastructure mutex handles (one row per user, re-created on demand) for the P3 upgrade execution lock - they carry no user content whatsoever, have no FK constraint, and deleting them with the users row (or leaving them) is equally harmless; nothing recoverable, exportable, or third-party.",
+  },
 ];
 
 /**

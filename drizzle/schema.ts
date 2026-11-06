@@ -3866,3 +3866,136 @@ export const readingLeases = mysqlTable(
 
 export type AuthSession = typeof authSessions.$inferSelect;
 export type InsertAuthSession = typeof authSessions.$inferInsert;
+
+// ============================================================================
+// P3: Chapter-to-Package Upgrade (P3-R1) — additive-only financial ledger.
+// ----------------------------------------------------------------------------
+// "Own chapters individually -> upgrade to the package, paying only the
+// difference". Modeled on the IPE-048 gift tables' discipline: append-only
+// financial evidence, no existing table/column/row is modified, and episode
+// IDs stay the stable entitlement anchors.
+//
+// packageChapterMappings    - PERSISTED chapter->package containment. The
+//                             persisted ROW is the financial evidence
+//                             (P3-R1: a live episodeNumber-range
+//                             re-derivation is never the evidence on its
+//                             own); rows are insert-only, never rewritten.
+// packageUpgrades           - one quote/order receipt per upgrade attempt
+//                             (idempotencyKey unique), snapshots of price,
+//                             credit and payable at quote time.
+// packageUpgradeCreditItems - per-chapter credit breakdown (source +
+//                             sourceRefId point at the exact provable
+//                             money record).
+// ============================================================================
+
+export const packageChapterMappings = mysqlTable(
+  "packageChapterMappings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    novelId: int("novelId").notNull(),
+    packageEpisodeId: int("packageEpisodeId").notNull(),
+    chapterEpisodeId: int("chapterEpisodeId").notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    // How this row was derived. "episode_number_range" = the chapter's
+    // single normalized episode number fell inside the package's normalized
+    // range at derivation time. Kept as evidence FOR THE ROW, not instead
+    // of it.
+    derivation: varchar("derivation", { length: 60 }).default("episode_number_range").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    novelIdIdx: index("packageChapterMappings_novelId_idx").on(table.novelId),
+    chapterIdIdx: index("packageChapterMappings_chapterId_idx").on(table.chapterEpisodeId),
+    uniquePackageChapter: uniqueIndex("unique_package_chapter_mapping").on(
+      table.packageEpisodeId,
+      table.chapterEpisodeId
+    ),
+  })
+);
+
+export type PackageChapterMapping = typeof packageChapterMappings.$inferSelect;
+export type InsertPackageChapterMapping = typeof packageChapterMappings.$inferInsert;
+
+export const packageUpgrades = mysqlTable(
+  "packageUpgrades",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    novelId: int("novelId").notNull(),
+    packageEpisodeId: int("packageEpisodeId").notNull(),
+    // Client-supplied, required on execute. Unique: a replayed execute with
+    // the same key resolves to THIS receipt instead of creating a new one.
+    idempotencyKey: varchar("idempotencyKey", { length: 128 }).notNull(),
+    // quoted        - quote snapshot valid until quoteExpiresAt
+    // order_created - an order exists (orderId); entitlement state is that
+    //                 order's state (pending/approved/rejected), so
+    //                 "executed" is DERIVED from the order, never a second
+    //                 status to keep in sync with the payment pipeline
+    // expired/void  - quote no longer usable (void is an admin/human
+    //                 action; only meaningful while still quoted - voiding
+    //                 an order_created upgrade belongs to the order's own
+    //                 reject/cancel flow)
+    status: mysqlEnum("status", ["quoted", "order_created", "expired", "void"])
+      .default("quoted")
+      .notNull(),
+    packagePriceSnapshot: decimal("packagePriceSnapshot", { precision: 10, scale: 2 }).notNull(),
+    creditAmountSnapshot: decimal("creditAmountSnapshot", { precision: 10, scale: 2 }).notNull(),
+    payableAmountSnapshot: decimal("payableAmountSnapshot", { precision: 10, scale: 2 }).notNull(),
+    quoteExpiresAt: timestamp("quoteExpiresAt").notNull(),
+    orderId: int("orderId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    idempotencyKeyUnique: uniqueIndex("packageUpgrades_idempotency_unique").on(table.idempotencyKey),
+    userPackageIdx: index("packageUpgrades_user_package_idx").on(table.userId, table.packageEpisodeId),
+    orderIdIdx: index("packageUpgrades_orderId_idx").on(table.orderId),
+  })
+);
+
+export type PackageUpgrade = typeof packageUpgrades.$inferSelect;
+
+// P3-R8: transactional execution mutex (one row per user, seeded by
+// quotePackageUpgrade). The execute transaction holds the row FOR UPDATE
+// NOWAIT; the lock is released by commit/rollback itself - no explicit
+// release can fail and no connection-scoped state can leak into the pool.
+export const packageUpgradeExecLocks = mysqlTable("packageUpgradeExecLocks", {
+  userId: int("userId").primaryKey(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PackageUpgradeExecLock = typeof packageUpgradeExecLocks.$inferSelect;
+export type InsertPackageUpgrade = typeof packageUpgrades.$inferInsert;
+
+export const packageUpgradeCreditItems = mysqlTable(
+  "packageUpgradeCreditItems",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    upgradeId: int("upgradeId").notNull(),
+    userId: int("userId").notNull(),
+    novelId: int("novelId").notNull(),
+    chapterEpisodeId: int("chapterEpisodeId").notNull(),
+    // wallet_purchase - sourceRefId = episodePurchases.id; the provable
+    //                   amount is pricePaid (a real wallet debit at purchase
+    //                   time, walletTransactionId linked)
+    // approved_order  - sourceRefId = orderItems.id; the provable amount is
+    //                   orderItems.finalPrice on an order whose status AND
+    //                   paymentStatus are 'approved'
+    source: mysqlEnum("source", ["wallet_purchase", "approved_order"]).notNull(),
+    sourceRefId: int("sourceRefId").notNull(),
+    pricePaidSnapshot: decimal("pricePaidSnapshot", { precision: 10, scale: 2 }).notNull(),
+    creditApplied: decimal("creditApplied", { precision: 10, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    uniqueUpgradeChapter: uniqueIndex("unique_upgrade_chapter_credit").on(
+      table.upgradeId,
+      table.chapterEpisodeId
+    ),
+    chapterIdIdx: index("packageUpgradeCreditItems_chapterId_idx").on(table.chapterEpisodeId),
+    userIdIdx: index("packageUpgradeCreditItems_userId_idx").on(table.userId),
+  })
+);
+
+export type PackageUpgradeCreditItem = typeof packageUpgradeCreditItems.$inferSelect;
+export type InsertPackageUpgradeCreditItem = typeof packageUpgradeCreditItems.$inferInsert;

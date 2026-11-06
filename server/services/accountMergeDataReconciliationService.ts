@@ -45,6 +45,14 @@ export const IPE007_HANDLED_DIRECT_TABLES = [
 ] as const;
 
 export const IPE007_UNSUPPORTED_DIRECT_TABLES = [
+  // P3 chapter-to-package upgrade receipts and their per-chapter credit
+  // ledger (migration 0067) - append-only FINANCIAL EVIDENCE whose merge
+  // reconciliation semantics are deliberately NOT designed yet (a receipt
+  // references orderItems/episodePurchases provenance on BOTH sides of a
+  // merge). Fail-closed: an account holding one of these receipts cannot be
+  // merged until explicit semantics exist; nothing is moved silently.
+  "packageUpgrades",
+  "packageUpgradeCreditItems",
   "workspaceWorkspaces",
   "workspaceMembers",
   "workspaceGoogleConsentAttempts",

@@ -583,7 +583,24 @@ export const ACCOUNT_RECOVERY_USER_DATA_CLASSIFICATION: AccountRecoveryColumnCla
     category: "deliberately_ignored",
     reason: "The source account's single active paid-reading lease pointer - ephemeral security/reading state that expires by design (expiresAt), references only the source account itself, and carries nothing recoverable or exportable; it is never moved by recovery and cannot strand third-party data.",
   },
-
+  {
+    table: "packageUpgrades",
+    column: "userId",
+    category: "economic_hard_block",
+    reason: "A chapter-to-package upgrade receipt (P3, migration 0068; file originally numbered 0067): price/credit/payable snapshots proving real money already spent on the chapters being upgraded - the same economic right as a purchases row, recorded as append-only evidence.",
+  },
+  {
+    table: "packageUpgradeCreditItems",
+    column: "userId",
+    category: "economic_hard_block",
+    reason: "The per-chapter credit breakdown of a packageUpgrades receipt (P3, migration 0068; file originally numbered 0067) - provenance snapshots of already-classified wallet purchases / approved order items; the provable-money ledger of the upgrade right itself.",
+  },
+  {
+    table: "packageUpgradeExecLocks",
+    column: "userId",
+    category: "deliberately_ignored",
+    reason: "The per-user execution mutex row of the upgrade pipeline (P3, migration 0069) - pure infrastructure state holding no user data at all; it is never moved by recovery and is re-created on demand, exactly like the deliberately-ignored ephemeral readingLeases pointer.",
+  },
 ];
 
 /**
