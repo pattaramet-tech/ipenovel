@@ -62,6 +62,19 @@ const HEADER_ALIASES: Record<string, string> = {
   description: "description",
   "คำอธิบาย": "description",
 
+  // Package + chapters mode only (parsePackageZip with packageWithChapters).
+  splitchapters: "splitChapters",
+  split_chapters: "splitChapters",
+  "แตกบท": "splitChapters",
+
+  chapterprice: "chapterPrice",
+  chapter_price: "chapterPrice",
+  "ราคารายบท": "chapterPrice",
+
+  publishchapters: "publishChapters",
+  publish_chapters: "publishChapters",
+  "เผยแพร่รายบท": "publishChapters",
+
   // Multi-novel manifest only (parseMultiNovelPackageZip) - harmless no-ops
   // for the single-novel parser above, which never reads these fields.
   novelid: "novelId",
@@ -134,6 +147,23 @@ export interface PackageImportRow {
   description?: string;
   content: string;
   contentLength: number;
+  /** Package + chapters mode: split this package into chapter rows after import. */
+  splitChapters?: boolean;
+  /** Package + chapters mode: default price for every split chapter. */
+  chapterPrice?: string;
+  /** Package + chapters mode: publish the created chapters (default false). */
+  publishChapters?: boolean;
+}
+
+/** A saleMode=chapter manifest row (package + chapters mode only). */
+export interface PackageImportChapterRow {
+  row: number;
+  episodeNumber: string;
+  episodeTitle: string;
+  price: string;
+  isFree: boolean;
+  contentFile: string;
+  content: string;
 }
 
 export interface PackageImportRowError {
@@ -157,6 +187,8 @@ export interface PackageImportParseResult {
   manifestFileName: string;
   rows: PackageImportRow[];
   errors: PackageImportRowError[];
+  /** Only populated with { packageWithChapters: true }. */
+  chapterRows?: PackageImportChapterRow[];
 }
 
 /**
@@ -174,7 +206,11 @@ export interface PackageImportParseResult {
  * - fileUrl is never read from the manifest and never written - packages are
  *   web-read only.
  */
-export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
+export function parsePackageZip(
+  zipBuffer: Buffer,
+  options: { packageWithChapters?: boolean } = {}
+): PackageImportParseResult {
+  const chapterRows: PackageImportChapterRow[] = [];
   if (zipBuffer.length > MAX_ZIP_SIZE_BYTES) {
     throw new Error(
       `ไฟล์ zip ใหญ่เกินไป (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB) จำกัดไว้ที่ ${(MAX_ZIP_SIZE_BYTES / 1024 / 1024).toFixed(0)}MB`
@@ -277,7 +313,10 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
     // chapter through the bulk package flow.
     const saleModeRaw = (data.saleMode || "").toLowerCase().trim();
     const resolvedSaleMode = saleModeRaw ? SALE_MODE_VALUE_ALIASES[saleModeRaw] : "package";
-    if (resolvedSaleMode !== "package") {
+    // Package + chapters mode: chapter rows are collected (validated against
+    // their package's split later), never imported on their own.
+    const isChapterRow = options.packageWithChapters === true && resolvedSaleMode === "chapter";
+    if (resolvedSaleMode !== "package" && !isChapterRow) {
       errors.push({
         row: rowNum,
         field: "saleMode",
@@ -381,7 +420,27 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
     }
 
     seenNumbers.add(normalizedEpisodeNumber);
+    if (isChapterRow) {
+      chapterRows.push({
+        row: rowNum,
+        episodeNumber,
+        episodeTitle,
+        price,
+        isFree,
+        contentFile: contentFileRaw,
+        content,
+      });
+      continue;
+    }
+    const chapterPriceRaw = (data.chapterPrice || "").trim();
     rows.push({
+      ...(options.packageWithChapters === true
+        ? {
+            splitChapters: parseBoolean(data.splitChapters, false),
+            chapterPrice: chapterPriceRaw || undefined,
+            publishChapters: parseBoolean(data.publishChapters, false),
+          }
+        : {}),
       row: rowNum,
       episodeNumber,
       episodeTitle,
@@ -398,7 +457,9 @@ export function parsePackageZip(zipBuffer: Buffer): PackageImportParseResult {
     });
   }
 
-  return { manifestFileName: basename(manifestPath), rows, errors };
+  return options.packageWithChapters === true
+    ? { manifestFileName: basename(manifestPath), rows, errors, chapterRows }
+    : { manifestFileName: basename(manifestPath), rows, errors };
 }
 
 function parseXlsxManifest(buffer: Buffer): Array<Record<string, string>> {

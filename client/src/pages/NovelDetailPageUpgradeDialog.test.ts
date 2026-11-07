@@ -82,6 +82,9 @@ const state = vi.hoisted(() => {
       isPublished: true,
       isPurchased: true,
       hasPurchased: true,
+      // Server listing flag (package split R5): a real wallet/order purchase -
+      // the P3 upgrade entry point only appears for PAID chapters.
+      hasPaidPurchase: true,
       hasContent: true,
       hasLegacyFile: false,
       fileUrl: null,

@@ -33,6 +33,23 @@ vi.mock("./readerService", () => ({
   resolveSaleMode: vi.fn(() => "chapter"),
 }));
 
+// The package-ownership pay guard runs real queries inside the purchase
+// transaction; it is covered end to end by packageChapterSplit.integration.
+// Here it is an explicit collaborator: pass-through by default, and one test
+// below proves a refusal stops the purchase before any write.
+const ownershipGuard = vi.hoisted(() => ({ refuse: false }));
+vi.mock("./packageOwnershipService", () => {
+  class PackageOwnershipError extends Error {
+    readonly code = "ALREADY_OWNED_VIA_PACKAGE";
+  }
+  return {
+    PackageOwnershipError,
+    assertNoChapterCoveredByOwnedPackage: vi.fn(async () => {
+      if (ownershipGuard.refuse) throw new PackageOwnershipError("ALREADY_OWNED_VIA_PACKAGE");
+    }),
+  };
+});
+
 interface FakeOptions {
   /** Result shape returned for the episodePurchases INSERT. */
   purchaseInsertResult: unknown;
@@ -114,6 +131,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  ownershipGuard.refuse = false;
   vi.clearAllMocks();
   recordEpisodeWalletPurchaseIfEnabled.mockClear();
   recordEpisodeWalletPurchaseIfEnabled.mockImplementation(
@@ -173,6 +191,18 @@ describe("wallet purchase transaction id extraction (R40R52R1)", () => {
     expect(recordEpisodeWalletPurchaseIfEnabled).not.toHaveBeenCalled();
     // Debit + ledger still happened inside the transaction.
     expect(world.insertedWalletTransactions).toHaveLength(1);
+  });
+});
+
+describe("package-ownership pay guard inside the purchase transaction", () => {
+  it("refuses with ALREADY_OWNED_VIA_PACKAGE before any debit, ledger or entitlement write", async () => {
+    ownershipGuard.refuse = true;
+    const world = buildWorld(baseOptions());
+    const result = await service.purchaseEpisodeWithWallet(7, 9);
+    expect(result).toMatchObject({ success: false, error: "ALREADY_OWNED_VIA_PACKAGE" });
+    expect(world.insertedPurchases).toHaveLength(0);
+    expect(world.insertedWalletTransactions).toHaveLength(0);
+    expect(recordEpisodeWalletPurchaseIfEnabled).not.toHaveBeenCalled();
   });
 });
 

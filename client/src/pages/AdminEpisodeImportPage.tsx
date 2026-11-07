@@ -9,6 +9,8 @@ import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { Upload, Loader2, AlertCircle, Download, Search, X } from "lucide-react";
 import * as XLSX from "xlsx";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { AdminPackageChapterSplitPanel } from "@/components/AdminPackageChapterSplitPanel";
 
 interface ParsedEpisode {
   episodeNumber: string;
@@ -445,6 +447,8 @@ function readFileAsBase64(file: File): Promise<string> {
 function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [mode, setMode] = useState<"create_only" | "upsert">("upsert");
+  // Package + chapters mode: split flagged packages into chapter rows.
+  const [packageWithChapters, setPackageWithChapters] = useState(false);
   const [preview, setPreview] = useState<any>(null);
   const [result, setResult] = useState<any>(null);
   const [isValidating, setIsValidating] = useState(false);
@@ -478,7 +482,7 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
     setResult(null);
     try {
       const zipBase64 = await readFileAsBase64(zipFile);
-      const response = await importMutation.mutateAsync({ novelId, zipBase64, mode, dryRun: true });
+      const response = await importMutation.mutateAsync({ novelId, zipBase64, mode, dryRun: true, packageWithChapters });
       setPreview(response);
       if (response.errorCount > 0) {
         toast.error(`พบ ${response.errorCount} แถวที่มีปัญหา`);
@@ -498,7 +502,7 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
     setIsImporting(true);
     try {
       const zipBase64 = await readFileAsBase64(zipFile);
-      const response = await importMutation.mutateAsync({ novelId, zipBase64, mode, dryRun: false });
+      const response = await importMutation.mutateAsync({ novelId, zipBase64, mode, dryRun: false, packageWithChapters });
       setResult(response);
       setPreview(null);
       toast.success(`Import complete: ${response.successCount} สำเร็จ, ${response.errorCount} error`);
@@ -545,8 +549,24 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
             episodeNumber, episodeTitle, price, isFree, isPublished, saleMode,
             contentFile, contentFormat, sortOrder, description
           </p>
-          <p>saleMode ควรเป็น package เสมอ - import นี้รองรับเฉพาะแพ็กอ่านบนเว็บ ไม่รองรับรายบท</p>
+          <p>
+            {packageWithChapters
+              ? "โหมดแพ็ก + รายบท: ใส่ splitChapters=true, chapterPrice, publishChapters ในแถวแพ็ก และแถว saleMode=chapter ต้องมีเนื้อหาตรงกับบทในไฟล์แพ็ก"
+              : "saleMode ควรเป็น package เสมอ - import นี้รองรับเฉพาะแพ็กอ่านบนเว็บ ไม่รองรับรายบท"}
+          </p>
         </div>
+
+        <label className="mt-4 flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={packageWithChapters}
+            onChange={(e) => {
+              setPackageWithChapters(e.target.checked);
+              setPreview(null);
+            }}
+          />
+          โหมดแพ็ก + รายบท (แบ่งแพ็กเป็นรายบทหลังนำเข้า)
+        </label>
 
         <div className="mt-4">
           <Label className="mb-2 block">Import Mode</Label>
@@ -707,6 +727,30 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
         </Card>
       )}
 
+      {preview?.chapterSplit && (
+        <Card className="p-4">
+          <h3 className="font-semibold mb-2">การแบ่งรายบท</h3>
+          {preview.chapterSplit.errors.length > 0 ? (
+            <div className="p-3 bg-red-50 border border-red-200 rounded max-h-48 overflow-y-auto">
+              {preview.chapterSplit.errors.map((err: any, idx: number) => (
+                <p key={idx} className="text-sm text-red-800">
+                  Row {err.row}: {err.message}
+                </p>
+              ))}
+              <p className="text-xs text-red-700 mt-2">ต้องแก้ทุกข้อก่อน Import จึงจะทำงาน (ระบบจะไม่นำเข้าอะไรเลยถ้ามี error)</p>
+            </div>
+          ) : (
+            preview.chapterSplit.previews.map((p: any) => (
+              <p key={p.row} className="text-sm">
+                Row {p.row} · แพ็ก {p.preview.episodeNumber}: {p.preview.split.chapterCount} บท · สร้างใหม่{" "}
+                {p.preview.counts.create} · มีอยู่แล้ว {p.preview.counts.keep}
+                {p.preview.issues.length > 0 ? ` · ปัญหา: ${p.preview.issues.map((i: any) => i.message).join("; ")}` : ""}
+              </p>
+            ))
+          )}
+        </Card>
+      )}
+
       {result && (
         <Card className="p-4 bg-green-50 border-green-200">
           <h3 className="font-semibold mb-2">Import เสร็จสิ้น</h3>
@@ -731,6 +775,15 @@ function PackageZipImportSection({ novelId }: { novelId: number | undefined }) {
               {result.errors.map((err: any, idx: number) => (
                 <p key={idx} className="text-sm text-red-800">
                   Row {err.row}: {err.field} - {err.message}
+                </p>
+              ))}
+            </div>
+          )}
+          {result.chapterSplitResults?.length > 0 && (
+            <div className="mt-3 p-3 bg-white border rounded max-h-48 overflow-y-auto">
+              {result.chapterSplitResults.map((r: any, idx: number) => (
+                <p key={idx} className={`text-sm ${r.applied ? "text-slate-700" : "text-amber-700"}`}>
+                  Row {r.row} · แพ็ก {r.episodeNumber}: {r.message}
                 </p>
               ))}
             </div>
@@ -1200,6 +1253,7 @@ function MultiNovelPackageZipImportSection() {
 }
 
 export default function AdminEpisodeImportPage() {
+  const { user } = useAuth();
   const [importSource, setImportSource] = useState<"spreadsheet" | "zip" | "multi-zip">("spreadsheet");
   const [novelId, setNovelId] = useState<number | undefined>();
   const [selectedNovel, setSelectedNovel] = useState<NovelSearchResult | null>(null);
@@ -1579,7 +1633,11 @@ export default function AdminEpisodeImportPage() {
         {importSource === "multi-zip" ? (
           <MultiNovelPackageZipImportSection />
         ) : importSource === "zip" ? (
-          <PackageZipImportSection novelId={novelId} />
+          <>
+            <PackageZipImportSection novelId={novelId} />
+            {/* Legacy package -> chapter backfill (admin-only endpoints). */}
+            {user?.role === "admin" && <AdminPackageChapterSplitPanel novelId={novelId} />}
+          </>
         ) : (
           <>
         {/* File Upload & Template */}
