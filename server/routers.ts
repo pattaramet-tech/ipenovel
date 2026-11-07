@@ -11,6 +11,7 @@ import { ENV, evaluateGoogleConnectionCutoff } from "./_core/env";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
+import type { Novel } from "../drizzle/schema";
 import * as leaseService from "./services/readingLease";
 import { sdk } from "./_core/sdk";
 import * as sessionRegistryModule from "./services/sessionRegistry";
@@ -594,16 +595,25 @@ export const appRouter = router({
         db.getAllBanners(),
       ]);
 
+      // One grouped query across homepage novels: public last-updated time
+      // includes published episode changes, without changing the ranking.
+      const datedNovels = await db.withPublishedEpisodeUpdateTime([
+        ...popularNovels, ...newNovels, ...freeNovels, ...finishedNovels,
+      ]);
+      const updatedAtById = new Map(datedNovels.map(row => [row.id, row.displayUpdatedAt]));
+      const withDisplayTime = (rows: typeof popularNovels) =>
+        rows.map(row => ({ ...row, displayUpdatedAt: updatedAtById.get(row.id) ?? row.createdAt }));
+
       if (isDev) {
         console.log(`[home.getSections] resolved in ${Date.now() - startedAt}ms`);
       }
 
       return {
-        popularNovels,
-        newNovels,
-        freeNovels,
+        popularNovels: withDisplayTime(popularNovels),
+        newNovels: withDisplayTime(newNovels),
+        freeNovels: withDisplayTime(freeNovels),
         latestEpisodes,
-        finishedNovels,
+        finishedNovels: withDisplayTime(finishedNovels),
         banners,
       };
     }),
@@ -759,13 +769,14 @@ export const appRouter = router({
         })
       )
       .query(async ({ input }) => {
-        return db.getCatalogNovels({
+        const rows = await db.getCatalogNovels({
           sort: input.sort || "new",
           filter: input.filter || "all",
           search: input.search,
           limit: input.limit || 50,
           offset: input.offset || 0,
         });
+        return db.withPublishedEpisodeUpdateTime(rows);
       }),
 
     browse: publicProcedure
@@ -808,10 +819,13 @@ export const appRouter = router({
       // procedure doesn't do), so that field was fetched and shipped over
       // the wire on every single novel-detail page view without ever being
       // read. See docs/PERFORMANCE_SEO_AUDIT.md.
-      const categories = await db.getCategoriesByNovelId(input.novelId);
+      const [categories, datedNovels] = await Promise.all([
+        db.getCategoriesByNovelId(input.novelId),
+        db.withPublishedEpisodeUpdateTime([novel]),
+      ]);
 
       return {
-        novel,
+        novel: datedNovels[0],
         categories: categories.map((c: any) => c.category),
         // R8-3: server-provided feature readiness - the storefront upgrade
         // CTA renders ONLY when the upgrade pipeline is actually enabled,
@@ -2208,8 +2222,9 @@ export const appRouter = router({
             db.getNovelEpisodeStats(input.novelId),
           ]);
 
+          const [datedNovel] = await db.withPublishedEpisodeUpdateTime([novel]);
           return {
-            novel,
+            novel: datedNovel,
             categories: categoriesRaw.map((c: any) => c.category),
             stats,
           };
@@ -2227,9 +2242,13 @@ export const appRouter = router({
           // No input at all - preserve the original unlimited full-list
           // behavior for existing callers (e.g. AdminNovelsPage).
           if (!input?.q && !input?.limit) {
-            return db.getAllNovelsForAdmin(undefined, undefined, ownerUserId);
+            return db.withPublishedEpisodeUpdateTime(
+              (await db.getAllNovelsForAdmin(undefined, undefined, ownerUserId)) as Novel[]
+            );
           }
-          return db.searchNovelsForAdmin(input.q, input.limit ?? 30, ownerUserId);
+          return db.withPublishedEpisodeUpdateTime(
+            (await db.searchNovelsForAdmin(input.q, input.limit ?? 30, ownerUserId)) as Novel[]
+          );
         }),
 
       create: authorCatalogProcedure

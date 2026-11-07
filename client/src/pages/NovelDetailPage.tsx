@@ -19,6 +19,7 @@ import {
 } from "@/utils/episodeUtils";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl, buildNovelMetaDescription, SITE_NAME } from "@/lib/seo";
+import { formatContentTimestamp, publishedEpisodeDisplayTime } from "@/lib/formatContentTimestamp";
 import { usePublicStorefrontPageThemeProps } from "@/contexts/PublicThemeContext";
 
 export default function NovelDetailPage() {
@@ -517,6 +518,9 @@ export default function NovelDetailPage() {
                 </Badge>
               )}
             </div>
+            {formatContentTimestamp(publishedEpisodeDisplayTime(episode)) && (
+              <p className="text-xs text-muted-foreground">อัปเดตล่าสุด: {formatContentTimestamp(publishedEpisodeDisplayTime(episode))}</p>
+            )}
             {isPurchased && episode.progressPercent > 0 && (
               <p className="text-xs text-blue-600">
                 อ่านล่าสุด
@@ -640,6 +644,9 @@ export default function NovelDetailPage() {
                 </Badge>
               )}
             </div>
+            {formatContentTimestamp(publishedEpisodeDisplayTime(episode)) && (
+              <p className="text-xs text-muted-foreground">อัปเดตล่าสุด: {formatContentTimestamp(publishedEpisodeDisplayTime(episode))}</p>
+            )}
             {!isFree && !isPurchased && (
               <p className="text-xs text-muted-foreground">
                 {isSelected ? "อยู่ในตะกร้าแล้ว" : isLoading ? "กำลังอัปเดต..." : "ต้องการซื้อ?"}
@@ -920,7 +927,10 @@ export default function NovelDetailPage() {
               </div>
             )}
 
-            <p className="text-base text-muted-foreground mb-6 leading-relaxed">{novel?.novel?.description || t("novel.noDescription")}</p>
+            <p className="text-base text-muted-foreground mb-4 leading-relaxed">{novel?.novel?.description || t("novel.noDescription")}</p>
+            {formatContentTimestamp(novel.novel.displayUpdatedAt ?? novel.novel.updatedAt) && (
+              <p className="text-sm text-muted-foreground mb-6">อัปเดตล่าสุด: {formatContentTimestamp(novel.novel.displayUpdatedAt ?? novel.novel.updatedAt)}</p>
+            )}
 
             {/* Episode Stats */}
             <div className="ipe-detail-meta grid grid-cols-3 gap-3 p-4 rounded-lg border">

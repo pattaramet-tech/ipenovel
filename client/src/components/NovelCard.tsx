@@ -1,5 +1,6 @@
 import { Link } from "wouter";
 import { Heart } from "lucide-react";
+import { formatContentTimestamp } from "@/lib/formatContentTimestamp";
 
 export interface NovelCardBadge {
   label: string;
@@ -14,6 +15,8 @@ interface NovelCardProps {
   overline?: string | null;
   /** Secondary line below the title, e.g. description or episode title. */
   subtitle?: string | null;
+  /** Public timestamp: creation time is deliberately not rendered. */
+  updatedAt?: Date | string | null;
   badges?: NovelCardBadge[];
   /** Above-the-fold cards should load eagerly instead of lazily. */
   eager?: boolean;
@@ -47,6 +50,7 @@ export default function NovelCard({
   coverImageUrl,
   overline,
   subtitle,
+  updatedAt,
   badges = [],
   eager = false,
   href,
@@ -57,6 +61,7 @@ export default function NovelCard({
 }: NovelCardProps) {
   const link = href ?? `/novels/${id}`;
   const loading = eager ? "eager" : "lazy";
+  const updatedLabel = formatContentTimestamp(updatedAt);
 
   return (
     <Link href={link}>
@@ -147,6 +152,9 @@ export default function NovelCard({
           </h3>
           {subtitle && (
             <p className="text-xs text-slate-500 line-clamp-2">{subtitle}</p>
+          )}
+          {updatedLabel && (
+            <p className="text-xs text-slate-500 mt-auto pt-1">อัปเดตล่าสุด: {updatedLabel}</p>
           )}
         </div>
       </div>
