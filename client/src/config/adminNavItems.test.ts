@@ -33,6 +33,7 @@ const expectedRoutes = [
   "/admin/gift-wallet-adjustment",
   "/admin/entitlement-lookup",
   "/admin/media-migration",
+  "/admin/package-split-migration",
   "/admin/settings",
 ];
 

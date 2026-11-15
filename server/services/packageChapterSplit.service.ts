@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   adminGiftEntitlements,
@@ -134,7 +134,7 @@ export interface SplitApplyResult {
   planHash: string;
 }
 
-export type ScanStatus = "no_content" | "needs_attention" | "conflict" | "splittable" | "already_split";
+export type ScanStatus = "no_content" | "source_required" | "needs_attention" | "conflict" | "splittable" | "already_split";
 
 export interface ScanRow {
   packageEpisodeId: number;
@@ -213,29 +213,60 @@ interface ChapterClassification {
  * preview/apply also require an existing chapter's stored price/free flag to
  * match, otherwise it is a conflict (never repriced automatically).
  */
-async function classifySplit(handle: DbHandle, pkg: any, plan: SplitPlan, prices?: Map<number, string>) {
-  const issues: PreviewIssue[] = plan.issues.map((i) => ({ ...i }));
-  const novelEpisodes: any[] = await handle
+type EpisodeClassificationMeta = {
+  id: number;
+  episodeNumber: string;
+  saleMode: string | null;
+  fileUrl: string | null;
+};
+
+type EpisodeClassificationIndex = {
+  byNumber: Map<string, EpisodeClassificationMeta[]>;
+  rangePackages: Array<{ id: number; episodeNumber: string; range: { start: number; end: number } }>;
+};
+
+/**
+ * Shared lightweight novel inventory. Neither content nor price is loaded.
+ * Scans reuse this index within one request; Preview/Apply rebuild it fresh.
+ */
+async function loadEpisodeClassificationIndex(handle: DbHandle, novelId: number): Promise<EpisodeClassificationIndex> {
+  const catalog: EpisodeClassificationMeta[] = await handle
     .select({
       id: episodes.id,
       episodeNumber: episodes.episodeNumber,
       saleMode: episodes.saleMode,
       fileUrl: episodes.fileUrl,
-      content: episodes.content,
-      price: episodes.price,
-      isFree: episodes.isFree,
-      isPublished: episodes.isPublished,
     })
     .from(episodes)
-    .where(eq(episodes.novelId, pkg.novelId));
-  const others = novelEpisodes.filter((e) => e.id !== pkg.id);
+    .where(eq(episodes.novelId, novelId));
+  const byNumber = new Map<string, EpisodeClassificationMeta[]>();
+  const rangePackages: EpisodeClassificationIndex["rangePackages"] = [];
+  for (const row of catalog) {
+    const key = normalizeEpisodeRange(row.episodeNumber);
+    const bucket = byNumber.get(key) ?? [];
+    bucket.push(row);
+    byNumber.set(key, bucket);
+    if (resolveSaleMode(row) !== "package") continue;
+    const range = parseSplitRange(row.episodeNumber);
+    if (range) rangePackages.push({ id: row.id, episodeNumber: row.episodeNumber, range });
+  }
+  return { byNumber, rangePackages };
+}
+
+async function classifySplit(
+  handle: DbHandle,
+  pkg: any,
+  plan: SplitPlan,
+  prices?: Map<number, string>,
+  suppliedIndex?: EpisodeClassificationIndex
+) {
+  const issues: PreviewIssue[] = plan.issues.map((i) => ({ ...i }));
+  const index = suppliedIndex ?? await loadEpisodeClassificationIndex(handle, pkg.novelId);
 
   // Another package covering any of these chapter numbers.
   if (plan.range) {
-    for (const other of others) {
-      if (resolveSaleMode(other) !== "package") continue;
-      const otherRange = parseSplitRange(other.episodeNumber);
-      if (otherRange && rangesOverlap(plan.range, otherRange)) {
+    for (const other of index.rangePackages) {
+      if (other.id !== pkg.id && rangesOverlap(plan.range, other.range)) {
         issues.push({
           code: "OVERLAPPING_PACKAGE",
           message: `ช่วงแพ็กซ้อนกับแพ็ก "${other.episodeNumber}" (episodeId ${other.id})`,
@@ -244,18 +275,10 @@ async function classifySplit(handle: DbHandle, pkg: any, plan: SplitPlan, prices
     }
   }
 
-  const byNumber = new Map<string, any[]>();
-  for (const other of others) {
-    const key = normalizeEpisodeRange(other.episodeNumber);
-    const bucket = byNumber.get(key) ?? [];
-    bucket.push(other);
-    byNumber.set(key, bucket);
-  }
-
   const matchedIds: number[] = [];
   const pending: Array<{ chapter: SplitChapter; existing: any | null }> = [];
   for (const chapter of plan.chapters) {
-    const matches = byNumber.get(String(chapter.chapterNumber)) ?? [];
+    const matches = (index.byNumber.get(String(chapter.chapterNumber)) ?? []).filter((e) => e.id !== pkg.id);
     if (matches.length > 1) {
       issues.push({
         code: "AMBIGUOUS_EXISTING_CHAPTER",
@@ -277,8 +300,28 @@ async function classifySplit(handle: DbHandle, pkg: any, plan: SplitPlan, prices
     pending.push({ chapter, existing });
   }
 
+  // MEDIUMTEXT is fetched only for the exact chapter IDs being compared,
+  // never for all episodes of the novel or for unrelated packages.
+  const details: any[] = matchedIds.length > 0
+    ? await handle
+      .select({
+        id: episodes.id,
+        content: episodes.content,
+        price: episodes.price,
+        isFree: episodes.isFree,
+        isPublished: episodes.isPublished,
+      })
+      .from(episodes)
+      .where(inArray(episodes.id, matchedIds))
+    : [];
+  const detailById = new Map<number, any>(details.map((row) => [row.id, row]));
   const withBuyers = await episodesWithBuyers(handle, matchedIds);
-  const classified: ChapterClassification[] = pending.map(({ chapter, existing }) => {
+  const classified: ChapterClassification[] = pending.map(({ chapter, existing: meta }) => {
+    // If a chapter vanished between metadata/detail reads, treat it as
+    // a conflict (never as absent or safe to overwrite/create).
+    const existing = meta
+      ? detailById.get(meta.id) ?? { id: meta.id, content: null, price: null, isFree: false, isPublished: false }
+      : null;
     if (!existing) {
       return { chapter, action: "create", existingEpisodeId: null, existingHasBuyers: false, existing: null };
     }
@@ -646,69 +689,269 @@ export async function previewPackageSplitInTx(
  * Scan range packages (optionally of one novel) and report their split
  * status. Read-only.
  */
-export async function scanLegacyPackages(input: { novelId?: number; limit?: number } = {}): Promise<ScanRow[]> {
-  const handle = await requireHandle();
-  const limit = Math.min(Math.max(input.limit ?? 200, 1), 500);
-  const query = handle.select().from(episodes);
-  const rows: any[] = input.novelId ? await query.where(eq(episodes.novelId, input.novelId)) : await query;
-  const packages = rows
-    .filter((row) => resolveSaleMode(row) === "package" && parseSplitRange(row.episodeNumber) !== null)
-    .slice(0, limit);
-
-  const out: ScanRow[] = [];
-  for (const pkg of packages) {
-    const hasContent = String(pkg.content ?? "").trim().length > 0;
-    if (!hasContent) {
-      out.push({
-        packageEpisodeId: pkg.id,
-        novelId: pkg.novelId,
-        episodeNumber: pkg.episodeNumber,
-        title: pkg.title,
-        status: "no_content",
-        chapterCount: 0,
-        createCount: 0,
-        keepCount: 0,
-        conflictCount: 0,
-        issueCodes: [],
-      });
-      continue;
-    }
-    const plan = splitPackageContent({ episodeNumber: pkg.episodeNumber, content: pkg.content });
-    const { issues, classified } = await classifySplit(handle, pkg, plan);
-    const createCount = classified.filter((c) => c.action === "create").length;
-    const keepCount = classified.filter((c) => c.action === "keep").length;
-    const conflictCount = classified.filter((c) => c.action === "conflict").length;
-    const blocking = issues.filter((i) => i.code !== "EXISTING_CHAPTER_CONFLICT");
-    let status: ScanStatus;
-    if (blocking.length > 0) status = "needs_attention";
-    else if (conflictCount > 0) status = "conflict";
-    else if (createCount === 0) {
-      const mapped: Array<{ chapterEpisodeId: number }> = await handle
-        .select({ chapterEpisodeId: packageChapterMappings.chapterEpisodeId })
-        .from(packageChapterMappings)
-        .where(
-          and(
-            eq(packageChapterMappings.packageEpisodeId, pkg.id),
-            inArray(
-              packageChapterMappings.chapterEpisodeId,
-              classified.map((c) => c.existingEpisodeId!).filter(Boolean).concat([-1])
-            )
-          )
-        );
-      status = mapped.length === keepCount ? "already_split" : "splittable";
-    } else status = "splittable";
-    out.push({
-      packageEpisodeId: pkg.id,
-      novelId: pkg.novelId,
-      episodeNumber: pkg.episodeNumber,
-      title: pkg.title,
-      status,
-      chapterCount: plan.chapters.length,
-      createCount,
-      keepCount,
-      conflictCount,
-      issueCodes: Array.from(new Set(issues.map((i) => i.code))),
-    });
+/**
+ * Classify ONE legacy package using the same rules as the single-package
+ * admin workflow. No writes or guessed chapters.
+ */
+async function inspectLegacyPackage(handle: DbHandle, pkg: any, index?: EpisodeClassificationIndex): Promise<ScanRow> {
+  const base = {
+    packageEpisodeId: pkg.id as number,
+    novelId: pkg.novelId as number,
+    episodeNumber: String(pkg.episodeNumber),
+    title: String(pkg.title),
+  };
+  if (!String(pkg.content ?? "").trim()) {
+    const sourceRequired = Boolean(String(pkg.fileUrl ?? "").trim());
+    return {
+      ...base,
+      status: sourceRequired ? "source_required" : "no_content",
+      chapterCount: 0,
+      createCount: 0,
+      keepCount: 0,
+      conflictCount: 0,
+      issueCodes: sourceRequired ? ["SOURCE_REQUIRED"] : ["EMPTY_CONTENT"],
+    };
   }
-  return out;
+
+  const plan = splitPackageContent({ episodeNumber: pkg.episodeNumber, content: pkg.content });
+  const { issues, classified } = await classifySplit(handle, pkg, plan, undefined, index);
+  const createCount = classified.filter((c) => c.action === "create").length;
+  const keepCount = classified.filter((c) => c.action === "keep").length;
+  const conflictCount = classified.filter((c) => c.action === "conflict").length;
+  const blocking = issues.filter((i) => i.code !== "EXISTING_CHAPTER_CONFLICT");
+  let status: ScanStatus;
+  if (blocking.length > 0) status = "needs_attention";
+  else if (conflictCount > 0) status = "conflict";
+  else if (createCount === 0) {
+    const mapped: Array<{ chapterEpisodeId: number }> = await handle
+      .select({ chapterEpisodeId: packageChapterMappings.chapterEpisodeId })
+      .from(packageChapterMappings)
+      .where(
+        and(
+          eq(packageChapterMappings.packageEpisodeId, pkg.id),
+          inArray(
+            packageChapterMappings.chapterEpisodeId,
+            classified.map((c) => c.existingEpisodeId!).filter(Boolean).concat([-1])
+          )
+        )
+      );
+    status = mapped.length === keepCount ? "already_split" : "splittable";
+  } else status = "splittable";
+
+  return {
+    ...base,
+    status,
+    chapterCount: plan.chapters.length,
+    createCount,
+    keepCount,
+    conflictCount,
+    issueCodes: Array.from(new Set(issues.map((i) => i.code))),
+  };
+}
+
+export const MIGRATION_SCAN_MAX_INSPECTED = 200;
+export type LegacyScanStatusFilter = ScanStatus | "all";
+export interface LegacyScanPage {
+  rows: ScanRow[];
+  nextCursor: number | null;
+  hasMore: boolean;
+  inspected: number;
+}
+
+/**
+ * Keyset-scanned global inventory. The DB fetches at most 25 candidate rows
+ * per query and this request inspects at most 200, including rows hidden by
+ * a status filter. Cursor is the LAST INSPECTED episode ID, not the last
+ * visible row; this prevents infinite loops and skipped candidates when the
+ * filter excludes many rows. A full last chunk can yield one empty final page.
+ */
+export async function scanLegacyPackagesPage(input: {
+  novelId?: number;
+  cursor?: number;
+  limit?: number;
+  status?: LegacyScanStatusFilter;
+  attentionOnly?: boolean;
+} = {}): Promise<LegacyScanPage> {
+  const handle = await requireHandle();
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 200);
+  const out: ScanRow[] = [];
+  let cursor = input.cursor ?? 0;
+  let inspected = 0;
+  let exhausted = false;
+  // Per-request cache avoids repeatedly reading the same novel's metadata.
+  const indexByNovel = new Map<number, EpisodeClassificationIndex>();
+
+  while (out.length < limit && inspected < MIGRATION_SCAN_MAX_INSPECTED) {
+    const take = Math.min(25, MIGRATION_SCAN_MAX_INSPECTED - inspected);
+    // Explicit package saleMode is authoritative. Do not filter by a single
+    // range separator: parseSplitRange also accepts en-dash, slash and ถึง.
+    // Preserve NULL saleMode for legacy fallback if encountered.
+    const conditions = [
+      gt(episodes.id, cursor),
+      or(eq(episodes.saleMode, "package"), isNull(episodes.saleMode))!,
+    ];
+    if (input.novelId) conditions.push(eq(episodes.novelId, input.novelId));
+    const candidates: any[] = await handle
+      // Only small metadata is fetched for each window. The large MEDIUMTEXT
+      // body is loaded one package at a time AFTER range classification.
+      .select({
+        id: episodes.id,
+        novelId: episodes.novelId,
+        episodeNumber: episodes.episodeNumber,
+        saleMode: episodes.saleMode,
+        fileUrl: episodes.fileUrl,
+      })
+      .from(episodes)
+      .where(and(...conditions))
+      .orderBy(asc(episodes.id))
+      .limit(take);
+
+    if (candidates.length === 0) {
+      exhausted = true;
+      break;
+    }
+    let consumedAll = true;
+    for (const candidate of candidates) {
+      cursor = candidate.id;
+      inspected += 1;
+      if (resolveSaleMode(candidate) !== "package" || !parseSplitRange(candidate.episodeNumber)) continue;
+      const pkg = await loadPackage(handle, candidate.id, false);
+      let index = indexByNovel.get(candidate.novelId);
+      if (!index) {
+        index = await loadEpisodeClassificationIndex(handle, candidate.novelId);
+        indexByNovel.set(candidate.novelId, index);
+      }
+      const row = await inspectLegacyPackage(handle, pkg, index);
+      if (input.attentionOnly && !["needs_attention", "conflict", "no_content", "source_required"].includes(row.status)) {
+        continue;
+      }
+      if (input.status && input.status !== "all" && row.status !== input.status) continue;
+      out.push(row);
+      if (out.length >= limit) {
+        consumedAll = false;
+        break;
+      }
+    }
+    if (consumedAll && candidates.length < take) {
+      exhausted = true;
+      break;
+    }
+  }
+  const hasMore = !exhausted;
+  return { rows: out, nextCursor: hasMore ? cursor : null, hasMore, inspected };
+}
+
+/** Legacy caller: first bounded page for one novel. New global UI uses the cursor API. */
+export async function scanLegacyPackages(input: { novelId?: number; limit?: number } = {}): Promise<ScanRow[]> {
+  const page = await scanLegacyPackagesPage({ novelId: input.novelId, limit: input.limit ?? 200 });
+  return page.rows;
+}
+
+/**
+ * Dry run of an explicit 1..10 package selection. Price must be supplied:
+ * the server never infers it from the package price. Publish is ALWAYS false.
+ */
+export async function previewLegacyPackageBatch(input: {
+  packageEpisodeIds: number[];
+  pricing: SplitPricingInput;
+}) {
+  const handle = await requireHandle();
+  const results: Array<{
+    packageEpisodeId: number;
+    status: "ready" | "skipped" | "blocked";
+    planHash: string | null;
+    createCount: number;
+    keepCount: number;
+    conflictCount: number;
+    warnings: string[];
+    issues: string[];
+  }> = [];
+
+  for (const id of input.packageEpisodeIds) {
+    try {
+      const pkg = await loadPackage(handle, id, false);
+      if (!parseSplitRange(pkg.episodeNumber)) {
+        results.push({ packageEpisodeId: id, status: "blocked", planHash: null, createCount: 0, keepCount: 0, conflictCount: 0, warnings: [], issues: ["NOT_RANGE"] });
+        continue;
+      }
+      const scan = await inspectLegacyPackage(handle, pkg);
+      if (scan.status === "already_split") {
+        results.push({ packageEpisodeId: id, status: "skipped", planHash: null, createCount: 0, keepCount: scan.keepCount, conflictCount: 0, warnings: [], issues: [] });
+        continue;
+      }
+      if (scan.status === "source_required" || scan.status === "no_content") {
+        results.push({ packageEpisodeId: id, status: "blocked", planHash: null, createCount: 0, keepCount: 0, conflictCount: 0, warnings: [], issues: scan.issueCodes });
+        continue;
+      }
+      const preview = await buildPreview(handle, pkg, input.pricing, false);
+      results.push({
+        packageEpisodeId: id,
+        status: preview.applicable ? "ready" : "blocked",
+        planHash: preview.planHash,
+        createCount: preview.counts.create,
+        keepCount: preview.counts.keep,
+        conflictCount: preview.counts.conflict,
+        warnings: preview.warnings,
+        issues: preview.issues.map((issue) => issue.code),
+      });
+    } catch (error) {
+      // Never echo raw SQL or connection strings to the UI.
+      const code = error instanceof PackageSplitError ? error.code : "PREVIEW_FAILED";
+      results.push({ packageEpisodeId: id, status: "blocked", planHash: null, createCount: 0, keepCount: 0, conflictCount: 0, warnings: [], issues: [code] });
+    }
+  }
+  return {
+    results,
+    ready: results.filter((row) => row.status === "ready").length,
+    skipped: results.filter((row) => row.status === "skipped").length,
+    blocked: results.filter((row) => row.status === "blocked").length,
+  };
+}
+
+/**
+ * Per-package atomic execution: one failed package cannot partially write
+ * its chapters or roll back an unrelated successful package. Same planHash
+ * and FOR UPDATE lock as the original single-package Apply path.
+ */
+export async function applyLegacyPackageBatch(input: {
+  items: Array<{ packageEpisodeId: number; planHash: string }>;
+  pricing: SplitPricingInput;
+}) {
+  const results: Array<{
+    packageEpisodeId: number;
+    outcome: "migrated" | "skipped" | "failed";
+    createdCount: number;
+    keptCount: number;
+    errorCode?: string;
+  }> = [];
+  for (const item of input.items) {
+    try {
+      const applied = await applyPackageSplit({
+        packageEpisodeId: item.packageEpisodeId,
+        planHash: item.planHash,
+        pricing: input.pricing,
+        publish: false,
+      });
+      results.push({
+        packageEpisodeId: item.packageEpisodeId,
+        outcome: applied.createdEpisodeIds.length || applied.mappingsInserted ? "migrated" : "skipped",
+        createdCount: applied.createdEpisodeIds.length,
+        keptCount: applied.keptEpisodeIds.length,
+      });
+    } catch (error) {
+      results.push({
+        packageEpisodeId: item.packageEpisodeId,
+        outcome: "failed",
+        createdCount: 0,
+        keptCount: 0,
+        errorCode: error instanceof PackageSplitError ? error.code : "APPLY_FAILED",
+      });
+    }
+  }
+  return {
+    results,
+    migrated: results.filter((row) => row.outcome === "migrated").length,
+    skipped: results.filter((row) => row.outcome === "skipped").length,
+    failed: results.filter((row) => row.outcome === "failed").length,
+  };
 }

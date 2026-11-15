@@ -179,6 +179,11 @@ export const adminNavSections: NavSection[] = [
         icon: ImagePlus,
       },
       {
+        label: "Package Split Migration",
+        href: "/admin/package-split-migration",
+        icon: Layers,
+      },
+      {
         label: "Settings",
         href: "/admin/settings",
         icon: Settings,
