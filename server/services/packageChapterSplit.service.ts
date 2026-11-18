@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   adminGiftEntitlements,
@@ -221,16 +221,211 @@ type EpisodeClassificationMeta = {
 };
 
 type EpisodeClassificationIndex = {
+  novelId: number;
+  /**
+   * Existing episodes grouped by normalizeEpisodeRange key. COMPLETE for
+   * every key in `loadedKeys`; may also hold partial buckets over-fetched
+   * for other keys (harmless - completeness is tracked per key and any
+   * later use of such a key re-queries and merges by id).
+   */
   byNumber: Map<string, EpisodeClassificationMeta[]>;
+  /** EVERY package-mode episode of the novel with a parseable range. */
   rangePackages: Array<{ id: number; episodeNumber: string; range: { start: number; end: number } }>;
+  /** Episode-number keys whose byNumber bucket is complete for the novel. */
+  loadedKeys: Set<string>;
 };
 
 /**
- * Shared lightweight novel inventory. Neither content nor price is loaded.
- * Scans reuse this index within one request; Preview/Apply rebuild it fresh.
+ * SQL REGEXP matching every raw episodeNumber string whose numeric token
+ * has FEWER THAN 16 significant digits and could canonicalize to the
+ * canonical numeric token `token` ("5", "5.5"): the same digits as a
+ * standalone numeric token, optionally zero-padded, optionally with an
+ * all-zero fraction ("05", "5.0") - exactly what normalizeEpisodeRange's
+ * `\d+(?:\.\d+)?` tokenizer plus Number() canonicalization can turn into
+ * the token. Deliberately a SUPERSET ("15" is rejected; "1.5" is fetched
+ * and refined away in JS) because SQL cannot run the real normalizer:
+ * false positives are harmless, a false negative would silently miss a
+ * conflict. Plain ASCII digit classes and simple groups only, so the same
+ * string is a valid JS RegExp (unit-tested) and a valid MySQL 8 REGEXP.
+ * Exhaustiveness bound: IEEE-754 doubles round-trip up to 15 significant
+ * digits, so tokens shorter than that canonicalize to their own digits -
+ * tokens with 16+ digits can ROUND to a different digit string and are
+ * covered by EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN instead.
+ * Returns null for canonical exponential forms ("1e+21", "1e-7") no raw
+ * digit string can supersede safely - callers fall back to the novel-wide
+ * read rather than risk a missed conflict.
  */
-async function loadEpisodeClassificationIndex(handle: DbHandle, novelId: number): Promise<EpisodeClassificationIndex> {
-  const catalog: EpisodeClassificationMeta[] = await handle
+export function episodeNumberTokenSqlPattern(token: string): string | null {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(token);
+  if (!match) return null;
+  const [, int, frac] = match;
+  const head = `(^|[^0-9])0*${int}`;
+  return frac === undefined ? `${head}(\\.0+)?([^0-9]|$)` : `${head}\\.${frac}0*([^0-9]|$)`;
+}
+
+/**
+ * The rounding net (IPE-R4R3R2): matches every numeric token whose
+ * integer or fractional digit runs TOGETHER total 16+ digits, regardless
+ * of the key. IEEE-754 doubles round-trip only up to 15 significant
+ * digits, so a longer token can canonicalize to a DIFFERENT digit string
+ * than its own ("0.99999999999999999" -> Number 1 -> key "1";
+ * "0.50000000000000001" -> "0.5"; "123456789012345.6" -> "123456789012345.59")
+ * - no exact-digit pattern can enumerate those forms, so every such row of
+ * the novel is fetched unconditionally and refined in JS. The enumeration
+ * covers each integer-part length 1..15 with the complementary minimum
+ * fraction length, plus the long-integer-part arm; runs are >= significant
+ * digits, so run-total >= 16 implies possible rounding. Key-independent:
+ * hoisted to at most ONE copy per keyset query via
+ * episodeNumberKeysetSqlCondition (IPE-R4R3R6) - previously it shipped
+ * once per key.
+ */
+export const EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN = [
+  "(^|[^0-9])[0-9]{16,}(\\.[0-9]+)?([^0-9]|$)",
+  ...Array.from({ length: 15 }, (_, i) => `(^|[^0-9])[0-9]{${i + 1}}\\.[0-9]{${15 - i},}([^0-9]|$)`),
+].join("|");
+
+interface EpisodeNumberExactSqlCondition {
+  condition: any;
+  /** True when EVERY endpoint produced an exact-digit pattern (no digit-free arm). */
+  numeric: boolean;
+}
+
+/**
+ * The exact-digit arm of the bounded-inventory candidate condition for one
+ * key, WITHOUT the rounding net: the exact-digit patterns of every
+ * endpoint (a range key "51 - 100" requires BOTH tokens, ANDed - their
+ * relative order cannot be expressed in SQL and is refined in JS).
+ * Returns null when no safe bounded superset exists for the key
+ * (exponential-form canonical values) - callers fall back to the
+ * novel-wide read, which keeps conflict detection complete.
+ * (IPE-R4R3R6: split out of episodeNumberKeySqlCondition so the rounding
+ * net can be hoisted to once per keyset query.)
+ */
+function episodeNumberExactSqlCondition(key: string): EpisodeNumberExactSqlCondition | null {
+  const parts = key.includes(" - ") ? key.split(" - ") : [key];
+  const exactConditions: any[] = [];
+  let allNumeric = true;
+  for (const part of parts) {
+    const token = episodeNumberTokenSqlPattern(part);
+    if (token) {
+      exactConditions.push(sql`${episodes.episodeNumber} REGEXP ${token}`);
+    } else if (/\d/.test(part)) {
+      return null; // exponential-form numeric value - unboundable safely
+    } else {
+      // Digit-free key or endpoint ("" or a bare label): candidates are
+      // exactly the digit-free episodeNumber strings; rounding cannot
+      // produce digits from nowhere, so no net arm is needed.
+      allNumeric = false;
+      exactConditions.push(sql`${episodes.episodeNumber} NOT REGEXP ${"[0-9]"}`);
+    }
+  }
+  const condition = exactConditions.length === 1 ? exactConditions[0] : and(...exactConditions);
+  return { condition, numeric: allNumeric };
+}
+
+/**
+ * Single-key candidate condition: exact-digit arm OR the rounding net for
+ * 16+-digit tokens (the net appears once by definition here). Returns null
+ * when no safe bounded superset exists for the key (exponential-form
+ * canonical values) - callers fall back to the novel-wide read, which
+ * keeps conflict detection complete.
+ */
+function episodeNumberKeySqlCondition(key: string): any | null {
+  const exact = episodeNumberExactSqlCondition(key);
+  if (!exact) return null;
+  if (!exact.numeric) return exact.condition;
+  return or(exact.condition, sql`${episodes.episodeNumber} REGEXP ${EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN}`)!;
+}
+
+/**
+ * Keyset candidate condition for ensureEpisodeClassificationKeys with the
+ * rounding net HOISTED (IPE-R4R3R6): the per-key composition
+ * (E1 OR NET) OR ... OR (EN OR NET) is logically identical to
+ * NET OR E1 OR ... OR EN - pure OR associativity/commutativity, same
+ * pattern on the same column, so the result set (and therefore conflict
+ * detection) cannot change - but the 653-char net previously shipped as N
+ * bound parameters for N keys. Hoisted: at most ONE copy per query.
+ * The net is added iff at least one key is fully numeric; a pure
+ * digit-free keyset keeps its digit-free-only arms (no net), and ANY key
+ * without a safe superset (exponential-form canonical value) still falls
+ * back to the novel-wide read via fallbackToNovelWide. Exported for the
+ * shape/equivalence regression tests.
+ */
+export function episodeNumberKeysetSqlCondition(
+  keys: Iterable<string>
+): { condition: any; fallbackToNovelWide: boolean } {
+  const conditions: any[] = [];
+  let anyNumeric = false;
+  for (const key of Array.from(keys)) {
+    const exact = episodeNumberExactSqlCondition(key);
+    if (!exact) {
+      return { condition: null, fallbackToNovelWide: true };
+    }
+    conditions.push(exact.condition);
+    anyNumeric = anyNumeric || exact.numeric;
+  }
+  const arms = anyNumeric
+    ? [sql`${episodes.episodeNumber} REGEXP ${EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN}`, ...conditions]
+    : conditions;
+  return { condition: or(...arms)!, fallbackToNovelWide: false };
+}
+
+/**
+ * Character class EQUAL-OR-WIDER than ECMAScript \s, expressible in both
+ * JS RegExp and MySQL 8 ICU REGEXP. The legacy-range predicate below must
+ * never REJECT a string resolveSaleMode() accepts (that would silently
+ * hide an overlapping legacy package), so it enumerates the exact JS \s
+ * set (ECMA-262 WhiteSpace + LineTerminators) instead of ICU's
+ * [[:space:]]: the two DIVERGE on U+FEFF (BOM/ZWNBSP), which JS \s matches
+ * but Unicode White_Space does not - a "\uFEFF1 - 5" episodeNumber is a
+ * legacy package to resolveSaleMode() and was invisible to [[:space:]].
+ * U+0085 is added as a margin (White_Space=yes for ICU, no for JS \s) -
+ * the extra match is harmless over-fetch refined in JS. Other Unicode
+ * spaces (NBSP, U+202F, U+3000, U+2000-200A, line/paragraph separators)
+ * agree in both engines and are listed explicitly anyway.
+ */
+const LEGACY_RANGE_SQL_WHITESPACE =
+  "[\\t\\n\\v\\f\\r \\u00a0\\u0085\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\uFEFF]";
+
+/**
+ * The legacy fallback arm of resolveSaleMode() (its
+ * RANGE_EPISODE_NUMBER_PATTERN, spaced decimal endpoints) as SQL, for rows
+ * where the saleMode column is somehow missing (episodes.saleMode is NOT
+ * NULL enum('chapter','package'), so this arm is defensive - but it must
+ * stay a TRUE superset of the JS regex while it exists). Exported for the
+ * superset property tests.
+ */
+export const SALE_MODE_RANGE_SQL_PATTERN = `^${LEGACY_RANGE_SQL_WHITESPACE}*[0-9]+([.][0-9]+)?${LEGACY_RANGE_SQL_WHITESPACE}*-${LEGACY_RANGE_SQL_WHITESPACE}*[0-9]+([.][0-9]+)?${LEGACY_RANGE_SQL_WHITESPACE}*$`;
+
+/**
+ * Bounded novel inventory for classification. Two targeted reads replace
+ * the old novel-wide fetch:
+ *  1. every PACKAGE-mode row of the novel - inherently few (bundles, not
+ *     chapters) and complete by necessity: OVERLAPPING_PACKAGE detection
+ *     must see all of them, and
+ *  2. only rows whose episodeNumber could normalize to one of
+ *     `neededNumbers` (the split plan's chapter numbers), so duplicate or
+ *     conflicting chapters are found wherever they sit in the novel -
+ *     never via a positional LIMIT that could miss one.
+ * Neither read loads content or price. Scans pass [] here and complete
+ * keys lazily per plan via ensureEpisodeClassificationKeys on the shared
+ * index; Preview/Apply call it with the plan's own numbers.
+ */
+async function loadEpisodeClassificationIndex(
+  handle: DbHandle,
+  novelId: number,
+  neededNumbers: Iterable<number>
+): Promise<EpisodeClassificationIndex> {
+  const index: EpisodeClassificationIndex = {
+    novelId,
+    byNumber: new Map(),
+    rangePackages: [],
+    loadedKeys: new Set(),
+  };
+  // Explicit package saleMode is authoritative; the NULL arm carries the
+  // legacy fileUrl / range-number fallbacks exactly like resolveSaleMode,
+  // and "chapter" rows are excluded even with a legacy fileUrl.
+  const packageRows: EpisodeClassificationMeta[] = await handle
     .select({
       id: episodes.id,
       episodeNumber: episodes.episodeNumber,
@@ -238,19 +433,97 @@ async function loadEpisodeClassificationIndex(handle: DbHandle, novelId: number)
       fileUrl: episodes.fileUrl,
     })
     .from(episodes)
-    .where(eq(episodes.novelId, novelId));
-  const byNumber = new Map<string, EpisodeClassificationMeta[]>();
-  const rangePackages: EpisodeClassificationIndex["rangePackages"] = [];
-  for (const row of catalog) {
-    const key = normalizeEpisodeRange(row.episodeNumber);
-    const bucket = byNumber.get(key) ?? [];
-    bucket.push(row);
-    byNumber.set(key, bucket);
+    .where(
+      and(
+        eq(episodes.novelId, novelId),
+        or(
+          eq(episodes.saleMode, "package"),
+          and(
+            isNull(episodes.saleMode),
+            or(
+              and(isNotNull(episodes.fileUrl), ne(episodes.fileUrl, "")),
+              sql`${episodes.episodeNumber} REGEXP ${SALE_MODE_RANGE_SQL_PATTERN}`
+            )
+          )
+        )
+      )!
+    );
+  for (const row of packageRows) {
     if (resolveSaleMode(row) !== "package") continue;
     const range = parseSplitRange(row.episodeNumber);
-    if (range) rangePackages.push({ id: row.id, episodeNumber: row.episodeNumber, range });
+    if (range) index.rangePackages.push({ id: row.id, episodeNumber: row.episodeNumber, range });
   }
-  return { byNumber, rangePackages };
+  await ensureEpisodeClassificationKeys(handle, index, neededNumbers);
+  return index;
+}
+
+/** Merge fetched candidate rows into the index, completing exactly `keys`. */
+function absorbClassificationRows(
+  index: EpisodeClassificationIndex,
+  rows: EpisodeClassificationMeta[],
+  keys: Set<string>
+): void {
+  for (const row of rows) {
+    const key = normalizeEpisodeRange(row.episodeNumber);
+    if (!keys.has(key)) continue; // superset over-fetch for another key
+    const bucket = index.byNumber.get(key) ?? [];
+    if (!bucket.some((e) => e.id === row.id)) bucket.push(row);
+    index.byNumber.set(key, bucket);
+  }
+  keys.forEach((key) => index.loadedKeys.add(key));
+}
+
+/**
+ * Complete the index's byNumber buckets for the given plan chapter
+ * numbers, fetching only keys not already complete. Each completion is one
+ * bounded query whose predicate is a safe superset refined to exact keys
+ * in JS - a duplicate/conflict at the very end of a 10k-chapter novel is
+ * detected exactly like one on row 1, without ever paging through the
+ * inventory. Re-enters nothing: a scan page sharing one index per novel
+ * pays only for NEW chapter numbers.
+ */
+async function ensureEpisodeClassificationKeys(
+  handle: DbHandle,
+  index: EpisodeClassificationIndex,
+  numbers: Iterable<number>
+): Promise<void> {
+  const keys = new Set<string>();
+  for (const number of Array.from(numbers)) {
+    const key = String(number);
+    if (!index.loadedKeys.has(key)) keys.add(key);
+  }
+  if (keys.size === 0) return;
+  // IPE-R4R3R6: keyset-level composition with the rounding net hoisted to
+  // at most ONE copy (see episodeNumberKeysetSqlCondition - logically
+  // identical result set to the previous per-key composition).
+  const keyset = episodeNumberKeysetSqlCondition(keys);
+  if (keyset.fallbackToNovelWide) {
+    // No safe SQL superset for this key set (exponential-form canonical
+    // values such as "1e+21" or "1e-7" from absurd heading digits): fall
+    // back to the novel-wide read for exactly this completion -
+    // correctness over the bounded fast path, never a missed conflict.
+    const rows: EpisodeClassificationMeta[] = await handle
+      .select({
+        id: episodes.id,
+        episodeNumber: episodes.episodeNumber,
+        saleMode: episodes.saleMode,
+        fileUrl: episodes.fileUrl,
+      })
+      .from(episodes)
+      .where(eq(episodes.novelId, index.novelId));
+    absorbClassificationRows(index, rows, keys);
+    return;
+  }
+  const rows: EpisodeClassificationMeta[] = await handle
+    .select({
+      id: episodes.id,
+      episodeNumber: episodes.episodeNumber,
+      saleMode: episodes.saleMode,
+      fileUrl: episodes.fileUrl,
+    })
+    .from(episodes)
+    .where(and(eq(episodes.novelId, index.novelId), keyset.condition));
+  absorbClassificationRows(index, rows, keys);
 }
 
 async function classifySplit(
@@ -261,7 +534,14 @@ async function classifySplit(
   suppliedIndex?: EpisodeClassificationIndex
 ) {
   const issues: PreviewIssue[] = plan.issues.map((i) => ({ ...i }));
-  const index = suppliedIndex ?? await loadEpisodeClassificationIndex(handle, pkg.novelId);
+  let index = suppliedIndex;
+  if (index) {
+    // Complete only the buckets this plan needs; a shared scan index skips
+    // numbers an earlier package in the same request already loaded.
+    await ensureEpisodeClassificationKeys(handle, index, plan.chapters.map((c) => c.chapterNumber));
+  } else {
+    index = await loadEpisodeClassificationIndex(handle, pkg.novelId, plan.chapters.map((c) => c.chapterNumber));
+  }
 
   // Another package covering any of these chapter numbers.
   if (plan.range) {
@@ -534,11 +814,15 @@ export async function previewPackageSplitForContent(input: {
   publish?: boolean;
 }): Promise<SplitPreview> {
   const handle = await requireHandle();
+  const target = normalizeEpisodeRange(input.episodeNumber);
+  // Bounded to rows whose episodeNumber could normalize to the target key
+  // (same superset/refine contract as the classification index); falls
+  // back to the novel-wide scan only for keys with no safe SQL superset.
+  const condition = episodeNumberKeySqlCondition(target);
   const novelEpisodes: Array<{ id: number; episodeNumber: string }> = await handle
     .select({ id: episodes.id, episodeNumber: episodes.episodeNumber })
     .from(episodes)
-    .where(eq(episodes.novelId, input.novelId));
-  const target = normalizeEpisodeRange(input.episodeNumber);
+    .where(condition ? and(eq(episodes.novelId, input.novelId), condition) : eq(episodes.novelId, input.novelId));
   const existing = novelEpisodes.find((e) => normalizeEpisodeRange(e.episodeNumber) === target);
   const pkg = {
     id: existing?.id ?? -1,
@@ -778,7 +1062,9 @@ export async function scanLegacyPackagesPage(input: {
   let cursor = input.cursor ?? 0;
   let inspected = 0;
   let exhausted = false;
-  // Per-request cache avoids repeatedly reading the same novel's metadata.
+  // Per-request cache: package rows per novel (complete, for overlap
+  // detection) plus lazily completed chapter-number buckets - see
+  // ensureEpisodeClassificationKeys.
   const indexByNovel = new Map<number, EpisodeClassificationIndex>();
 
   while (out.length < limit && inspected < MIGRATION_SCAN_MAX_INSPECTED) {
@@ -818,7 +1104,9 @@ export async function scanLegacyPackagesPage(input: {
       const pkg = await loadPackage(handle, candidate.id, false);
       let index = indexByNovel.get(candidate.novelId);
       if (!index) {
-        index = await loadEpisodeClassificationIndex(handle, candidate.novelId);
+        // Package rows only; each package's chapter-number buckets load on
+        // demand inside classifySplit, bounded to that plan's numbers.
+        index = await loadEpisodeClassificationIndex(handle, candidate.novelId, []);
         indexByNovel.set(candidate.novelId, index);
       }
       const row = await inspectLegacyPackage(handle, pkg, index);

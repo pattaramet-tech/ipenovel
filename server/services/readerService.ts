@@ -19,7 +19,10 @@ export interface ReaderEpisodeData {
 
 export type EpisodeSaleMode = "chapter" | "package";
 
-const RANGE_EPISODE_NUMBER_PATTERN = /^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*$/;
+// Exported (IPE-R4R3R3) as the JS source of truth for the bounded-inventory
+// superset tests: the SQL legacy-range predicate in packageChapterSplit
+// must accept every string this regex accepts (BOM-padded ranges included).
+export const RANGE_EPISODE_NUMBER_PATTERN = /^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*$/;
 
 /**
  * Normalize an episode number string into a canonical range identity for
