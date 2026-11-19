@@ -87,6 +87,12 @@ jobs:
           pnpm exec vitest run -c vitest.integration.config.ts
           server/services/packageChapterSplit.boundedInventory.integration.test.ts
 
+      - name: Package Split migration lifecycle integration regression
+        run: >-
+          pnpm exec vitest run -c vitest.integration.config.ts
+          server/services/packageChapterSplitMigration.integration.test.ts
+          server/services/packageUpgradeService.integration.test.ts
+
       - name: Chapter Editor edit to QC to Confirm Stage release gate
         run: >-
           pnpm exec vitest run -c vitest.integration.config.ts
