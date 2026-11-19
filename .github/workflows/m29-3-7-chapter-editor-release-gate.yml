@@ -71,10 +71,21 @@ jobs:
           client/src/pages/workspaceChapterEditor.test.ts
           server/migration-deployment-safety.test.ts
 
+      - name: Package Split bounded inventory unit regression
+        run: >-
+          pnpm exec vitest run -c vitest.config.ts
+          server/services/packageChapterSplit.boundedIndex.test.ts
+          server/services/packageChapterSplit.domain.test.ts
+
       - name: Full Workspace integration regression
         run: >-
           pnpm exec vitest run -c vitest.integration.config.ts
           server/workspace
+
+      - name: Package Split bounded inventory integration qualification
+        run: >-
+          pnpm exec vitest run -c vitest.integration.config.ts
+          server/services/packageChapterSplit.boundedInventory.integration.test.ts
 
       - name: Chapter Editor edit to QC to Confirm Stage release gate
         run: >-
