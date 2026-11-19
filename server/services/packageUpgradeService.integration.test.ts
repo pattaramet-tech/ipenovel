@@ -1694,42 +1694,118 @@ describe("P3-R6 final price confirmation (integration)", () => {
     await seedWalletBalance(world.userId, "500.00");
     const quote = await quotePackageUpgrade(world.userId, world.packageEpisodeId);
 
-    const raw = await mysql.createConnection(process.env.TEST_DATABASE_URL as string);
-    try {
-      const execPromise = executePackageUpgrade(world.userId, {
-        upgradeId: quote.upgradeId,
-        method: "slip",
-        idempotencyKey: "p3r8-hold-0001",
-        expectedFinalTotal: quote.payableAmount,
-      });
-
-      // Poll performance_schema.data_locks: the in-flight transaction must
-      // hold a RECORD lock on packageUpgradeExecLocks (the R8-1 mutex).
-      let sawHeld = false;
-      const deadline = Date.now() + 8000;
-      while (Date.now() < deadline) {
-        if ((await heldExecLockRowCount(raw, world.userId)) > 0) {
-          sawHeld = true;
-          break;
+    const dbModule = await import("../db");
+    const realGetDb = dbModule.getDb;
+    let lockArrived = false;
+    let releaseBarrier = (): void => {};
+    let signalArrival = (): void => {};
+    const barrier = new Promise<void>((resolve) => {
+      let released = false;
+      releaseBarrier = () => {
+        if (!released) {
+          released = true;
+          resolve();
         }
-        const settled = await Promise.race([
-          execPromise.then(
-            () => "done",
-            () => "done"
-          ),
-          new Promise((r) => setTimeout(() => r("waiting"), 25)),
-        ]);
-        if (settled === "done") break;
-      }
-      expect(sawHeld).toBe(true);
+      };
+    });
+    const arrival = new Promise<void>((resolve) => { signalArrival = resolve; });
+    const isMutexSelect = (query: unknown): boolean => {
+      const chunks = (query as { queryChunks?: unknown[] })?.queryChunks;
+      if (!Array.isArray(chunks)) return false;
+      const text = chunks.map((c) => {
+        if (typeof c === "string") return c;
+        const value = (c as { value?: unknown })?.value;
+        return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string").join("") : "";
+      }).join(" ");
+      return text.includes("packageUpgradeExecLocks") && text.includes("FOR UPDATE NOWAIT");
+    };
+    const spy = vi.spyOn(dbModule, "getDb").mockImplementation(async () => {
+      const real = await realGetDb();
+      if (!real) return real;
+      return new Proxy(real as Record<PropertyKey, unknown>, {
+        get(target, prop) {
+          if (prop === "transaction") {
+            return async (fn: (tx: unknown) => unknown) =>
+              (target["transaction"] as (fn2: (tx: unknown) => unknown) => Promise<unknown>).call(target, (tx) =>
+                fn(new Proxy(tx as Record<PropertyKey, unknown>, {
+                  get(txTarget, txProp) {
+                    if (txProp === "execute") {
+                      const execute = (txTarget["execute"] as (q: unknown) => Promise<unknown>).bind(txTarget);
+                      return async (query: unknown) => {
+                        if (!isMutexSelect(query)) return execute(query);
+                        const result: any = await execute(query);
+                        const rows = Array.isArray(result?.[0]) ? result[0] : result;
+                        // The barrier can open ONLY after the actual SELECT
+                        // returned this fixture user's row with FOR UPDATE.
+                        if (!Array.isArray(rows) || !rows.some((r) => Number(r?.userId) === world.userId)) {
+                          throw new Error("R8-2b: acquired mutex row does not belong to test user");
+                        }
+                        lockArrived = true;
+                        signalArrival();
+                        await barrier; // Hold this real transaction's row lock.
+                        return result;
+                      };
+                    }
+                    const value = txTarget[txProp];
+                    return typeof value === "function"
+                      ? (value as (...args: unknown[]) => unknown).bind(txTarget)
+                      : value;
+                  },
+                }))
+              );
+          }
+          const value = target[prop];
+          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+    });
 
+    const execPromise = executePackageUpgrade(world.userId, {
+      upgradeId: quote.upgradeId,
+      method: "slip",
+      idempotencyKey: "p3r8-hold-0001",
+      expectedFinalTotal: quote.payableAmount,
+    });
+    void execPromise.catch(() => {});
+    let raw: mysql.Connection | null = null;
+    try {
+      raw = await mysql.createConnection(process.env.TEST_DATABASE_URL as string);
+      const reached = await Promise.race([
+        arrival.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8000)),
+      ]);
+      expect(reached && lockArrived).toBe(true);
+
+      // Probe only THIS user's mutex from a second connection. An unrelated
+      // row lock must not count as success (unlike the old global count).
+      const isHeld = await raw.execute(
+        "SELECT userId FROM packageUpgradeExecLocks WHERE userId = ? FOR UPDATE NOWAIT",
+        [world.userId]
+      ).then(
+        () => false,
+        (error: unknown) => {
+          if (isLockRefusedError(error)) return true;
+          throw error;
+        }
+      );
+      expect(isHeld).toBe(true);
+
+      releaseBarrier();
       const result = await execPromise;
       expect(result.orderStatus).toBe("pending");
-
-      // Commit released the row lock itself - nothing lingers anywhere.
-      expect(await heldExecLockRowCount(raw, world.userId)).toBe(0);
+      // Commit must free the exact same row, now acquired without NOWAIT error.
+      const [rows]: any = await raw.execute(
+        "SELECT userId FROM packageUpgradeExecLocks WHERE userId = ? FOR UPDATE NOWAIT",
+        [world.userId]
+      );
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0].userId)).toBe(world.userId);
     } finally {
-      await raw.end();
+      // Timeout, failed assertion, and connection errors all unpark and drain.
+      releaseBarrier();
+      spy.mockRestore();
+      await execPromise.catch(() => {});
+      if (raw) await raw.end().catch(() => {});
     }
   });
 

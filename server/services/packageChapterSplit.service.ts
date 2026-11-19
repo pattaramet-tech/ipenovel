@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   adminGiftEntitlements,
@@ -134,7 +134,7 @@ export interface SplitApplyResult {
   planHash: string;
 }
 
-export type ScanStatus = "no_content" | "needs_attention" | "conflict" | "splittable" | "already_split";
+export type ScanStatus = "no_content" | "source_required" | "needs_attention" | "conflict" | "splittable" | "already_split";
 
 export interface ScanRow {
   packageEpisodeId: number;
@@ -213,29 +213,340 @@ interface ChapterClassification {
  * preview/apply also require an existing chapter's stored price/free flag to
  * match, otherwise it is a conflict (never repriced automatically).
  */
-async function classifySplit(handle: DbHandle, pkg: any, plan: SplitPlan, prices?: Map<number, string>) {
-  const issues: PreviewIssue[] = plan.issues.map((i) => ({ ...i }));
-  const novelEpisodes: any[] = await handle
+type EpisodeClassificationMeta = {
+  id: number;
+  episodeNumber: string;
+  saleMode: string | null;
+  fileUrl: string | null;
+};
+
+type EpisodeClassificationIndex = {
+  novelId: number;
+  /**
+   * Existing episodes grouped by normalizeEpisodeRange key. COMPLETE for
+   * every key in `loadedKeys`; may also hold partial buckets over-fetched
+   * for other keys (harmless - completeness is tracked per key and any
+   * later use of such a key re-queries and merges by id).
+   */
+  byNumber: Map<string, EpisodeClassificationMeta[]>;
+  /** EVERY package-mode episode of the novel with a parseable range. */
+  rangePackages: Array<{ id: number; episodeNumber: string; range: { start: number; end: number } }>;
+  /** Episode-number keys whose byNumber bucket is complete for the novel. */
+  loadedKeys: Set<string>;
+};
+
+/**
+ * SQL REGEXP matching every raw episodeNumber string whose numeric token
+ * has FEWER THAN 16 significant digits and could canonicalize to the
+ * canonical numeric token `token` ("5", "5.5"): the same digits as a
+ * standalone numeric token, optionally zero-padded, optionally with an
+ * all-zero fraction ("05", "5.0") - exactly what normalizeEpisodeRange's
+ * `\d+(?:\.\d+)?` tokenizer plus Number() canonicalization can turn into
+ * the token. Deliberately a SUPERSET ("15" is rejected; "1.5" is fetched
+ * and refined away in JS) because SQL cannot run the real normalizer:
+ * false positives are harmless, a false negative would silently miss a
+ * conflict. Plain ASCII digit classes and simple groups only, so the same
+ * string is a valid JS RegExp (unit-tested) and a valid MySQL 8 REGEXP.
+ * Exhaustiveness bound: IEEE-754 doubles round-trip up to 15 significant
+ * digits, so tokens shorter than that canonicalize to their own digits -
+ * tokens with 16+ digits can ROUND to a different digit string and are
+ * covered by EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN instead.
+ * Returns null for canonical exponential forms ("1e+21", "1e-7") no raw
+ * digit string can supersede safely - callers fall back to the novel-wide
+ * read rather than risk a missed conflict.
+ */
+export function episodeNumberTokenSqlPattern(token: string): string | null {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(token);
+  if (!match) return null;
+  const [, int, frac] = match;
+  const head = `(^|[^0-9])0*${int}`;
+  return frac === undefined ? `${head}(\\.0+)?([^0-9]|$)` : `${head}\\.${frac}0*([^0-9]|$)`;
+}
+
+/**
+ * The rounding net (IPE-R4R3R2): matches every numeric token whose
+ * integer or fractional digit runs TOGETHER total 16+ digits, regardless
+ * of the key. IEEE-754 doubles round-trip only up to 15 significant
+ * digits, so a longer token can canonicalize to a DIFFERENT digit string
+ * than its own ("0.99999999999999999" -> Number 1 -> key "1";
+ * "0.50000000000000001" -> "0.5"; "123456789012345.6" -> "123456789012345.59")
+ * - no exact-digit pattern can enumerate those forms, so every such row of
+ * the novel is fetched unconditionally and refined in JS. The enumeration
+ * covers each integer-part length 1..15 with the complementary minimum
+ * fraction length, plus the long-integer-part arm; runs are >= significant
+ * digits, so run-total >= 16 implies possible rounding. Key-independent:
+ * hoisted to at most ONE copy per keyset query via
+ * episodeNumberKeysetSqlCondition (IPE-R4R3R6) - previously it shipped
+ * once per key.
+ */
+export const EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN = [
+  "(^|[^0-9])[0-9]{16,}(\\.[0-9]+)?([^0-9]|$)",
+  ...Array.from({ length: 15 }, (_, i) => `(^|[^0-9])[0-9]{${i + 1}}\\.[0-9]{${15 - i},}([^0-9]|$)`),
+].join("|");
+
+interface EpisodeNumberExactSqlCondition {
+  condition: any;
+  /** True when EVERY endpoint produced an exact-digit pattern (no digit-free arm). */
+  numeric: boolean;
+}
+
+/**
+ * The exact-digit arm of the bounded-inventory candidate condition for one
+ * key, WITHOUT the rounding net: the exact-digit patterns of every
+ * endpoint (a range key "51 - 100" requires BOTH tokens, ANDed - their
+ * relative order cannot be expressed in SQL and is refined in JS).
+ * Returns null when no safe bounded superset exists for the key
+ * (exponential-form canonical values) - callers fall back to the
+ * novel-wide read, which keeps conflict detection complete.
+ * (IPE-R4R3R6: split out of episodeNumberKeySqlCondition so the rounding
+ * net can be hoisted to once per keyset query.)
+ */
+function episodeNumberExactSqlCondition(key: string): EpisodeNumberExactSqlCondition | null {
+  const parts = key.includes(" - ") ? key.split(" - ") : [key];
+  const exactConditions: any[] = [];
+  let allNumeric = true;
+  for (const part of parts) {
+    const token = episodeNumberTokenSqlPattern(part);
+    if (token) {
+      exactConditions.push(sql`${episodes.episodeNumber} REGEXP ${token}`);
+    } else if (/\d/.test(part)) {
+      return null; // exponential-form numeric value - unboundable safely
+    } else {
+      // Digit-free key or endpoint ("" or a bare label): candidates are
+      // exactly the digit-free episodeNumber strings; rounding cannot
+      // produce digits from nowhere, so no net arm is needed.
+      allNumeric = false;
+      exactConditions.push(sql`${episodes.episodeNumber} NOT REGEXP ${"[0-9]"}`);
+    }
+  }
+  const condition = exactConditions.length === 1 ? exactConditions[0] : and(...exactConditions);
+  return { condition, numeric: allNumeric };
+}
+
+/**
+ * Single-key candidate condition: exact-digit arm OR the rounding net for
+ * 16+-digit tokens (the net appears once by definition here). Returns null
+ * when no safe bounded superset exists for the key (exponential-form
+ * canonical values) - callers fall back to the novel-wide read, which
+ * keeps conflict detection complete.
+ */
+function episodeNumberKeySqlCondition(key: string): any | null {
+  const exact = episodeNumberExactSqlCondition(key);
+  if (!exact) return null;
+  if (!exact.numeric) return exact.condition;
+  return or(exact.condition, sql`${episodes.episodeNumber} REGEXP ${EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN}`)!;
+}
+
+/**
+ * Keyset candidate condition for ensureEpisodeClassificationKeys with the
+ * rounding net HOISTED (IPE-R4R3R6): the per-key composition
+ * (E1 OR NET) OR ... OR (EN OR NET) is logically identical to
+ * NET OR E1 OR ... OR EN - pure OR associativity/commutativity, same
+ * pattern on the same column, so the result set (and therefore conflict
+ * detection) cannot change - but the 653-char net previously shipped as N
+ * bound parameters for N keys. Hoisted: at most ONE copy per query.
+ * The net is added iff at least one key is fully numeric; a pure
+ * digit-free keyset keeps its digit-free-only arms (no net), and ANY key
+ * without a safe superset (exponential-form canonical value) still falls
+ * back to the novel-wide read via fallbackToNovelWide. Exported for the
+ * shape/equivalence regression tests.
+ */
+export function episodeNumberKeysetSqlCondition(
+  keys: Iterable<string>
+): { condition: any; fallbackToNovelWide: boolean } {
+  const conditions: any[] = [];
+  let anyNumeric = false;
+  for (const key of Array.from(keys)) {
+    const exact = episodeNumberExactSqlCondition(key);
+    if (!exact) {
+      return { condition: null, fallbackToNovelWide: true };
+    }
+    conditions.push(exact.condition);
+    anyNumeric = anyNumeric || exact.numeric;
+  }
+  const arms = anyNumeric
+    ? [sql`${episodes.episodeNumber} REGEXP ${EPISODE_NUMBER_LONG_TOKEN_SQL_PATTERN}`, ...conditions]
+    : conditions;
+  return { condition: or(...arms)!, fallbackToNovelWide: false };
+}
+
+/**
+ * Character class EQUAL-OR-WIDER than ECMAScript \s, expressible in both
+ * JS RegExp and MySQL 8 ICU REGEXP. The legacy-range predicate below must
+ * never REJECT a string resolveSaleMode() accepts (that would silently
+ * hide an overlapping legacy package), so it enumerates the exact JS \s
+ * set (ECMA-262 WhiteSpace + LineTerminators) instead of ICU's
+ * [[:space:]]: the two DIVERGE on U+FEFF (BOM/ZWNBSP), which JS \s matches
+ * but Unicode White_Space does not - a "\uFEFF1 - 5" episodeNumber is a
+ * legacy package to resolveSaleMode() and was invisible to [[:space:]].
+ * U+0085 is added as a margin (White_Space=yes for ICU, no for JS \s) -
+ * the extra match is harmless over-fetch refined in JS. Other Unicode
+ * spaces (NBSP, U+202F, U+3000, U+2000-200A, line/paragraph separators)
+ * agree in both engines and are listed explicitly anyway.
+ */
+const LEGACY_RANGE_SQL_WHITESPACE =
+  "[\\t\\n\\v\\f\\r \\u00a0\\u0085\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\uFEFF]";
+
+/**
+ * The legacy fallback arm of resolveSaleMode() (its
+ * RANGE_EPISODE_NUMBER_PATTERN, spaced decimal endpoints) as SQL, for rows
+ * where the saleMode column is somehow missing (episodes.saleMode is NOT
+ * NULL enum('chapter','package'), so this arm is defensive - but it must
+ * stay a TRUE superset of the JS regex while it exists). Exported for the
+ * superset property tests.
+ */
+export const SALE_MODE_RANGE_SQL_PATTERN = `^${LEGACY_RANGE_SQL_WHITESPACE}*[0-9]+([.][0-9]+)?${LEGACY_RANGE_SQL_WHITESPACE}*-${LEGACY_RANGE_SQL_WHITESPACE}*[0-9]+([.][0-9]+)?${LEGACY_RANGE_SQL_WHITESPACE}*$`;
+
+/**
+ * Bounded novel inventory for classification. Two targeted reads replace
+ * the old novel-wide fetch:
+ *  1. every PACKAGE-mode row of the novel - inherently few (bundles, not
+ *     chapters) and complete by necessity: OVERLAPPING_PACKAGE detection
+ *     must see all of them, and
+ *  2. only rows whose episodeNumber could normalize to one of
+ *     `neededNumbers` (the split plan's chapter numbers), so duplicate or
+ *     conflicting chapters are found wherever they sit in the novel -
+ *     never via a positional LIMIT that could miss one.
+ * Neither read loads content or price. Scans pass [] here and complete
+ * keys lazily per plan via ensureEpisodeClassificationKeys on the shared
+ * index; Preview/Apply call it with the plan's own numbers.
+ */
+async function loadEpisodeClassificationIndex(
+  handle: DbHandle,
+  novelId: number,
+  neededNumbers: Iterable<number>
+): Promise<EpisodeClassificationIndex> {
+  const index: EpisodeClassificationIndex = {
+    novelId,
+    byNumber: new Map(),
+    rangePackages: [],
+    loadedKeys: new Set(),
+  };
+  // Explicit package saleMode is authoritative; the NULL arm carries the
+  // legacy fileUrl / range-number fallbacks exactly like resolveSaleMode,
+  // and "chapter" rows are excluded even with a legacy fileUrl.
+  const packageRows: EpisodeClassificationMeta[] = await handle
     .select({
       id: episodes.id,
       episodeNumber: episodes.episodeNumber,
       saleMode: episodes.saleMode,
       fileUrl: episodes.fileUrl,
-      content: episodes.content,
-      price: episodes.price,
-      isFree: episodes.isFree,
-      isPublished: episodes.isPublished,
     })
     .from(episodes)
-    .where(eq(episodes.novelId, pkg.novelId));
-  const others = novelEpisodes.filter((e) => e.id !== pkg.id);
+    .where(
+      and(
+        eq(episodes.novelId, novelId),
+        or(
+          eq(episodes.saleMode, "package"),
+          and(
+            isNull(episodes.saleMode),
+            or(
+              and(isNotNull(episodes.fileUrl), ne(episodes.fileUrl, "")),
+              sql`${episodes.episodeNumber} REGEXP ${SALE_MODE_RANGE_SQL_PATTERN}`
+            )
+          )
+        )
+      )!
+    );
+  for (const row of packageRows) {
+    if (resolveSaleMode(row) !== "package") continue;
+    const range = parseSplitRange(row.episodeNumber);
+    if (range) index.rangePackages.push({ id: row.id, episodeNumber: row.episodeNumber, range });
+  }
+  await ensureEpisodeClassificationKeys(handle, index, neededNumbers);
+  return index;
+}
+
+/** Merge fetched candidate rows into the index, completing exactly `keys`. */
+function absorbClassificationRows(
+  index: EpisodeClassificationIndex,
+  rows: EpisodeClassificationMeta[],
+  keys: Set<string>
+): void {
+  for (const row of rows) {
+    const key = normalizeEpisodeRange(row.episodeNumber);
+    if (!keys.has(key)) continue; // superset over-fetch for another key
+    const bucket = index.byNumber.get(key) ?? [];
+    if (!bucket.some((e) => e.id === row.id)) bucket.push(row);
+    index.byNumber.set(key, bucket);
+  }
+  keys.forEach((key) => index.loadedKeys.add(key));
+}
+
+/**
+ * Complete the index's byNumber buckets for the given plan chapter
+ * numbers, fetching only keys not already complete. Each completion is one
+ * bounded query whose predicate is a safe superset refined to exact keys
+ * in JS - a duplicate/conflict at the very end of a 10k-chapter novel is
+ * detected exactly like one on row 1, without ever paging through the
+ * inventory. Re-enters nothing: a scan page sharing one index per novel
+ * pays only for NEW chapter numbers.
+ */
+async function ensureEpisodeClassificationKeys(
+  handle: DbHandle,
+  index: EpisodeClassificationIndex,
+  numbers: Iterable<number>
+): Promise<void> {
+  const keys = new Set<string>();
+  for (const number of Array.from(numbers)) {
+    const key = String(number);
+    if (!index.loadedKeys.has(key)) keys.add(key);
+  }
+  if (keys.size === 0) return;
+  // IPE-R4R3R6: keyset-level composition with the rounding net hoisted to
+  // at most ONE copy (see episodeNumberKeysetSqlCondition - logically
+  // identical result set to the previous per-key composition).
+  const keyset = episodeNumberKeysetSqlCondition(keys);
+  if (keyset.fallbackToNovelWide) {
+    // No safe SQL superset for this key set (exponential-form canonical
+    // values such as "1e+21" or "1e-7" from absurd heading digits): fall
+    // back to the novel-wide read for exactly this completion -
+    // correctness over the bounded fast path, never a missed conflict.
+    const rows: EpisodeClassificationMeta[] = await handle
+      .select({
+        id: episodes.id,
+        episodeNumber: episodes.episodeNumber,
+        saleMode: episodes.saleMode,
+        fileUrl: episodes.fileUrl,
+      })
+      .from(episodes)
+      .where(eq(episodes.novelId, index.novelId));
+    absorbClassificationRows(index, rows, keys);
+    return;
+  }
+  const rows: EpisodeClassificationMeta[] = await handle
+    .select({
+      id: episodes.id,
+      episodeNumber: episodes.episodeNumber,
+      saleMode: episodes.saleMode,
+      fileUrl: episodes.fileUrl,
+    })
+    .from(episodes)
+    .where(and(eq(episodes.novelId, index.novelId), keyset.condition));
+  absorbClassificationRows(index, rows, keys);
+}
+
+async function classifySplit(
+  handle: DbHandle,
+  pkg: any,
+  plan: SplitPlan,
+  prices?: Map<number, string>,
+  suppliedIndex?: EpisodeClassificationIndex
+) {
+  const issues: PreviewIssue[] = plan.issues.map((i) => ({ ...i }));
+  let index = suppliedIndex;
+  if (index) {
+    // Complete only the buckets this plan needs; a shared scan index skips
+    // numbers an earlier package in the same request already loaded.
+    await ensureEpisodeClassificationKeys(handle, index, plan.chapters.map((c) => c.chapterNumber));
+  } else {
+    index = await loadEpisodeClassificationIndex(handle, pkg.novelId, plan.chapters.map((c) => c.chapterNumber));
+  }
 
   // Another package covering any of these chapter numbers.
   if (plan.range) {
-    for (const other of others) {
-      if (resolveSaleMode(other) !== "package") continue;
-      const otherRange = parseSplitRange(other.episodeNumber);
-      if (otherRange && rangesOverlap(plan.range, otherRange)) {
+    for (const other of index.rangePackages) {
+      if (other.id !== pkg.id && rangesOverlap(plan.range, other.range)) {
         issues.push({
           code: "OVERLAPPING_PACKAGE",
           message: `ช่วงแพ็กซ้อนกับแพ็ก "${other.episodeNumber}" (episodeId ${other.id})`,
@@ -244,18 +555,10 @@ async function classifySplit(handle: DbHandle, pkg: any, plan: SplitPlan, prices
     }
   }
 
-  const byNumber = new Map<string, any[]>();
-  for (const other of others) {
-    const key = normalizeEpisodeRange(other.episodeNumber);
-    const bucket = byNumber.get(key) ?? [];
-    bucket.push(other);
-    byNumber.set(key, bucket);
-  }
-
   const matchedIds: number[] = [];
   const pending: Array<{ chapter: SplitChapter; existing: any | null }> = [];
   for (const chapter of plan.chapters) {
-    const matches = byNumber.get(String(chapter.chapterNumber)) ?? [];
+    const matches = (index.byNumber.get(String(chapter.chapterNumber)) ?? []).filter((e) => e.id !== pkg.id);
     if (matches.length > 1) {
       issues.push({
         code: "AMBIGUOUS_EXISTING_CHAPTER",
@@ -277,8 +580,28 @@ async function classifySplit(handle: DbHandle, pkg: any, plan: SplitPlan, prices
     pending.push({ chapter, existing });
   }
 
+  // MEDIUMTEXT is fetched only for the exact chapter IDs being compared,
+  // never for all episodes of the novel or for unrelated packages.
+  const details: any[] = matchedIds.length > 0
+    ? await handle
+      .select({
+        id: episodes.id,
+        content: episodes.content,
+        price: episodes.price,
+        isFree: episodes.isFree,
+        isPublished: episodes.isPublished,
+      })
+      .from(episodes)
+      .where(inArray(episodes.id, matchedIds))
+    : [];
+  const detailById = new Map<number, any>(details.map((row) => [row.id, row]));
   const withBuyers = await episodesWithBuyers(handle, matchedIds);
-  const classified: ChapterClassification[] = pending.map(({ chapter, existing }) => {
+  const classified: ChapterClassification[] = pending.map(({ chapter, existing: meta }) => {
+    // If a chapter vanished between metadata/detail reads, treat it as
+    // a conflict (never as absent or safe to overwrite/create).
+    const existing = meta
+      ? detailById.get(meta.id) ?? { id: meta.id, content: null, price: null, isFree: false, isPublished: false }
+      : null;
     if (!existing) {
       return { chapter, action: "create", existingEpisodeId: null, existingHasBuyers: false, existing: null };
     }
@@ -491,11 +814,15 @@ export async function previewPackageSplitForContent(input: {
   publish?: boolean;
 }): Promise<SplitPreview> {
   const handle = await requireHandle();
+  const target = normalizeEpisodeRange(input.episodeNumber);
+  // Bounded to rows whose episodeNumber could normalize to the target key
+  // (same superset/refine contract as the classification index); falls
+  // back to the novel-wide scan only for keys with no safe SQL superset.
+  const condition = episodeNumberKeySqlCondition(target);
   const novelEpisodes: Array<{ id: number; episodeNumber: string }> = await handle
     .select({ id: episodes.id, episodeNumber: episodes.episodeNumber })
     .from(episodes)
-    .where(eq(episodes.novelId, input.novelId));
-  const target = normalizeEpisodeRange(input.episodeNumber);
+    .where(condition ? and(eq(episodes.novelId, input.novelId), condition) : eq(episodes.novelId, input.novelId));
   const existing = novelEpisodes.find((e) => normalizeEpisodeRange(e.episodeNumber) === target);
   const pkg = {
     id: existing?.id ?? -1,
@@ -646,69 +973,273 @@ export async function previewPackageSplitInTx(
  * Scan range packages (optionally of one novel) and report their split
  * status. Read-only.
  */
-export async function scanLegacyPackages(input: { novelId?: number; limit?: number } = {}): Promise<ScanRow[]> {
-  const handle = await requireHandle();
-  const limit = Math.min(Math.max(input.limit ?? 200, 1), 500);
-  const query = handle.select().from(episodes);
-  const rows: any[] = input.novelId ? await query.where(eq(episodes.novelId, input.novelId)) : await query;
-  const packages = rows
-    .filter((row) => resolveSaleMode(row) === "package" && parseSplitRange(row.episodeNumber) !== null)
-    .slice(0, limit);
-
-  const out: ScanRow[] = [];
-  for (const pkg of packages) {
-    const hasContent = String(pkg.content ?? "").trim().length > 0;
-    if (!hasContent) {
-      out.push({
-        packageEpisodeId: pkg.id,
-        novelId: pkg.novelId,
-        episodeNumber: pkg.episodeNumber,
-        title: pkg.title,
-        status: "no_content",
-        chapterCount: 0,
-        createCount: 0,
-        keepCount: 0,
-        conflictCount: 0,
-        issueCodes: [],
-      });
-      continue;
-    }
-    const plan = splitPackageContent({ episodeNumber: pkg.episodeNumber, content: pkg.content });
-    const { issues, classified } = await classifySplit(handle, pkg, plan);
-    const createCount = classified.filter((c) => c.action === "create").length;
-    const keepCount = classified.filter((c) => c.action === "keep").length;
-    const conflictCount = classified.filter((c) => c.action === "conflict").length;
-    const blocking = issues.filter((i) => i.code !== "EXISTING_CHAPTER_CONFLICT");
-    let status: ScanStatus;
-    if (blocking.length > 0) status = "needs_attention";
-    else if (conflictCount > 0) status = "conflict";
-    else if (createCount === 0) {
-      const mapped: Array<{ chapterEpisodeId: number }> = await handle
-        .select({ chapterEpisodeId: packageChapterMappings.chapterEpisodeId })
-        .from(packageChapterMappings)
-        .where(
-          and(
-            eq(packageChapterMappings.packageEpisodeId, pkg.id),
-            inArray(
-              packageChapterMappings.chapterEpisodeId,
-              classified.map((c) => c.existingEpisodeId!).filter(Boolean).concat([-1])
-            )
-          )
-        );
-      status = mapped.length === keepCount ? "already_split" : "splittable";
-    } else status = "splittable";
-    out.push({
-      packageEpisodeId: pkg.id,
-      novelId: pkg.novelId,
-      episodeNumber: pkg.episodeNumber,
-      title: pkg.title,
-      status,
-      chapterCount: plan.chapters.length,
-      createCount,
-      keepCount,
-      conflictCount,
-      issueCodes: Array.from(new Set(issues.map((i) => i.code))),
-    });
+/**
+ * Classify ONE legacy package using the same rules as the single-package
+ * admin workflow. No writes or guessed chapters.
+ */
+async function inspectLegacyPackage(handle: DbHandle, pkg: any, index?: EpisodeClassificationIndex): Promise<ScanRow> {
+  const base = {
+    packageEpisodeId: pkg.id as number,
+    novelId: pkg.novelId as number,
+    episodeNumber: String(pkg.episodeNumber),
+    title: String(pkg.title),
+  };
+  if (!String(pkg.content ?? "").trim()) {
+    const sourceRequired = Boolean(String(pkg.fileUrl ?? "").trim());
+    return {
+      ...base,
+      status: sourceRequired ? "source_required" : "no_content",
+      chapterCount: 0,
+      createCount: 0,
+      keepCount: 0,
+      conflictCount: 0,
+      issueCodes: sourceRequired ? ["SOURCE_REQUIRED"] : ["EMPTY_CONTENT"],
+    };
   }
-  return out;
+
+  const plan = splitPackageContent({ episodeNumber: pkg.episodeNumber, content: pkg.content });
+  const { issues, classified } = await classifySplit(handle, pkg, plan, undefined, index);
+  const createCount = classified.filter((c) => c.action === "create").length;
+  const keepCount = classified.filter((c) => c.action === "keep").length;
+  const conflictCount = classified.filter((c) => c.action === "conflict").length;
+  const blocking = issues.filter((i) => i.code !== "EXISTING_CHAPTER_CONFLICT");
+  let status: ScanStatus;
+  if (blocking.length > 0) status = "needs_attention";
+  else if (conflictCount > 0) status = "conflict";
+  else if (createCount === 0) {
+    const mapped: Array<{ chapterEpisodeId: number }> = await handle
+      .select({ chapterEpisodeId: packageChapterMappings.chapterEpisodeId })
+      .from(packageChapterMappings)
+      .where(
+        and(
+          eq(packageChapterMappings.packageEpisodeId, pkg.id),
+          inArray(
+            packageChapterMappings.chapterEpisodeId,
+            classified.map((c) => c.existingEpisodeId!).filter(Boolean).concat([-1])
+          )
+        )
+      );
+    status = mapped.length === keepCount ? "already_split" : "splittable";
+  } else status = "splittable";
+
+  return {
+    ...base,
+    status,
+    chapterCount: plan.chapters.length,
+    createCount,
+    keepCount,
+    conflictCount,
+    issueCodes: Array.from(new Set(issues.map((i) => i.code))),
+  };
+}
+
+export const MIGRATION_SCAN_MAX_INSPECTED = 200;
+export type LegacyScanStatusFilter = ScanStatus | "all";
+export interface LegacyScanPage {
+  rows: ScanRow[];
+  nextCursor: number | null;
+  hasMore: boolean;
+  inspected: number;
+}
+
+/**
+ * Keyset-scanned global inventory. The DB fetches at most 25 candidate rows
+ * per query and this request inspects at most 200, including rows hidden by
+ * a status filter. Cursor is the LAST INSPECTED episode ID, not the last
+ * visible row; this prevents infinite loops and skipped candidates when the
+ * filter excludes many rows. A full last chunk can yield one empty final page.
+ */
+export async function scanLegacyPackagesPage(input: {
+  novelId?: number;
+  cursor?: number;
+  limit?: number;
+  status?: LegacyScanStatusFilter;
+  attentionOnly?: boolean;
+} = {}): Promise<LegacyScanPage> {
+  const handle = await requireHandle();
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 200);
+  const out: ScanRow[] = [];
+  let cursor = input.cursor ?? 0;
+  let inspected = 0;
+  let exhausted = false;
+  // Per-request cache: package rows per novel (complete, for overlap
+  // detection) plus lazily completed chapter-number buckets - see
+  // ensureEpisodeClassificationKeys.
+  const indexByNovel = new Map<number, EpisodeClassificationIndex>();
+
+  while (out.length < limit && inspected < MIGRATION_SCAN_MAX_INSPECTED) {
+    const take = Math.min(25, MIGRATION_SCAN_MAX_INSPECTED - inspected);
+    // Explicit package saleMode is authoritative. Do not filter by a single
+    // range separator: parseSplitRange also accepts en-dash, slash and ถึง.
+    // Preserve NULL saleMode for legacy fallback if encountered.
+    const conditions = [
+      gt(episodes.id, cursor),
+      or(eq(episodes.saleMode, "package"), isNull(episodes.saleMode))!,
+    ];
+    if (input.novelId) conditions.push(eq(episodes.novelId, input.novelId));
+    const candidates: any[] = await handle
+      // Only small metadata is fetched for each window. The large MEDIUMTEXT
+      // body is loaded one package at a time AFTER range classification.
+      .select({
+        id: episodes.id,
+        novelId: episodes.novelId,
+        episodeNumber: episodes.episodeNumber,
+        saleMode: episodes.saleMode,
+        fileUrl: episodes.fileUrl,
+      })
+      .from(episodes)
+      .where(and(...conditions))
+      .orderBy(asc(episodes.id))
+      .limit(take);
+
+    if (candidates.length === 0) {
+      exhausted = true;
+      break;
+    }
+    let consumedAll = true;
+    for (const candidate of candidates) {
+      cursor = candidate.id;
+      inspected += 1;
+      if (resolveSaleMode(candidate) !== "package" || !parseSplitRange(candidate.episodeNumber)) continue;
+      const pkg = await loadPackage(handle, candidate.id, false);
+      let index = indexByNovel.get(candidate.novelId);
+      if (!index) {
+        // Package rows only; each package's chapter-number buckets load on
+        // demand inside classifySplit, bounded to that plan's numbers.
+        index = await loadEpisodeClassificationIndex(handle, candidate.novelId, []);
+        indexByNovel.set(candidate.novelId, index);
+      }
+      const row = await inspectLegacyPackage(handle, pkg, index);
+      if (input.attentionOnly && !["needs_attention", "conflict", "no_content", "source_required"].includes(row.status)) {
+        continue;
+      }
+      if (input.status && input.status !== "all" && row.status !== input.status) continue;
+      out.push(row);
+      if (out.length >= limit) {
+        consumedAll = false;
+        break;
+      }
+    }
+    if (consumedAll && candidates.length < take) {
+      exhausted = true;
+      break;
+    }
+  }
+  const hasMore = !exhausted;
+  return { rows: out, nextCursor: hasMore ? cursor : null, hasMore, inspected };
+}
+
+/** Legacy caller: first bounded page for one novel. New global UI uses the cursor API. */
+export async function scanLegacyPackages(input: { novelId?: number; limit?: number } = {}): Promise<ScanRow[]> {
+  const page = await scanLegacyPackagesPage({ novelId: input.novelId, limit: input.limit ?? 200 });
+  return page.rows;
+}
+
+/**
+ * Dry run of an explicit 1..10 package selection. Price must be supplied:
+ * the server never infers it from the package price. Publish is ALWAYS false.
+ */
+export async function previewLegacyPackageBatch(input: {
+  packageEpisodeIds: number[];
+  pricing: SplitPricingInput;
+}) {
+  const handle = await requireHandle();
+  const results: Array<{
+    packageEpisodeId: number;
+    status: "ready" | "skipped" | "blocked";
+    planHash: string | null;
+    createCount: number;
+    keepCount: number;
+    conflictCount: number;
+    warnings: string[];
+    issues: string[];
+  }> = [];
+
+  for (const id of input.packageEpisodeIds) {
+    try {
+      const pkg = await loadPackage(handle, id, false);
+      if (!parseSplitRange(pkg.episodeNumber)) {
+        results.push({ packageEpisodeId: id, status: "blocked", planHash: null, createCount: 0, keepCount: 0, conflictCount: 0, warnings: [], issues: ["NOT_RANGE"] });
+        continue;
+      }
+      const scan = await inspectLegacyPackage(handle, pkg);
+      if (scan.status === "already_split") {
+        results.push({ packageEpisodeId: id, status: "skipped", planHash: null, createCount: 0, keepCount: scan.keepCount, conflictCount: 0, warnings: [], issues: [] });
+        continue;
+      }
+      if (scan.status === "source_required" || scan.status === "no_content") {
+        results.push({ packageEpisodeId: id, status: "blocked", planHash: null, createCount: 0, keepCount: 0, conflictCount: 0, warnings: [], issues: scan.issueCodes });
+        continue;
+      }
+      const preview = await buildPreview(handle, pkg, input.pricing, false);
+      results.push({
+        packageEpisodeId: id,
+        status: preview.applicable ? "ready" : "blocked",
+        planHash: preview.planHash,
+        createCount: preview.counts.create,
+        keepCount: preview.counts.keep,
+        conflictCount: preview.counts.conflict,
+        warnings: preview.warnings,
+        issues: preview.issues.map((issue) => issue.code),
+      });
+    } catch (error) {
+      // Never echo raw SQL or connection strings to the UI.
+      const code = error instanceof PackageSplitError ? error.code : "PREVIEW_FAILED";
+      results.push({ packageEpisodeId: id, status: "blocked", planHash: null, createCount: 0, keepCount: 0, conflictCount: 0, warnings: [], issues: [code] });
+    }
+  }
+  return {
+    results,
+    ready: results.filter((row) => row.status === "ready").length,
+    skipped: results.filter((row) => row.status === "skipped").length,
+    blocked: results.filter((row) => row.status === "blocked").length,
+  };
+}
+
+/**
+ * Per-package atomic execution: one failed package cannot partially write
+ * its chapters or roll back an unrelated successful package. Same planHash
+ * and FOR UPDATE lock as the original single-package Apply path.
+ */
+export async function applyLegacyPackageBatch(input: {
+  items: Array<{ packageEpisodeId: number; planHash: string }>;
+  pricing: SplitPricingInput;
+}) {
+  const results: Array<{
+    packageEpisodeId: number;
+    outcome: "migrated" | "skipped" | "failed";
+    createdCount: number;
+    keptCount: number;
+    errorCode?: string;
+  }> = [];
+  for (const item of input.items) {
+    try {
+      const applied = await applyPackageSplit({
+        packageEpisodeId: item.packageEpisodeId,
+        planHash: item.planHash,
+        pricing: input.pricing,
+        publish: false,
+      });
+      results.push({
+        packageEpisodeId: item.packageEpisodeId,
+        outcome: applied.createdEpisodeIds.length || applied.mappingsInserted ? "migrated" : "skipped",
+        createdCount: applied.createdEpisodeIds.length,
+        keptCount: applied.keptEpisodeIds.length,
+      });
+    } catch (error) {
+      results.push({
+        packageEpisodeId: item.packageEpisodeId,
+        outcome: "failed",
+        createdCount: 0,
+        keptCount: 0,
+        errorCode: error instanceof PackageSplitError ? error.code : "APPLY_FAILED",
+      });
+    }
+  }
+  return {
+    results,
+    migrated: results.filter((row) => row.outcome === "migrated").length,
+    skipped: results.filter((row) => row.outcome === "skipped").length,
+    failed: results.filter((row) => row.outcome === "failed").length,
+  };
 }

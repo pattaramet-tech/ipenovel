@@ -50,6 +50,14 @@ const packageSplitInputSchema = z.object({
   publish: z.boolean().default(false),
 });
 
+// R4: require explicit prices, distinct IDs and always-draft batch writes.
+const migrationPriceSchema = z.object({
+  chapterPrice: z.string().regex(/^\d{1,8}(?:\.\d{1,2})?$/),
+  overrides: z.record(z.string(), z.string().regex(/^\d{1,8}(?:\.\d{1,2})?$/)).optional(),
+});
+const migrationIdsSchema = z.array(z.number().int().positive()).min(1).max(10)
+  .refine((ids) => new Set(ids).size === ids.length, "DUPLICATE_PACKAGE_IDS");
+
 function mapPackageSplitError(error: unknown): TRPCError {
   if (error instanceof packageChapterSplitService.PackageSplitError) {
     switch (error.code) {
@@ -2483,6 +2491,35 @@ export const appRouter = router({
         .query(async ({ input }) => {
           return packageChapterSplitService.scanLegacyPackages({ novelId: input?.novelId });
         }),
+
+      // R4 Legacy Package Migration: admin-only, bounded keyset scan.
+      packageSplitScanPage: adminProcedure
+        .input(z.object({
+          novelId: z.number().int().positive().optional(),
+          cursor: z.number().int().nonnegative().optional(),
+          limit: z.number().int().min(1).max(50).default(20),
+          status: z.enum(["all", "splittable", "already_split", "needs_attention", "conflict", "source_required", "no_content"]).default("all"),
+          attentionOnly: z.boolean().default(false),
+        }))
+        .query(({ input }) => packageChapterSplitService.scanLegacyPackagesPage(input)),
+
+      packageSplitBatchPreview: adminProcedure
+        .input(z.object({ packageEpisodeIds: migrationIdsSchema, pricing: migrationPriceSchema }))
+        .mutation(({ input }) => packageChapterSplitService.previewLegacyPackageBatch(input)),
+
+      packageSplitBatchApply: adminProcedure
+        .input(z.object({
+          items: z.array(z.object({
+            packageEpisodeId: z.number().int().positive(),
+            planHash: z.string().regex(/^[0-9a-f]{64}$/),
+          })).min(1).max(10).refine(
+            (items) => new Set(items.map((item) => item.packageEpisodeId)).size === items.length,
+            "DUPLICATE_PACKAGE_IDS"
+          ),
+          pricing: migrationPriceSchema,
+          confirmation: z.literal("MIGRATE_PACKAGES"),
+        }))
+        .mutation(({ input }) => packageChapterSplitService.applyLegacyPackageBatch(input)),
 
       packageSplitPreview: adminProcedure
         .input(packageSplitInputSchema)

@@ -23,6 +23,7 @@ const STATUS_LABELS: Record<string, string> = {
   needs_attention: "ต้องแก้ไข",
   conflict: "ขัดแย้งกับบทเดิม",
   no_content: "ไม่มีเนื้อหา",
+  source_required: "ต้องนำเข้าเนื้อหาต้นทาง",
 };
 
 const ACTION_LABELS: Record<string, string> = {
