@@ -71,6 +71,18 @@ jobs:
           client/src/pages/workspaceChapterEditor.test.ts
           server/migration-deployment-safety.test.ts
 
+      - name: Novel and Episode timestamp unit regression
+        run: >-
+          pnpm exec vitest run -c vitest.config.ts
+          client/src/lib/formatContentTimestamp.test.ts
+          client/src/components/NovelCard.timestamp.test.ts
+          server/novelDisplayTimestamp.test.ts
+
+      - name: Novels browse pagination regression
+        run: >-
+          pnpm exec vitest run -c vitest.config.ts
+          server/novels-browse-pagination.test.ts
+
       - name: Full Workspace integration regression
         run: >-
           pnpm exec vitest run -c vitest.integration.config.ts
