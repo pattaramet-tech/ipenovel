@@ -16,6 +16,7 @@ import { readNotificationRuntimeFlags } from "../notifications/runtimeGate";
 const NOTIFICATION_RUNTIME_FLAGS = readNotificationRuntimeFlags(process.env);
 import { resolveSaleMode } from "./readerService";
 import { isDuplicateKeyError } from "../helpers/databaseErrorClassifier";
+import { PackageOwnershipError, assertNoChapterCoveredByOwnedPackage } from "./packageOwnershipService";
 
 export interface PurchaseResult {
   success: boolean;
@@ -319,6 +320,18 @@ export async function purchaseEpisodeWithWallet(userId: number, episodeId: numbe
 
       if (existingPurchase.length > 0 || existingGift.length > 0) {
         throw new PurchaseError("ALREADY_PURCHASED");
+      }
+
+      // Package-split guard: a chapter whose covering package the user already
+      // owns (or has a live order for) must never be charged again. Runs as
+      // locking reads inside this transaction, after the users-row lock above.
+      try {
+        await assertNoChapterCoveredByOwnedPackage(userId, [episodeId], tx);
+      } catch (error) {
+        if (error instanceof PackageOwnershipError) {
+          throw new PurchaseError("ALREADY_OWNED_VIA_PACKAGE");
+        }
+        throw error;
       }
 
       // 7. RE-FETCH wallet balance inside transaction (may have changed)
