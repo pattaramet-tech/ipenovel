@@ -14,6 +14,7 @@ import { canonicalDomainRedirect } from "./canonicalDomainRedirect";
 import { handleSitemapXml } from "./sitemap";
 import { ensureDatabaseMigrated } from "./startupMigrations";
 import { assertProductionStagingDatabaseIsolation } from "./productionStagingSafety";
+import { runPreviewIdentityGuard } from "./previewIdentityGuard";
 import { safeErrorSummary } from "../../scripts/lib/safeErrorSummary.mjs";
 import { registerHealthReadinessRoutes } from "./healthReadiness";
 import { createUnattendedPublishWorker } from "../workspace/publishUnattendedWorker";
@@ -70,6 +71,12 @@ async function startServer() {
   // approved isolated staging database, and that this identity differs from
   // Production, before any startup migration process is allowed to run.
   assertProductionStagingDatabaseIsolation();
+
+  // IPE-135-R14: preview deployments prove their dedicated database identity
+  // (fail-closed) BEFORE startup migrations are allowed to run. Production
+  // and production-staging boots are unaffected - the guard no-ops unless
+  // DEPLOYMENT_ENVIRONMENT is exactly "preview".
+  await runPreviewIdentityGuard();
 
   // STEP 1-3: environment is loaded by `import "dotenv/config"` at the top of
   // this file; migrations and the post-migration read-only schema
