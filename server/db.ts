@@ -95,6 +95,7 @@ import {
   pluginRefreshGrants,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { resolveNovelDisplayUpdatedAt } from "./novelDisplayTimestamp";
 import { recordNovelFirstPublicationIfEnabled } from "./notifications/novelPublicationProducer";
 import { readNotificationRuntimeFlags } from "./notifications/runtimeGate";
 import { recordWalletTopupOutcomeIfEnabled } from "./notifications/walletTopupProducer";
@@ -660,6 +661,50 @@ export async function searchNovelsForAdmin(query?: string, limit: number = 30, o
   return results.map((n: any) => ({
     ...n,
     episodeCount: countByNovelId.get(n.id) ?? 0,
+  }));
+}
+
+/**
+ * Effective novel update time = newest published episode activity, falling
+ * back to novel creation when no published episode exists. A metadata-only
+ * update to the novel row must not advance the public display time.
+ * Grouped on requested novel IDs to avoid per-card N+1
+ * queries. No schema mutation or changes to createdAt-based sort order.
+ */
+export async function withPublishedEpisodeUpdateTime<T extends { id: number; createdAt: Date; updatedAt: Date }>(
+  rows: T[]
+): Promise<Array<T & { displayUpdatedAt: Date }>> {
+  if (rows.length === 0) return [];
+  const database = await getDb();
+  if (!database) return rows.map(row => ({ ...row, displayUpdatedAt: row.createdAt }));
+
+  // The admin page can request every novel; keep SQL IN lists bounded.
+  const latestByNovel = new Map<number, Date | null>();
+  const ids = Array.from(new Set(rows.map(row => row.id)));
+  for (let offset = 0; offset < ids.length; offset += 200) {
+    const updates = await database
+      .select({
+        novelId: episodes.novelId,
+        // Preserve the original publish time even when the episode was prepared
+        // before its publishedAt date; later edits advance updatedAt.
+        latestUpdatedEpoch: sql<number>`MAX(UNIX_TIMESTAMP(GREATEST(${episodes.updatedAt}, COALESCE(${episodes.publishedAt}, ${episodes.createdAt}))))`,
+      })
+      .from(episodes)
+      .where(and(
+        inArray(episodes.novelId, ids.slice(offset, offset + 200)),
+        eq(episodes.isPublished, true)
+      ))
+      .groupBy(episodes.novelId);
+    for (const row of updates) {
+      const epoch = Number(row.latestUpdatedEpoch);
+      if (Number.isFinite(epoch) && epoch > 0) {
+        latestByNovel.set(row.novelId, new Date(epoch * 1000));
+      }
+    }
+  }
+  return rows.map(row => ({
+    ...row,
+    displayUpdatedAt: resolveNovelDisplayUpdatedAt(row.createdAt, latestByNovel.get(row.id)),
   }));
 }
 
@@ -3876,6 +3921,8 @@ export async function getLatestEpisodes(limit: number = 4) {
       episodeTitle: episodes.title,
       isFree: episodes.isFree,
       createdAt: episodes.createdAt,
+      publishedAt: episodes.publishedAt,
+      updatedAt: episodes.updatedAt,
     })
     .from(episodes)
     .innerJoin(novels, eq(episodes.novelId, novels.id))
@@ -3902,6 +3949,8 @@ export interface BrowseCatalogNovel {
   coverImageUrl: string | null;
   storyStatus: string;
   createdAt: Date;
+  updatedAt: Date;
+  displayUpdatedAt: Date;
   freeEpisodeCount: number;
 }
 
@@ -4001,6 +4050,7 @@ export async function getBrowseCatalog(params: {
         coverImageUrl: novels.coverImageUrl,
         storyStatus: novels.storyStatus,
         createdAt: novels.createdAt,
+        updatedAt: novels.updatedAt,
         freeEpisodeCount: hasFreeEpisodeSql(),
       })
       .from(novels)
@@ -4026,6 +4076,7 @@ export async function getBrowseCatalog(params: {
         coverImageUrl: novels.coverImageUrl,
         storyStatus: novels.storyStatus,
         createdAt: novels.createdAt,
+        updatedAt: novels.updatedAt,
         freeEpisodeCount: hasFreeEpisodeSql(),
       })
       .from(novels)
@@ -4041,7 +4092,7 @@ export async function getBrowseCatalog(params: {
     freeEpisodeCount: Number(row.freeEpisodeCount) || 0,
   }));
 
-  return { items, hasNextPage };
+  return { items: await withPublishedEpisodeUpdateTime(items), hasNextPage };
 }
 
 

@@ -9,6 +9,7 @@ import { ArrowLeft, Plus, Edit2, Trash2, Loader2, Search, ListVideo } from "luci
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import SafeImage from "@/components/SafeImage";
+import { formatContentTimestamp } from "@/lib/formatContentTimestamp";
 import {
   Dialog,
   DialogContent,
@@ -286,6 +287,7 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
               <div className="flex-1">
                 <h1 className="text-2xl font-bold text-slate-900">{novel.novel.title}</h1>
                 <p className="mt-1 text-sm text-slate-500">Author: {novel.novel.author || "Unassigned"}</p>
+                <p className="mt-1 text-xs text-slate-500">สร้าง: {formatContentTimestamp(novel.novel.createdAt) ?? "—"} · อัปเดต: {formatContentTimestamp(novel.novel.displayUpdatedAt ?? novel.novel.updatedAt) ?? "—"}</p>
                 <p className="text-slate-600 mt-2">{novel.novel.description}</p>
                 <div className="flex gap-2 mt-4">
                   <Badge variant={novel.novel.publicationStatus === "published" ? "default" : "secondary"}>
@@ -474,6 +476,9 @@ export default function AdminNovelManagePage({ params }: AdminNovelManagePagePro
                       </div>
                       <p className="text-sm text-muted-foreground">
                         Episode {episode.episodeNumber}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        สร้าง: {formatContentTimestamp(episode.createdAt) ?? "—"} · อัปเดต: {formatContentTimestamp(episode.updatedAt) ?? "—"}
                       </p>
                       {episode.hasLegacyFile && (
                         <p className="text-xs text-slate-500 mt-1">Legacy file attached</p>

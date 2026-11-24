@@ -422,6 +422,7 @@ export default function NovelsPage() {
                     id={novel.id}
                     title={novel.title}
                     coverImageUrl={novel.coverImageUrl}
+                    updatedAt={novel.displayUpdatedAt ?? novel.updatedAt}
                     badges={badges}
                     showWishlist
                     isWishlisted={wishlistMap.has(novel.id)}

@@ -12,6 +12,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { isCatalogOperatorRole } from "@/_core/hooks/catalogAccess";
 import { useLocation } from "wouter";
 import SafeImage from "@/components/SafeImage";
+import { formatContentTimestamp } from "@/lib/formatContentTimestamp";
 
 export default function AdminNovelsPage() {
   const { user, isAuthenticated } = useAuth();
@@ -459,13 +460,15 @@ export default function AdminNovelsPage() {
           />
         ) : (
           <div className="max-w-full overflow-x-auto rounded-lg border border-slate-200" role="region" aria-label="Novels table" tabIndex={0}>
-            <table className="w-full min-w-[48rem]">
+            <table className="w-full min-w-[64rem]">
               <thead className="bg-slate-100 border-b border-slate-200">
                 <tr>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Title</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Author</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Status</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Story</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">สร้างเมื่อ</th>
+                  <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">อัปเดตล่าสุด</th>
                   <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">Actions</th>
                 </tr>
               </thead>
@@ -499,6 +502,8 @@ export default function AdminNovelsPage() {
                     <td className="px-6 py-4">
                       <span className="text-sm text-slate-600 capitalize">{novel.storyStatus}</span>
                     </td>
+                    <td className="px-6 py-4 text-xs text-slate-600">{formatContentTimestamp(novel.createdAt) ?? "—"}</td>
+                    <td className="px-6 py-4 text-xs text-slate-600">{formatContentTimestamp(novel.displayUpdatedAt ?? novel.updatedAt) ?? "—"}</td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
                         <Button

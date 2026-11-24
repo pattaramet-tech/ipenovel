@@ -16,6 +16,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { formatContentTimestamp } from "@/lib/formatContentTimestamp";
 
 interface AdminEpisodesPageProps {
   params?: {
@@ -555,6 +556,9 @@ export default function AdminEpisodesPage({ params }: AdminEpisodesPageProps) {
                     {episode.description && (
                       <p className="text-sm mt-1 text-slate-600">{episode.description}</p>
                     )}
+                    <p className="text-xs text-muted-foreground mt-2">
+                      สร้าง: {formatContentTimestamp(episode.createdAt) ?? "—"} · อัปเดต: {formatContentTimestamp(episode.updatedAt) ?? "—"}
+                    </p>
                   </div>
                   <div className="flex shrink-0 gap-2 self-end sm:self-start">
                     <Button

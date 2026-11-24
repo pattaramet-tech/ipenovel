@@ -183,10 +183,23 @@ describe("getBrowseCatalog - pagination correctness (DB required, isolated fixtu
   }, 30000);
 
   afterAll(async () => {
+    // IPE-135-R4 hardening: the episodes insert's reported insertId can be
+    // null/undefined through this driver path (drizzle 0.44.7 + mysql2), so
+    // an id-based `IN (...)` cleanup rendered `IN ()` and failed the whole
+    // suite even when every test passed. Episodes belong to the fixture
+    // novels, so scope the cleanup by the captured NOVEL ids instead - and
+    // only build the IN-lists from real positive numeric ids.
     const database = await getDb();
     if (!database) return;
-    if (episodeIds.length > 0) await database.execute(`DELETE FROM episodes WHERE id IN (${episodeIds.join(",")})`);
-    if (novelIds.length > 0) await database.execute(`DELETE FROM novels WHERE id IN (${novelIds.join(",")})`);
+    const cleanEpisodeIds = episodeIds.filter((id) => typeof id === "number" && id > 0);
+    const cleanNovelIds = novelIds.filter((id) => typeof id === "number" && id > 0);
+    if (cleanEpisodeIds.length > 0) {
+      await database.execute(`DELETE FROM episodes WHERE id IN (${cleanEpisodeIds.join(",")})`);
+    }
+    if (cleanNovelIds.length > 0) {
+      await database.execute(`DELETE FROM episodes WHERE novelId IN (${cleanNovelIds.join(",")})`);
+      await database.execute(`DELETE FROM novels WHERE id IN (${cleanNovelIds.join(",")})`);
+    }
   });
 
   it("default page returns at most pageSize items", async () => {
@@ -282,7 +295,40 @@ describe("getBrowseCatalog - pagination correctness (DB required, isolated fixtu
     const { items } = await db.getBrowseCatalog({ sort: "new", filter: "all", search: TAG, limit: 1, offset: 0 });
     if (items.length === 0) return;
 
+    // IPE-135: the card renders the publish-derived "updated" time, so the
+    // DTO deliberately adds two LIGHTWEIGHT time fields - `updatedAt` (raw
+    // novel row column) and `displayUpdatedAt` (publish-derived reader
+    // value). Content/body columns are still never selected here; this
+    // exact-equality whitelist is the guard against heavy/internal columns.
     const keys = Object.keys(items[0]).sort();
-    expect(keys).toEqual(["coverImageUrl", "createdAt", "freeEpisodeCount", "id", "slug", "storyStatus", "title"].sort());
+    expect(keys).toEqual(
+      ["coverImageUrl", "createdAt", "displayUpdatedAt", "freeEpisodeCount", "id", "slug", "storyStatus", "title", "updatedAt"].sort()
+    );
+
+    // IPE-135-R5 deterministic data contract: the TAG fixtures have NO
+    // episodes at all, so the publish-derived display time must fall back
+    // to the novel's creation time EXACTLY (no wall-clock-dependent
+    // assertions needed - the fixture data itself defines the answer).
+    expect(items[0].displayUpdatedAt.getTime()).toBe(items[0].createdAt.getTime());
+  });
+
+  it("fixtures without published episodes keep displayUpdatedAt === createdAt; the published-episode fixture derives its display time (IPE-135-R5)", async () => {
+    const database = await getDb();
+    if (!database) return;
+
+    const tagged = await db.getBrowseCatalog({ sort: "new", filter: "all", search: TAG, limit: FIXTURE_COUNT, offset: 0 });
+    expect(tagged.items.length).toBe(FIXTURE_COUNT);
+    for (const item of tagged.items) {
+      // These fixtures have no episodes: the publish-derived display time
+      // must equal the novel's creation time exactly, for every row.
+      expect(item.displayUpdatedAt.getTime(), `novel ${item.slug}`).toBe(item.createdAt.getTime());
+    }
+
+    // The FREE fixture HAS a published free episode: its display time is
+    // derived from that episode (>= the novel's creation time), never the
+    // raw novel-row value alone.
+    const free = await db.getBrowseCatalog({ sort: "new", filter: "all", search: FREE_TAG, limit: 1, offset: 0 });
+    expect(free.items.length).toBe(1);
+    expect(free.items[0].displayUpdatedAt.getTime()).toBeGreaterThanOrEqual(free.items[0].createdAt.getTime());
   });
 });

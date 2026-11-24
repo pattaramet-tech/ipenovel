@@ -10,6 +10,7 @@ import { usePublicStorefrontPageThemeProps } from "@/contexts/PublicThemeContext
 import { toast } from "sonner";
 import React, { useMemo } from "react";
 import NovelCard from "@/components/NovelCard";
+import { publishedEpisodeDisplayTime } from "@/lib/formatContentTimestamp";
 import { useDocumentHead } from "@/hooks/useDocumentHead";
 import { buildCanonicalUrl, SITE_NAME } from "@/lib/seo";
 
@@ -115,6 +116,7 @@ function EpisodeCard({ episode, episodeLabel, freeLabel }: { episode: any; episo
       coverImageUrl={episode.novelCoverImageUrl}
       overline={episode.novelTitle}
       subtitle={episode.episodeTitle}
+      updatedAt={publishedEpisodeDisplayTime(episode)}
       badges={episode.isFree ? [{ label: freeLabel, className: "bg-green-500 text-white" }] : []}
     />
   );
@@ -143,6 +145,7 @@ function NovelCardSection({
       title={novel.title}
       coverImageUrl={novel.coverImageUrl}
       subtitle={novel.description}
+      updatedAt={novel.displayUpdatedAt ?? novel.updatedAt}
       badges={badges}
       eager={eager}
     />
