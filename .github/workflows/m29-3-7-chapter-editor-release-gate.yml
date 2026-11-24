@@ -83,6 +83,11 @@ jobs:
           pnpm exec vitest run -c vitest.config.ts
           server/novels-browse-pagination.test.ts
 
+      - name: Preview identity guard regression
+        run: >-
+          pnpm exec vitest run -c vitest.config.ts
+          server/_core/previewIdentityGuard.test.ts
+
       - name: Full Workspace integration regression
         run: >-
           pnpm exec vitest run -c vitest.integration.config.ts
